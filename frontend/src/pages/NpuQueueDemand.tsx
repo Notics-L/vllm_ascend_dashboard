@@ -46,8 +46,6 @@ export default function NpuQueueDemand() {
   const totals = useMemo(() => ({
     waitingJobs: pools.reduce((sum, pool) => sum + pool.waitingJobs, 0),
     waitingCards: pools.reduce((sum, pool) => sum + pool.waitingCards, 0),
-    p50: pools.filter((pool) => pool.queueP50 !== null).reduce((sum, pool) => sum + (pool.queueP50 ?? 0) * pool.samples, 0) / Math.max(1, pools.reduce((sum, pool) => sum + pool.samples, 0)),
-    p90: Math.max(0, ...pools.map((pool) => pool.queueP90 ?? 0)),
     oldest: Math.max(...(data?.queue ?? []).map((item) => item.waitMinutes), 0),
   }), [data, pools])
   const queue = useMemo(() => (data?.queue ?? []).filter((item) => (
@@ -83,7 +81,7 @@ export default function NpuQueueDemand() {
     <Row className="npu-demand-focus-row" gutter={[40, 20]}>
       <Col xs={24} lg={12}>
         <section className="npu-demand-pressure" aria-labelledby="npu-pressure-title">
-          <div className="npu-demand-focus-heading"><h3 id="npu-pressure-title">当前资源压力</h3><Tag color={totals.waitingCards > 0 ? 'orange' : 'green'}>{totals.waitingCards > 0 ? '存在排队压力' : '资源充足'}</Tag></div>
+          <div className="npu-demand-focus-heading"><h3 id="npu-pressure-title">01 当前资源压力</h3><Tag color={totals.waitingCards > 0 ? 'orange' : 'green'}>{totals.waitingCards > 0 ? '存在排队压力' : '资源充足'}</Tag></div>
           <div className="npu-demand-capacity-bar" aria-label={physicalCapacity === null ? '物理 NPU 资源暂不可用' : `物理 NPU 已运行 ${physicalRunning} 卡，空闲 ${physicalIdle} 卡`}><span style={{ width: `${physicalUtilization}%` }} /></div>
           <div className="npu-demand-capacity-label">{physicalCapacity === null ? <span>物理资源快照暂不可用</span> : <><span>已运行 <b>{physicalRunning}</b> 卡</span><span>空闲 <b>{physicalIdle}</b> 卡</span></>}</div>
           <div className="npu-demand-pressure-metrics">
@@ -97,8 +95,8 @@ export default function NpuQueueDemand() {
       <Col xs={24} lg={12}>
         <section className="npu-demand-delay" aria-labelledby="npu-delay-title">
           <div className="npu-demand-focus-heading"><h3 id="npu-delay-title">Queue 延迟趋势</h3><Text type="secondary">最近 7 天</Text></div>
-          <div className="npu-demand-delay-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={data.dailyQueue} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}><XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={11} /><YAxis tickLine={false} axisLine={false} unit="m" fontSize={11} /><Tooltip formatter={(value: number) => `${value} min`} /><Line type="monotone" dataKey="p90" stroke="#f59e0b" strokeWidth={2.5} dot={false} name="P90" /><Line type="monotone" dataKey="p50" stroke="#3b82f6" strokeWidth={2.5} dot={false} name="P50" /></LineChart></ResponsiveContainer></div>
-          <div className="npu-demand-delay-metrics"><span>P50 <b>{number(totals.p50)} min</b></span><span>P90 <b>{number(totals.p90)} min</b></span><span>Longest <b>{totals.oldest} min</b></span></div>
+          <div className="npu-demand-delay-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={data.dailyQueue} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}><XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={11} interval={0} tickFormatter={(value: string) => value.slice(5)} /><YAxis tickLine={false} axisLine={false} unit="m" fontSize={11} /><Tooltip /><Line type="monotone" dataKey="p90" stroke="#f59e0b" strokeWidth={2.5} dot={false} connectNulls={false} name="P90" /><Line type="monotone" dataKey="p50" stroke="#3b82f6" strokeWidth={2.5} dot={false} connectNulls={false} name="P50" /></LineChart></ResponsiveContainer></div>
+          <div className="npu-demand-delay-metrics"><span>P50 <b>{data.queueDelaySummary.p50 === null ? '—' : `${number(data.queueDelaySummary.p50)} min`}</b></span><span>P90 <b>{data.queueDelaySummary.p90 === null ? '—' : `${number(data.queueDelaySummary.p90)} min`}</b></span><span>已上卡样本 <b>{number(data.queueDelaySummary.samples)} 个</b></span></div>
         </section>
       </Col>
     </Row>

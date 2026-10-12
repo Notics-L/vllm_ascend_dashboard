@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from math import ceil
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -43,9 +43,23 @@ def _queue_minutes(fact: CINpuJobFact) -> float | None:
     return _minutes(fact.queued_at, fact.started_at)
 
 
+def _queue_delay_window(now: datetime) -> tuple[str, str]:
+    """Return the seven Beijing calendar dates shown by the delay chart."""
+    today = _beijing_time(now).date()
+    return ((today - timedelta(days=6)).isoformat(), today.isoformat())
+
+
+def _queue_delay_dates(now: datetime) -> list[str]:
+    """Return every displayed date so empty days remain visible in the chart."""
+    start, _ = _queue_delay_window(now)
+    first_day = date.fromisoformat(start)
+    return [(first_day + timedelta(days=offset)).isoformat() for offset in range(7)]
+
+
 async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
     facts = list((await db.scalars(select(CINpuJobFact).order_by(CINpuJobFact.queued_at.desc()))).all())
     now = datetime.now(UTC)
+    queue_window_start, queue_window_end = _queue_delay_window(now)
     matched = [fact for fact in facts if fact.mapping_status == "matched" and fact.mapped_cards]
     pools: dict[str, list[CINpuJobFact]] = defaultdict(list)
     for fact in matched:
@@ -113,7 +127,10 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
     for fact in matched:
         queue_minutes = _queue_minutes(fact)
         if queue_minutes is not None and queue_minutes >= 2 and fact.started_at:
-            daily_queue[fact.started_at.date().isoformat()].append(queue_minutes)
+            # The date labels, curve and summary all use the same Beijing 7-day window.
+            started_date = _beijing_time(fact.started_at).date().isoformat()
+            if queue_window_start <= started_date <= queue_window_end:
+                daily_queue[started_date].append(queue_minutes)
         runtime_minutes = _minutes(fact.started_at, fact.completed_at)
         if runtime_minutes is None or not fact.completed_at:
             continue
@@ -131,12 +148,27 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
             cost["cardHours"] += card_hours
             cost["successfulRuns"].add(fact.run_id)
 
-    daily_queue_rows = [{"date": day, "p50": _percentile(values, .5), "p90": _percentile(values, .9), "samples": len(values), "abandoned": 0} for day, values in sorted(daily_queue.items())]
+    daily_queue_rows = [{
+        "date": day,
+        "p50": _percentile(daily_queue.get(day, []), .5),
+        "p90": _percentile(daily_queue.get(day, []), .9),
+        "samples": len(daily_queue.get(day, [])),
+        "abandoned": 0,
+    } for day in _queue_delay_dates(now)]
+    queue_window_samples = [value for values in daily_queue.values() for value in values]
+    queue_delay_summary = {
+        "startDate": queue_window_start,
+        "endDate": queue_window_end,
+        "p50": _percentile(queue_window_samples, .5),
+        "p90": _percentile(queue_window_samples, .9),
+        "samples": len(queue_window_samples),
+    }
     daily_usage_rows = [{"date": day, "cardHours": round(values["cardHours"], 2), "jobs": int(values["jobs"]), "failedCardHours": round(values["failedCardHours"], 2)} for day, values in sorted(daily_usage.items())]
     pr_cost_rows = [{**cost, "cardHours": round(cost["cardHours"], 2), "allCardHours": round(cost["allCardHours"], 2), "runs": len(cost["runs"]), "successfulRuns": len(cost["successfulRuns"])} for cost in pr_costs.values()]
     return {
         "generatedAt": now.isoformat(), "pools": sorted(pool_rows, key=lambda row: row["name"]),
-        "trend": trend, "dailyQueue": daily_queue_rows, "dailyUsage": daily_usage_rows, "queue": queue_rows,
+        "trend": trend, "dailyQueue": daily_queue_rows, "queueDelaySummary": queue_delay_summary,
+        "dailyUsage": daily_usage_rows, "queue": queue_rows,
         "prCosts": sorted(pr_cost_rows, key=lambda row: row["allCardHours"], reverse=True)[:15],
         "dataQuality": {"matched_jobs": len(matched), "unmatched_jobs": len(facts) - len(matched)},
     }

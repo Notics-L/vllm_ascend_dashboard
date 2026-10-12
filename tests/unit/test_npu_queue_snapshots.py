@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from npu_queue.service import _queue_delay_dates, _queue_delay_window
 from npu_queue.snapshots import current_counts
 
 
@@ -28,3 +29,13 @@ def test_current_counts_separates_waiting_and_running_cards():
         "runningJobs": 1,
         "runningCards": 4,
     }
+
+
+def test_queue_delay_window_uses_seven_beijing_calendar_dates():
+    start, end = _queue_delay_window(datetime(2026, 10, 10, 0, 30, tzinfo=UTC))
+
+    assert (start, end) == ("2026-10-04", "2026-10-10")
+    assert _queue_delay_dates(datetime(2026, 10, 10, 0, 30, tzinfo=UTC)) == [
+        "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07",
+        "2026-10-08", "2026-10-09", "2026-10-10",
+    ]
