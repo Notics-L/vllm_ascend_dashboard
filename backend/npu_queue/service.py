@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.persistence.models import CINpuJobFact
-from npu_queue.snapshots import is_running, is_waiting, physical_running_counts, recent_snapshots
+from npu_queue.snapshots import is_running, is_waiting, physical_queue_state, physical_queue_trend
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -26,6 +26,17 @@ def _beijing_time(value: datetime) -> datetime:
 def _minutes(start: datetime | None, end: datetime | None) -> float | None:
     if not start or not end:
         return None
+    # MySQL returns naive UTC timestamps while live clock values are aware.
+    # Normalize both sides before subtraction so queued jobs cannot break the
+    # complete dashboard response.
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    else:
+        start = start.astimezone(UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    else:
+        end = end.astimezone(UTC)
     return max((end - start).total_seconds() / 60, 0)
 
 
@@ -103,22 +114,64 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
             "state": "short" if wait < 2 else "waiting",
         })
 
-    physical_running = await physical_running_counts(db)
+    physical_state, pending_pods = await physical_queue_state(db)
+    # Current queue pressure is defined by Kubernetes Pending Pods only.  CI
+    # jobs before a Pod exists have no confirmed physical-card demand.
+    pending_by_pool: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for pod in pending_pods:
+        pending_by_pool[str(pod.get("cluster_name") or "未映射资源池")].append(pod)
+
+    pool_rows = [
+        {
+            "key": name,
+            "name": name,
+            "capacity": None,
+            "waitingJobs": len(pods),
+            "waitingCards": round(sum(float(pod.get("npu") or 0) for pod in pods), 2),
+            "runningJobs": 0,
+            "runningCards": 0,
+            "todayCardHours": 0,
+            "queueP50": None,
+            "queueP90": None,
+            "samples": 0,
+            "physicalRunningCards": None,
+            "collectedAt": now.isoformat(),
+        }
+        for name, pods in pending_by_pool.items()
+    ]
+    queue_rows = []
+    for pod in sorted(pending_pods, key=lambda item: str(item.get("created_at") or "")):
+        created_at = pod.get("created_at")
+        created = None
+        if isinstance(created_at, str):
+            try:
+                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        wait = _minutes(created, now) or 0
+        queue_rows.append({
+            "key": f"{pod.get('cluster_id')}/{pod.get('namespace')}/{pod.get('name')}",
+            "waitMinutes": round(wait),
+            "run": "—",
+            "title": pod.get("name") or "",
+            "job": pod.get("name") or "",
+            "repository": pod.get("namespace") or "—",
+            "pool": pod.get("cluster_name") or "未映射资源池",
+            "cards": float(pod.get("npu") or 0),
+            "createdAt": _beijing_time(created).isoformat() if created else "—",
+            "state": "short" if wait < 2 else "waiting",
+        })
     current_point = {
         "timestamp": _beijing_time(now).strftime("%H:%M"),
-        "waitingCards": sum(row.mapped_cards or 0 for row in all_waiting),
-        "runningCards": physical_running["runningCards"],
-        "waitingJobs": len(all_waiting), "runningJobs": physical_running["runningJobs"],
+        "waitingCards": physical_state["waitingCards"],
+        "runningCards": physical_state["runningCards"],
+        "waitingJobs": physical_state["waitingJobs"], "runningJobs": physical_state["runningJobs"],
     }
-    snapshots = await recent_snapshots(db, now=now)
     trend = [{
-        "timestamp": _beijing_time(snapshot.captured_at).strftime("%H:%M"),
-        "waitingCards": snapshot.waiting_cards,
-        "runningCards": snapshot.running_cards,
-        "waitingJobs": snapshot.waiting_jobs,
-        "runningJobs": snapshot.running_jobs,
-    } for snapshot in snapshots]
-    # Snapshots provide the 24h history; retain a live point between two runs.
+        "timestamp": _beijing_time(captured_at).strftime("%H:%M"),
+        **counts,
+    } for captured_at, counts in await physical_queue_trend(db, now=now)]
+    # Retain a live point between two Kubernetes resource collections.
     if not trend or trend[-1] != current_point:
         trend.append(current_point)
     daily_queue: dict[str, list[float]] = defaultdict(list)

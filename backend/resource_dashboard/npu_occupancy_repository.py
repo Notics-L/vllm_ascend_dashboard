@@ -56,7 +56,17 @@ class NpuOccupancyRepository:
     async def load_envs(self) -> tuple[list[dict], datetime | None]:
         async with SessionLocal() as db:
             state = (await db.execute(text("SELECT last_snapshot_at FROM npu_occupancy_sync_state WHERE id=1"))).mappings().first()
-            rows = (await db.execute(text("SELECT payload FROM npu_occupancy_raw_envs"))).mappings().all()
+            rows = (await db.execute(text("""
+                SELECT current.payload
+                FROM npu_occupancy_raw_envs AS current
+                INNER JOIN (
+                    SELECT env_id, MAX(source_updated_at) AS source_updated_at
+                    FROM npu_occupancy_raw_envs
+                    GROUP BY env_id
+                ) AS latest
+                    ON latest.env_id = current.env_id
+                   AND latest.source_updated_at = current.source_updated_at
+            """))).mappings().all()
         envs = [json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"] for row in rows]
         snapshot_at = state["last_snapshot_at"] if state else None
         if snapshot_at is not None and snapshot_at.tzinfo is None:
