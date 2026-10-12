@@ -39,7 +39,7 @@ __all__ = [
     "AppLog", "AnalysisMemory", "AnalysisEmbedding",
     "SchedulerHeartbeat",
     "NpuOccupancyRawEnv", "NpuOccupancySyncState",
-    "CINpuJobFact", "CINpuSyncState",
+    "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
 ]
 
 
@@ -206,6 +206,20 @@ class CINpuJobFact(Base):
         Index("ix_ci_npu_facts_repository_queued", "repository", "queued_at"),
         Index("ix_ci_npu_facts_pool_status", "pool", "status"),
     )
+
+
+class CINpuQueueSnapshot(Base):
+    """Durable current-state samples used for the Queue / Running 24h trend."""
+    __tablename__ = "ci_npu_queue_snapshots"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    captured_at = Column(TIMESTAMP, nullable=False)
+    waiting_jobs = Column(Integer, nullable=False, default=0)
+    waiting_cards = Column(Integer, nullable=False, default=0)
+    running_jobs = Column(Integer, nullable=False, default=0)
+    running_cards = Column(Float, nullable=False, default=0)
+
+    __table_args__ = (Index("ix_ci_npu_queue_snapshots_captured", "captured_at"),)
 
 
 class CINpuSyncState(Base):

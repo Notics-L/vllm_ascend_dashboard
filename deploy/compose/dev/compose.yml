@@ -58,11 +58,13 @@ services:
       AGENT_SERVICE_ENABLED: "false"
       AGENT_PROXY_ONLY: "true"
       AGENT_PROXY_ALLOWED_HOSTS: litellm
+      NPU_DASHBOARD_REPLAY_SNAPSHOT: ${NPU_DASHBOARD_REPLAY_SNAPSHOT:-}
     ports:
       - "${DEV_BACKEND_PORT:-8000}:8000"
     volumes:
       - dev_backend_data:/app/data
       - ../../config-templates/litellm_config.yaml:/app/litellm_config.yaml
+      - ../../../file:/app/replay:ro
     depends_on:
       mysql:
         condition: service_healthy

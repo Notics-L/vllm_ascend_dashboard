@@ -222,6 +222,18 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Failed to add resource metrics collection job: {e}", exc_info=True)
 
+        try:
+            self.scheduler.add_job(
+                self._collect_npu_queue_snapshot_job,
+                trigger=IntervalTrigger(minutes=settings.NPU_QUEUE_SNAPSHOT_INTERVAL_MINUTES),
+                id="npu_queue_snapshot",
+                name="NPU Queue Snapshot",
+                replace_existing=True,
+            )
+            logger.info("NPU queue snapshots scheduled every %d minutes", settings.NPU_QUEUE_SNAPSHOT_INTERVAL_MINUTES)
+        except Exception as e:
+            logger.error("Failed to add NPU queue snapshot job: %s", e, exc_info=True)
+
         # NPU 指标数据清理任务 - 每天凌晨 00:00 执行
         try:
             self.scheduler.add_job(
@@ -234,6 +246,17 @@ class DataSyncScheduler:
             logger.info(f"Resource metrics cleanup scheduled at 00:00 {self._timezone}")
         except Exception as e:
             logger.error(f"Failed to add resource metrics cleanup job: {e}", exc_info=True)
+
+        try:
+            self.scheduler.add_job(
+                self._cleanup_npu_queue_snapshots_job,
+                trigger=CronTrigger(hour=0, minute=10, timezone=self._timezone),
+                id="npu_queue_snapshot_cleanup",
+                name="NPU Queue Snapshot Cleanup",
+                replace_existing=True,
+            )
+        except Exception as e:
+            logger.error("Failed to add NPU queue snapshot cleanup job: %s", e, exc_info=True)
 
         # 失败分析不在 Scheduler 内执行；Collector 在 CI/Nightly 数据物化后
         # 将新失败任务作为 durable failure_analysis 任务入队。
@@ -995,6 +1018,18 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued resource metrics collection task %d", task_id)
 
+    async def _collect_npu_queue_snapshot_job(self) -> None:
+        from infrastructure.tasks.task_manager import TaskManager
+
+        dedupe_key = f"npu_queue_snapshot:{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M')}"
+        async with SessionLocal() as db:
+            task_id = await TaskManager.create_task(
+                db, "npu_queue_snapshot", {}, dedupe_key, required_capability="python"
+            )
+            await db.commit()
+        if task_id:
+            logger.info("Queued NPU queue snapshot task %d", task_id)
+
     async def _cleanup_resource_metrics_job(self) -> None:
         """Queue resource metric retention cleanup for Collector execution."""
         from infrastructure.tasks.task_manager import TaskManager
@@ -1011,6 +1046,18 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued resource metrics cleanup task %d", task_id)
+
+    async def _cleanup_npu_queue_snapshots_job(self) -> None:
+        from infrastructure.tasks.task_manager import TaskManager
+
+        dedupe_key = f"npu_queue_snapshot_cleanup:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+        async with SessionLocal() as db:
+            task_id = await TaskManager.create_task(
+                db, "npu_queue_snapshot_cleanup", {}, dedupe_key, required_capability="python"
+            )
+            await db.commit()
+        if task_id:
+            logger.info("Queued NPU queue snapshot cleanup task %d", task_id)
 
     async def _parse_test_results_job(self) -> None:
         """Queue test-board parsing; Collector owns GitHub I/O and writes."""

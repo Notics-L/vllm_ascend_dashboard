@@ -48,6 +48,87 @@ class _FakeSession:
         self.commit_count += 1
 
 
+class _LockResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one(self):
+        return self.value
+
+
+class _LockConnection:
+    def __init__(self, acquired: int):
+        self.acquired = acquired
+        self.operations = []
+
+    async def execute(self, statement, _params):
+        sql = str(statement)
+        self.operations.append(sql)
+        return _LockResult(self.acquired if "GET_LOCK" in sql else 1)
+
+
+class _LockConnectionContext:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _LockEngine:
+    def __init__(self, acquired: int):
+        self.connection = _LockConnection(acquired)
+
+    def connect(self):
+        return _LockConnectionContext(self.connection)
+
+
+class _BoundFakeSession:
+    def __init__(self, acquired: int):
+        self.bind = _LockEngine(acquired)
+
+
+def test_sync_skips_when_another_worker_holds_the_materialization_lock():
+    collector = NightlyDataCollector(_BoundFakeSession(acquired=0))
+
+    async def should_not_run():
+        raise AssertionError("locked synchronization must not write data")
+
+    collector.snapshot_configs = should_not_run
+    collector.populate_daily_failure_records = should_not_run
+
+    assert asyncio.run(collector.sync()) == {
+        "nightly_test_cases": 0,
+        "daily_failure_records": 0,
+    }
+    assert len(collector.db.bind.connection.operations) == 1
+    assert "GET_LOCK" in collector.db.bind.connection.operations[0]
+
+
+def test_sync_releases_materialization_lock_after_writes():
+    collector = NightlyDataCollector(_BoundFakeSession(acquired=1))
+
+    async def snapshot_configs():
+        return 4
+
+    async def populate_daily_failure_records():
+        return 2
+
+    collector.snapshot_configs = snapshot_configs
+    collector.populate_daily_failure_records = populate_daily_failure_records
+
+    assert asyncio.run(collector.sync()) == {
+        "nightly_test_cases": 4,
+        "daily_failure_records": 2,
+    }
+    operations = collector.db.bind.connection.operations
+    assert "GET_LOCK" in operations[0]
+    assert "RELEASE_LOCK" in operations[-1]
+
+
 def test_match_snapshot_prefers_exact_report_date():
     old = _snapshot(
         report_date="2026-08-13",

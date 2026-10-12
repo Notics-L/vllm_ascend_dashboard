@@ -24,6 +24,10 @@ sys.path.insert(0, str(application_root))
 
 from database.bootstrap import create_tables_with_latest_schema
 from database.migrations.ci_npu_facts import run as migrate_ci_npu_facts
+from database.migrations.ci_npu_queue_snapshot_physical_running import (
+    run as migrate_ci_npu_queue_snapshot_physical_running,
+)
+from database.migrations.ci_npu_queue_snapshots import run as migrate_ci_npu_queue_snapshots
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
 from database.migrations.npu_occupancy import run as migrate_npu_occupancy
@@ -55,6 +59,8 @@ async def migrate() -> None:
     await migrate_process_runtime()
     await migrate_npu_occupancy()
     await migrate_ci_npu_facts()
+    await migrate_ci_npu_queue_snapshots()
+    await migrate_ci_npu_queue_snapshot_physical_running()
     test_board_result = await migrate_test_board_data()
     users_after = await _user_count()
     if users_after != users_before:
