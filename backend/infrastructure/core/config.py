@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     RESOURCE_METRICS_REMOTE_PASSWORD: str = ""
     RESOURCE_METRICS_REMOTE_TIMEOUT_SECONDS: int = 60
 
+    # Development-only dashboard replay.  When explicitly configured, the
+    # resource and NPU queue endpoints return a captured, sanitized response
+    # instead of contacting Kubernetes or relying on local CI data.
+    NPU_DASHBOARD_REPLAY_SNAPSHOT: str = ""
+    NPU_QUEUE_SNAPSHOT_INTERVAL_MINUTES: int = 5
+    NPU_QUEUE_SNAPSHOT_RETENTION_DAYS: int = 14
+
     NPU_OCCUPANCY_UPSTREAM_URL: str = "https://pod-history-api.test.osinfra.cn/api/v1/envs/history"
     NPU_OCCUPANCY_TIMEOUT_SECONDS: int = 180
     NPU_OCCUPANCY_VERIFY_TLS: bool = True

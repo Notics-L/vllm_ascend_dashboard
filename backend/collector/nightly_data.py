@@ -13,7 +13,7 @@ import logging
 import re
 from datetime import UTC, date, datetime, timedelta, timezone
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from collector.ci import CICollector
@@ -44,6 +44,7 @@ from tooling.parsers.nightly_config_parser import (
 logger = logging.getLogger(__name__)
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+_SYNC_LOCK_NAME = "vllm_dashboard:nightly_data_sync"
 
 
 class NightlyDataCollector:
@@ -67,14 +68,34 @@ class NightlyDataCollector:
         return cache
 
     async def sync(self) -> dict[str, int]:
-        """Run both stages in dependency order and return row counts."""
+        """Run both stages once globally, even when CI and scheduler overlap."""
 
-        snapshot_count = await self.snapshot_configs()
-        failure_count = await self.populate_daily_failure_records()
-        return {
-            "nightly_test_cases": snapshot_count,
-            "daily_failure_records": failure_count,
-        }
+        # GET_LOCK is connection-scoped. Hold it on a dedicated connection so
+        # commits performed by the working session cannot accidentally release
+        # it before daily_failure_records materialization has finished.
+        engine = self.db.bind
+        if engine is None:
+            raise RuntimeError("Nightly data synchronization requires a bound database engine")
+        async with engine.connect() as lock_connection:
+            acquired = (await lock_connection.execute(
+                text("SELECT GET_LOCK(:lock_name, 0)"),
+                {"lock_name": _SYNC_LOCK_NAME},
+            )).scalar_one()
+            if acquired != 1:
+                logger.info("Nightly data synchronization skipped: another worker holds the lock")
+                return {"nightly_test_cases": 0, "daily_failure_records": 0}
+            try:
+                snapshot_count = await self.snapshot_configs()
+                failure_count = await self.populate_daily_failure_records()
+                return {
+                    "nightly_test_cases": snapshot_count,
+                    "daily_failure_records": failure_count,
+                }
+            finally:
+                await lock_connection.execute(
+                    text("SELECT RELEASE_LOCK(:lock_name)"),
+                    {"lock_name": _SYNC_LOCK_NAME},
+                )
 
     async def snapshot_configs(self) -> int:
         """Snapshot active branches from ``nightly_config.yaml``."""

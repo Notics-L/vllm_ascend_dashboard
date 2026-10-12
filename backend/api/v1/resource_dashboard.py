@@ -16,6 +16,7 @@ from contracts.schemas import (
 from infrastructure.clients.kubernetes_client import encrypt_kubeconfig
 from infrastructure.core.config import settings
 from infrastructure.persistence.models import KubernetesClusterConfig
+from npu_queue.replay import load_dashboard_replay
 from resource_dashboard.metrics_query import PersistedResourceMetricsService
 from resource_dashboard.service import ResourceDashboardService
 
@@ -39,6 +40,9 @@ async def _get_cluster(db: DbSession, cluster_id: int) -> KubernetesClusterConfi
 
 @router.get("/clusters/enabled", response_model=list[KubernetesClusterResponse])
 async def list_enabled_clusters(db: DbSession, current_user: CurrentUser):
+    replay = load_dashboard_replay()
+    if replay:
+        return [cluster for cluster in replay["clusterConfig"] if cluster.get("enabled")]
     stmt = (
         select(KubernetesClusterConfig)
         .where(KubernetesClusterConfig.enabled.is_(True))
@@ -56,6 +60,10 @@ async def get_resource_dashboard(
     label_selector: str | None = None,
     include_pods: bool = True,
 ):
+    replay = load_dashboard_replay()
+    if replay:
+        return replay["resourceSummary"]
+
     stmt = select(KubernetesClusterConfig).where(KubernetesClusterConfig.enabled.is_(True))
     if cluster_ids:
         stmt = stmt.where(KubernetesClusterConfig.id.in_(cluster_ids))
@@ -110,6 +118,9 @@ async def get_cluster_summary(
 
 @router.get("/clusters", response_model=list[KubernetesClusterResponse])
 async def list_clusters(db: DbSession, current_user: CurrentAdminUser):
+    replay = load_dashboard_replay()
+    if replay:
+        return replay["clusterConfig"]
     stmt = select(KubernetesClusterConfig).order_by(
         KubernetesClusterConfig.display_order.asc(),
         KubernetesClusterConfig.name.asc(),

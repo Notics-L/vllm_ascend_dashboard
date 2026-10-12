@@ -146,6 +146,10 @@ class CollectorRunner:
                 await self._run_resource_metrics_collect(ctx)
             elif task_type == "resource_metrics_cleanup":
                 await self._run_resource_metrics_cleanup(ctx)
+            elif task_type == "npu_queue_snapshot":
+                await self._run_npu_queue_snapshot(ctx)
+            elif task_type == "npu_queue_snapshot_cleanup":
+                await self._run_npu_queue_snapshot_cleanup(ctx)
             elif task_type == "repo_cache_refresh":
                 await self._run_repo_cache_refresh(ctx, task_params)
             else:
@@ -512,6 +516,21 @@ class CollectorRunner:
         async with SessionLocal() as db:
             deleted = await ResourceMetricsCollector(db).cleanup_old_metrics()
         logger.info("Resource metrics cleanup task %d deleted %d rows", ctx.task_id, deleted)
+
+    async def _run_npu_queue_snapshot(self, ctx: TaskContext):
+        """Persist the current CI-derived queue state for the 24h trend."""
+        from npu_queue.snapshots import collect_current_snapshot
+
+        async with SessionLocal() as db:
+            snapshot = await collect_current_snapshot(db)
+        logger.info("NPU queue snapshot task %d captured at %s", ctx.task_id, snapshot.captured_at)
+
+    async def _run_npu_queue_snapshot_cleanup(self, ctx: TaskContext):
+        from npu_queue.snapshots import cleanup_snapshots
+
+        async with SessionLocal() as db:
+            deleted = await cleanup_snapshots(db, retention_days=settings.NPU_QUEUE_SNAPSHOT_RETENTION_DAYS)
+        logger.info("NPU queue snapshot cleanup task %d deleted %d rows", ctx.task_id, deleted)
 
     async def _run_issues_derivation(self, ctx: TaskContext):
         """Derive test-board issue counts from durable worker execution."""
