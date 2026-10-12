@@ -133,6 +133,8 @@ class ClusterResourceSummary(BaseModel):
     available: ResourceQuantity
     running_instances: int = 0
     executing_pods_count: int = 0
+    pending_pods_count: int = 0
+    pending_npu: float = 0
     executed_pods_count: int = 0
     node_resources: list[ResourceNodeInfo] = Field(default_factory=list)
     executing_pods: list[ResourcePodInfo] = Field(default_factory=list)

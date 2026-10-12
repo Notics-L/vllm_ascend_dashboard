@@ -152,6 +152,7 @@ class PersistedResourceMetricsService:
                 for row in nodes
             ]
             pods = self._pods(npu, include_pods)
+            pending_pods = [pod for pod in pods if pod.phase == "Pending"]
             node_total_cpu = sum(row.cpu_cores_total or 0 for row in nodes)
             node_used_cpu = sum(row.cpu_cores_used or 0 for row in nodes)
             node_available_cpu = sum(row.cpu_cores_available or 0 for row in nodes)
@@ -184,6 +185,8 @@ class PersistedResourceMetricsService:
                         npu=node_available_npu,
                     ),
                     executing_pods_count=npu.executing_pods_count or 0,
+                    pending_pods_count=len(pending_pods),
+                    pending_npu=sum(pod.requests.npu for pod in pending_pods),
                     node_resources=node_resources,
                     executing_pods=pods,
                     scope={
@@ -223,6 +226,8 @@ class PersistedResourceMetricsService:
         available = ResourceQuantity()
         running = 0
         executing = 0
+        pending = 0
+        pending_npu = 0.0
         for summary in summaries:
             if summary.error:
                 continue
@@ -237,6 +242,8 @@ class PersistedResourceMetricsService:
             available.npu += summary.available.npu
             running += summary.running_instances
             executing += summary.executing_pods_count
+            pending += summary.pending_pods_count
+            pending_npu += summary.pending_npu
         return ClusterResourceSummary(
             cluster_id=0,
             cluster_name="Total",
@@ -245,6 +252,8 @@ class PersistedResourceMetricsService:
             available=available,
             running_instances=running,
             executing_pods_count=executing,
+            pending_pods_count=pending,
+            pending_npu=pending_npu,
             scope={"source": "persisted_remote_metrics", "all_clusters": True},
         )
 

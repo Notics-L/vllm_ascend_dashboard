@@ -80,6 +80,7 @@ class ResourceMetricsCollector:
                             "pr_number": pod.pr_number,
                             "pr_url": pod.pr_url,
                             "phase": pod.phase,
+                            "created_at": pod.created_at.isoformat() if pod.created_at else None,
                         }
                         for pod in resource_pods
                     ],

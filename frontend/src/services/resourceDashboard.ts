@@ -70,6 +70,8 @@ export interface ClusterResourceSummary {
   available: ResourceQuantity
   running_instances: number
   executing_pods_count: number
+  pending_pods_count?: number
+  pending_npu?: number
   executed_pods_count: number
   node_resources: ResourceNodeInfo[]
   executing_pods: ResourcePodInfo[]

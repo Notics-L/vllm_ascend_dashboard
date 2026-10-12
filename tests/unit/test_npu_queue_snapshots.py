@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from npu_queue.service import _queue_delay_dates, _queue_delay_window
-from npu_queue.snapshots import current_counts
+from npu_queue.service import _minutes, _queue_delay_dates, _queue_delay_window
+from npu_queue.snapshots import current_counts, physical_queue_state_from_metrics
 
 
 def _fact(*, status: str, cards: int, started_at=None, completed_at=None):
@@ -29,6 +29,38 @@ def test_current_counts_separates_waiting_and_running_cards():
         "runningJobs": 1,
         "runningCards": 4,
     }
+
+
+def test_physical_queue_state_counts_only_kubernetes_pending_pods():
+    metrics = [
+        SimpleNamespace(
+            cluster_id=1,
+            cluster_name="A3",
+            npu_used=32,
+            executing_pods_count=4,
+            top_pods_json=[
+                {"name": "pending-a", "phase": "Pending", "npu": 16},
+                {"name": "running-a", "phase": "Running", "npu": 8},
+            ],
+        )
+    ]
+
+    counts, pending = physical_queue_state_from_metrics(metrics)
+
+    assert counts == {
+        "waitingJobs": 1,
+        "waitingCards": 16,
+        "runningJobs": 4,
+        "runningCards": 32,
+    }
+    assert [pod["name"] for pod in pending] == ["pending-a"]
+
+
+def test_queue_duration_accepts_mysql_naive_timestamps() -> None:
+    assert _minutes(
+        datetime(2026, 10, 10, 6, 0),
+        datetime(2026, 10, 10, 6, 5, tzinfo=UTC),
+    ) == 5
 
 
 def test_queue_delay_window_uses_seven_beijing_calendar_dates():

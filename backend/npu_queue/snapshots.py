@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, delete, func, select
@@ -60,11 +61,55 @@ async def physical_running_counts(db: AsyncSession) -> dict[str, float | int]:
     }
 
 
+async def physical_queue_state(db: AsyncSession) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
+    """Read both Pending and Running demand from the same Kubernetes snapshot."""
+    latest_by_cluster = (
+        select(ResourceNpuMetrics.cluster_id, func.max(ResourceNpuMetrics.collected_at).label("collected_at"))
+        .group_by(ResourceNpuMetrics.cluster_id)
+        .subquery()
+    )
+    rows = list((await db.scalars(select(ResourceNpuMetrics).join(
+        latest_by_cluster,
+        and_(ResourceNpuMetrics.cluster_id == latest_by_cluster.c.cluster_id, ResourceNpuMetrics.collected_at == latest_by_cluster.c.collected_at),
+    ))).all())
+    return physical_queue_state_from_metrics(rows)
+
+
+def physical_queue_state_from_metrics(rows: Iterable[ResourceNpuMetrics]) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
+    """Aggregate a single Kubernetes resource-metrics collection."""
+    metrics = list(rows)
+    pending = [
+        {**pod, "cluster_id": row.cluster_id, "cluster_name": row.cluster_name}
+        for row in metrics for pod in (row.top_pods_json or [])
+        if isinstance(pod, dict) and pod.get("phase") == "Pending"
+    ]
+    return ({
+        "waitingJobs": len(pending),
+        "waitingCards": round(sum(float(pod.get("npu") or 0) for pod in pending), 2),
+        "runningJobs": sum(row.executing_pods_count or 0 for row in metrics),
+        "runningCards": round(sum(row.npu_used or 0 for row in metrics), 2),
+    }, pending)
+
+
+async def physical_queue_trend(db: AsyncSession, *, now: datetime, hours: int = 24) -> list[tuple[datetime, dict[str, float | int]]]:
+    """Build Queue / Running history solely from Kubernetes resource snapshots."""
+    rows = list((await db.scalars(
+        select(ResourceNpuMetrics)
+        .where(ResourceNpuMetrics.collected_at >= now - timedelta(hours=hours))
+        .order_by(ResourceNpuMetrics.collected_at.asc())
+    )).all())
+    grouped: dict[datetime, list[ResourceNpuMetrics]] = {}
+    for row in rows:
+        grouped.setdefault(row.collected_at, []).append(row)
+    return [
+        (captured_at, physical_queue_state_from_metrics(metrics)[0])
+        for captured_at, metrics in grouped.items()
+    ]
+
+
 async def collect_current_snapshot(db: AsyncSession, *, captured_at: datetime | None = None) -> CINpuQueueSnapshot:
-    facts = list((await db.scalars(select(CINpuJobFact))).all())
-    counts = current_counts(facts)
-    # Queue demand is sourced from CI; actual running load is sourced from Kubernetes.
-    counts.update(await physical_running_counts(db))
+    # Queue and running counts must share the Kubernetes snapshot source.
+    counts, _ = await physical_queue_state(db)
     snapshot = CINpuQueueSnapshot(
         captured_at=captured_at or datetime.now(UTC),
         waiting_jobs=counts["waitingJobs"],

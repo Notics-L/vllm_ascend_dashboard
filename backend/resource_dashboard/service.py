@@ -20,7 +20,8 @@ from infrastructure.clients.kubernetes_client import (
 from infrastructure.core.config import settings
 from infrastructure.persistence.models import KubernetesClusterConfig
 
-EXECUTING_PHASES = {"Pending", "Running", "Unknown"}
+ACTIVE_PHASES = {"Running", "Unknown"}
+PENDING_PHASES = {"Pending"}
 EXECUTED_PHASES = {"Succeeded", "Failed"}
 RESOURCE_DASHBOARD_NAMESPACE = "vllm-project"
 
@@ -118,6 +119,7 @@ class ResourceDashboardService:
         node_resources = self._build_node_resources(nodes, cluster.npu_resource_name)
         used = ResourceQuantity()
         running_instances = 0
+        pending_pods = []
         executing_infos: list[ResourcePodInfo] = []
         executed_infos: list[ResourcePodInfo] = []
 
@@ -133,11 +135,15 @@ class ResourceDashboardService:
                 running_instances += 1
                 if node_resource:
                     node_resource.running_instances += 1
-            if phase in EXECUTING_PHASES:
+            if phase in ACTIVE_PHASES:
                 used = self._add_quantity(used, pod_requests)
                 if node_resource:
                     node_resource.used = self._add_quantity(node_resource.used, pod_requests)
                     node_resource.executing_pods_count += 1
+                if include_pods:
+                    executing_infos.append(self._pod_info(cluster, pod, pod_requests, runner_pr_info))
+            elif phase in PENDING_PHASES:
+                pending_pods.append(pod)
                 if include_pods:
                     executing_infos.append(self._pod_info(cluster, pod, pod_requests, runner_pr_info))
             elif phase in EXECUTED_PHASES and include_pods:
@@ -154,7 +160,9 @@ class ResourceDashboardService:
                 npu=max(total.npu - used.npu, 0),
             ),
             running_instances=running_instances,
-            executing_pods_count=len([pod for pod in visible_pods if pod.status and pod.status.phase in EXECUTING_PHASES]),
+            executing_pods_count=len([pod for pod in visible_pods if pod.status and pod.status.phase in ACTIVE_PHASES]),
+            pending_pods_count=len(pending_pods),
+            pending_npu=sum(self._pod_requests(pod, cluster.npu_resource_name).npu for pod in pending_pods),
             executed_pods_count=len([pod for pod in visible_pods if pod.status and pod.status.phase in EXECUTED_PHASES]),
             node_resources=self._finalize_node_resources(node_resources),
             executing_pods=executing_infos,
@@ -181,6 +189,8 @@ class ResourceDashboardService:
         available = ResourceQuantity()
         running_instances = 0
         executing_count = 0
+        pending_count = 0
+        pending_npu = 0.0
         executed_count = 0
 
         for summary in summaries:
@@ -191,6 +201,8 @@ class ResourceDashboardService:
             available = self._add_quantity(available, summary.available)
             running_instances += summary.running_instances
             executing_count += summary.executing_pods_count
+            pending_count += summary.pending_pods_count
+            pending_npu += summary.pending_npu
             executed_count += summary.executed_pods_count
 
         return ClusterResourceSummary(
@@ -201,6 +213,8 @@ class ResourceDashboardService:
             available=available,
             running_instances=running_instances,
             executing_pods_count=executing_count,
+            pending_pods_count=pending_count,
+            pending_npu=pending_npu,
             executed_pods_count=executed_count,
             scope={"all_clusters": True},
         )
