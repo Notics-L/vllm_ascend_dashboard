@@ -38,6 +38,7 @@ env/
 
 # Testing
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 .tox/
@@ -206,6 +207,9 @@ docs/failure-analysis-agent-design.md
 
 # plan
 工作与计划/
+
+# file
+file/
 
 # dataset_backup
 backups/
