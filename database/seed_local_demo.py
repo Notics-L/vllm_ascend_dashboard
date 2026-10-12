@@ -15,13 +15,15 @@ import asyncio
 import json
 import logging
 import os
+import random
 import sys
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 repository_root = Path(__file__).resolve().parents[1]
@@ -76,6 +78,12 @@ from infrastructure.persistence.models import (
     User,
     UserLoginLog,
     WorkflowConfig,
+    Contributor,
+    ContributorMetrics,
+    CommitClassification,
+    ErrorRecord,
+    ImageBuildPlan,
+    QuadrantSnapshot,
 )
 from infrastructure.storage.failure_analysis_file_store import FailureAnalysisFileStore
 
@@ -84,6 +92,288 @@ logger = logging.getLogger("seed_local_demo")
 
 DEMO_MARKER = "local-demo-v1"
 DEMO_PREFIX = "[local-demo]"
+
+# Contributor board mock data constants
+random.seed(42)
+
+_CB_MODULES = ["csrc", "attention", "MoE", "EPLB", "MRV2", "decoder", "scheduler", "kv_cache", "tokenizer", "config"]
+_CB_COMMIT_TYPES = ["BugFix", "Feature", "Performance", "Doc", "Test", "Refactor", "CI", "Misc"]
+_CB_COMMIT_TYPE_WEIGHTS = [30, 25, 10, 15, 8, 5, 3, 4]
+
+_CB_COMMIT_MESSAGES = {
+    "BugFix": [
+        "fix(attention): correct kernel launch config for A5",
+        "fix(kv_cache): handle edge case in cache eviction",
+        "fix: resolve OOM on 910B with large batch",
+        "fix(MoE): balance expert load across NPU",
+        "fix: correct dtype handling for w8a8 models",
+    ],
+    "Feature": [
+        "feat(EPLB): add speculative decoding support",
+        "feat: support Qwen3-235B on A5",
+        "feat(scheduler): implement dynamic batch sizing",
+        "feat: add FP8 quantization pipeline",
+        "feat(MRV2): implement new attention backend",
+    ],
+    "Performance": [
+        "perf(attention): optimize 310P memory copy",
+        "perf: reduce kernel launch overhead by 15%",
+        "perf(kv_cache): use shared memory for small blocks",
+        "perf: batch tokenization for high-throughput",
+    ],
+    "Doc": [
+        "docs: add A5 hardware setup guide",
+        "docs: update performance benchmark results",
+        "docs: fix typo in README",
+    ],
+    "Test": [
+        "test: add e2e test for MoE routing",
+        "test(ci): add 310P nightly coverage",
+        "test: improve flaky test reliability",
+    ],
+    "Refactor": [
+        "refactor(scheduler): simplify batch allocation logic",
+        "refactor: extract common kernel utilities",
+    ],
+    "CI": [
+        "ci: update runner image to v2024.10",
+        "ci: add 910C testing stage",
+    ],
+    "Misc": [
+        "chore: update dependency versions",
+        "misc: cleanup unused imports",
+    ],
+}
+
+_CB_BUILD_TYPES = ["full_build", "minimal_build", "nightly_only", "skip", "smart_check", "conservative"]
+_CB_BUILD_WEIGHTS = [25, 20, 15, 15, 15, 10]
+
+_CB_CONTRIBUTORS = [
+    # INCENTIVE - Star contributors
+    {"login": "ykato", "name": "Yushi Kato", "github_id": 1001, "is_community": True, "company": "Sony", "quadrant": "INCENTIVE"},
+    {"login": "adam", "name": "Adam", "github_id": 1002, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    {"login": "xwjiang", "name": "Xiangwang Jiang", "github_id": 1003, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    {"login": "hjiang", "name": "Hexiang Jiang", "github_id": 1004, "is_community": True, "company": "Stanford", "quadrant": "INCENTIVE"},
+    {"login": "david", "name": "David Wu", "github_id": 1005, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    # INCENTIVE - Active contributors
+    {"login": "jiasenli", "name": "Jiachen Lin", "github_id": 1006, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    {"login": "michael", "name": "Michael Zhang", "github_id": 1007, "is_community": True, "company": "NVIDIA", "quadrant": "INCENTIVE"},
+    {"login": "alicechen", "name": "Alice Chen", "github_id": 1008, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    {"login": "bobwang", "name": "Bob Wang", "github_id": 1009, "is_community": False, "company": "Huawei", "quadrant": "INCENTIVE"},
+    {"login": "carolliu", "name": "Carol Liu", "github_id": 1010, "is_community": True, "company": "Tsinghua", "quadrant": "INCENTIVE"},
+    # IMPROVE - High contrib, high error
+    {"login": "erranddev1", "name": "Errand Dev 1", "github_id": 1011, "is_community": True, "company": "Community", "quadrant": "IMPROVE"},
+    {"login": "erranddev2", "name": "Errand Dev 2", "github_id": 1012, "is_community": True, "company": "Alibaba", "quadrant": "IMPROVE"},
+    {"login": "erranddev3", "name": "Errand Dev 3", "github_id": 1013, "is_community": True, "company": "Baidu", "quadrant": "IMPROVE"},
+    {"login": "erranddev4", "name": "Errand Dev 4", "github_id": 1014, "is_community": True, "company": "Tencent", "quadrant": "IMPROVE"},
+    # ENCOURAGE - Low contrib, low error
+    {"login": "newbie1", "name": "Newbie Dev 1", "github_id": 1015, "is_community": True, "company": "Student", "quadrant": "ENCOURAGE"},
+    {"login": "newbie2", "name": "Newbie Dev 2", "github_id": 1016, "is_community": True, "company": "Community", "quadrant": "ENCOURAGE"},
+    {"login": "newbie3", "name": "Newbie Dev 3", "github_id": 1017, "is_community": True, "company": "Student", "quadrant": "ENCOURAGE"},
+    {"login": "newbie4", "name": "Newbie Dev 4", "github_id": 1018, "is_community": True, "company": "Community", "quadrant": "ENCOURAGE"},
+    # REPLACE - Low contrib, high error
+    {"login": "toxicdev1", "name": "Toxic Dev 1", "github_id": 1019, "is_community": True, "company": "External", "quadrant": "REPLACE"},
+    {"login": "toxicdev2", "name": "Toxic Dev 2", "github_id": 1020, "is_community": True, "company": "External", "quadrant": "REPLACE"},
+]
+
+
+def _cb_detect_roles(merged, reviews, approvals, merges, additions):
+    roles = []
+    if merged > 0 or additions > 0:
+        roles.append("developer")
+    if reviews >= 3:
+        roles.append("reviewer")
+    if merges >= 5:
+        roles.append("maintainer")
+    if not roles:
+        roles.append("developer")
+    return roles
+
+
+def _cb_generate_sha():
+    return uuid.uuid4().hex[:40]
+
+
+def _cb_monthly_metrics(quadrant):
+    profiles = {
+        "INCENTIVE": {"pr": (5, 15), "code": (500, 3000), "review": (10, 40), "approval": (5, 20), "merge": (3, 15), "error": (0, 1), "core": (2, 8)},
+        "IMPROVE": {"pr": (5, 12), "code": (400, 2000), "review": (5, 20), "approval": (2, 10), "merge": (1, 5), "error": (3, 8), "core": (1, 5)},
+        "ENCOURAGE": {"pr": (0, 3), "code": (0, 200), "review": (0, 5), "approval": (0, 2), "merge": (0, 1), "error": (0, 1), "core": (0, 2)},
+        "REPLACE": {"pr": (0, 3), "code": (0, 200), "review": (0, 3), "approval": (0, 1), "merge": (0, 1), "error": (4, 10), "core": (0, 1)},
+    }
+    p = profiles[quadrant]
+    today = date.today()
+    metrics = []
+    for i in range(6, 0, -1):
+        end = min(today, today.replace(day=1) - timedelta(days=(i - 1) * 30))
+        start = end - timedelta(days=29)
+        pr = random.randint(*p["pr"])
+        code = random.randint(*p["code"])
+        review = random.randint(*p["review"])
+        approval = random.randint(*p["approval"])
+        merge = random.randint(*p["merge"])
+        error = round(random.uniform(*p["error"]), 2)
+        core = random.randint(*p["core"])
+        score = round(pr * 10.0 + code * 0.5 + review * 3.0 + approval * 5.0 + core * 8.0, 2)
+        metrics.append({
+            "period_start": start,
+            "period_end": end,
+            "merged_pr_count": pr,
+            "code_additions": code,
+            "code_deletions": random.randint(0, code // 2),
+            "review_count": review,
+            "approval_count": approval,
+            "merge_count": merge,
+            "core_module_count": core,
+            "closed_pr_count": random.randint(0, 2),
+            "contribution_score": score,
+            "error_score": error,
+            "quadrant": quadrant,
+        })
+    return metrics
+
+
+async def seed_contributor_board(db: Any, now: datetime) -> None:
+    """Seed contributor board mock data into the existing database."""
+    today = date.today()
+    six_months_ago = today - timedelta(days=180)
+    contributor_map: dict[str, Contributor] = {}
+
+    # 1) Create contributors
+    for c in _CB_CONTRIBUTORS:
+        existing = await db.execute(select(Contributor).where(Contributor.github_id == c["github_id"]))
+        row = existing.scalar_one_or_none()
+        if row:
+            contributor_map[c["login"]] = row
+            continue
+        contrib = Contributor(
+            github_id=c["github_id"],
+            login=c["login"],
+            avatar_url=f"https://avatars.githubusercontent.com/u/{c['github_id']}",
+            email=f"{c['login']}@example.com",
+            name=c["name"],
+            is_community=c["is_community"],
+            role_types=[],
+            company=c["company"],
+            first_contribution_at=datetime.combine(six_months_ago, datetime.min.time(), tzinfo=UTC),
+            last_contribution_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(contrib)
+        contributor_map[c["login"]] = contrib
+
+    await db.flush()
+    logger.info("  contributor_board: %d contributors", len(contributor_map))
+
+    # 2) Metrics + CommitClassifications
+    metrics_count = 0
+    commits_count = 0
+    for c_info in _CB_CONTRIBUTORS:
+        login = c_info["login"]
+        contrib = contributor_map[login]
+        for m in _cb_monthly_metrics(c_info["quadrant"]):
+            existing = await db.execute(
+                select(ContributorMetrics).where(
+                    ContributorMetrics.contributor_login == login,
+                    ContributorMetrics.period_start == m["period_start"],
+                    ContributorMetrics.period_end == m["period_end"],
+                )
+            )
+            if existing.scalar_one_or_none():
+                continue
+            db.add(ContributorMetrics(
+                contributor_id=contrib.id,
+                contributor_login=login,
+                **m,
+            ))
+            metrics_count += 1
+
+            # Generate commit classifications
+            for _ in range(max(1, m["merged_pr_count"])):
+                ctype = random.choices(_CB_COMMIT_TYPES, weights=_CB_COMMIT_TYPE_WEIGHTS, k=1)[0]
+                is_chip = random.random() < 0.15
+                db.add(CommitClassification(
+                    commit_sha=_cb_generate_sha(),
+                    commit_message=random.choice(_CB_COMMIT_MESSAGES.get(ctype, ["misc"])),
+                    commit_type=ctype,
+                    confidence=round(random.uniform(0.8, 1.0), 2),
+                    modules_touched=random.sample(_CB_MODULES, k=random.randint(1, 3)),
+                    files_changed_count=random.randint(1, 20),
+                    is_chip_specific=is_chip,
+                    chip_target=random.choice(["910B", "910C", "310P", "A5"]) if is_chip else None,
+                    contributor_login=login,
+                    pr_number=random.randint(1, 500),
+                    created_at=datetime.combine(
+                        m["period_start"] + timedelta(days=random.randint(0, 28)),
+                        datetime.min.time(),
+                        tzinfo=UTC,
+                    ),
+                ))
+                commits_count += 1
+
+    await db.flush()
+    logger.info("  contributor_board: %d metrics, %d classifications", metrics_count, commits_count)
+
+    # 3) ErrorRecords
+    error_count = 0
+    for c_info in _CB_CONTRIBUTORS:
+        if c_info["quadrant"] not in ("IMPROVE", "REPLACE"):
+            continue
+        for _ in range(random.randint(2, 6 if c_info["quadrant"] == "IMPROVE" else 8)):
+            db.add(ErrorRecord(
+                contributor_login=c_info["login"],
+                error_type="revert",
+                related_pr_number=random.randint(1, 500),
+                related_commit_sha=_cb_generate_sha(),
+                revert_count=1,
+                ci_failure_count=random.randint(0, 2),
+                nightly_failure_count=random.randint(0, 1),
+                weight_score=5.0,
+                description=f'Revert "{random.choice(_CB_COMMIT_MESSAGES["Feature"])}"',
+            ))
+            error_count += 1
+    logger.info("  contributor_board: %d error records", error_count)
+
+    # 4) BuildPlans
+    bp_count = 0
+    for c_info in _CB_CONTRIBUTORS:
+        for _ in range(random.randint(3, 8)):
+            db.add(ImageBuildPlan(
+                pr_number=random.randint(1, 500),
+                commit_sha=_cb_generate_sha(),
+                commit_type=random.choice(_CB_COMMIT_TYPES),
+                build_type=random.choices(_CB_BUILD_TYPES, weights=_CB_BUILD_WEIGHTS, k=1)[0],
+                chips=random.sample(["910B", "910C", "310P", "A5"], k=random.randint(1, 2)),
+                os_list=["ubuntu22.04"],
+                cache_strategy=random.choice(["layer_cache", "full_rebuild", "smart_cache"]),
+                estimated_saving_percent=round(random.uniform(0, 80), 1),
+                actual_execution=random.random() < 0.7,
+                created_at=now - timedelta(days=random.randint(1, 180)),
+            ))
+            bp_count += 1
+    logger.info("  contributor_board: %d build plans", bp_count)
+
+    # 5) Update role_types
+    for c_info in _CB_CONTRIBUTORS:
+        login = c_info["login"]
+        contrib = contributor_map[login]
+        result = await db.execute(
+            select(
+                func.sum(ContributorMetrics.merged_pr_count),
+                func.sum(ContributorMetrics.review_count),
+                func.sum(ContributorMetrics.approval_count),
+                func.sum(ContributorMetrics.merge_count),
+                func.sum(ContributorMetrics.code_additions),
+            ).where(ContributorMetrics.contributor_login == login)
+        )
+        row = result.one()
+        contrib.role_types = _cb_detect_roles(
+            int(row[0] or 0), int(row[1] or 0), int(row[2] or 0),
+            int(row[3] or 0), int(row[4] or 0),
+        )
+
+    logger.info("  contributor_board: role_types updated for %d contributors", len(_CB_CONTRIBUTORS))
 
 
 def json_text(value: Any) -> str:
@@ -1391,6 +1681,7 @@ async def seed_database(skip_files: bool) -> None:
             await seed_test_board(db, jobs, now)
             await seed_code_metrics(db, now)
             await seed_system_records(db, users, now)
+            await seed_contributor_board(db, now)
             await db.commit()
         except Exception:
             await db.rollback()

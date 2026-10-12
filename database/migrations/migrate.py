@@ -34,6 +34,8 @@ from database.migrations.npu_occupancy import run as migrate_npu_occupancy
 from database.migrations.process_runtime import run as migrate_process_runtime
 from database.migrations.service_permissions import run as migrate_service_permissions
 from database.migrations.task_queue import run as migrate_phase_a
+from database.migrations.contributor_board import run as migrate_contributor_board
+from database.migrations.contributor_board_enhancements import run as migrate_contributor_board_enhancements
 from database.migrations.test_board_data import run as migrate_test_board_data
 from infrastructure.db.base import SessionLocal, engine
 
@@ -52,27 +54,31 @@ async def migrate() -> None:
 
     await create_tables_with_latest_schema()
     users_before = await _user_count()
+    # phase_a creates migration_history first, so it must run before other migrations
+    await migrate_phase_a()
     await migrate_mysql_schema()
+    await migrate_process_runtime()
     model_fo_result = await migrate_model_fo_mapping_seed()
     permission_result = await migrate_service_permissions()
-    await migrate_phase_a()
-    await migrate_process_runtime()
     await migrate_npu_occupancy()
     await migrate_ci_npu_facts()
     await migrate_ci_npu_queue_snapshots()
     await migrate_ci_npu_queue_snapshot_physical_running()
     test_board_result = await migrate_test_board_data()
+    contributor_board_result = await migrate_contributor_board()
+    contributor_board_enhancements_result = await migrate_contributor_board_enhancements()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d model_fo=%s permissions=%s test_board=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s",
         users_after,
-        model_fo_result,
         permission_result,
         test_board_result,
+        contributor_board_result,
+        contributor_board_enhancements_result,
     )
 
 

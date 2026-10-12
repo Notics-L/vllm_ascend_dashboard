@@ -472,6 +472,33 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Failed to add code metrics collection job: {e}")
 
+        # 贡献者数据采集任务 - 每日 2:00 全量评估
+        try:
+            self.scheduler.add_job(
+                self._sync_contributors_job,
+                trigger=CronTrigger(hour=2, minute=0, timezone=self._timezone),
+                id="contributor_sync",
+                name="Contributor Full Sync",
+                replace_existing=True,
+            )
+            logger.info("Contributor full sync scheduled at 02:00 daily")
+        except Exception as e:
+            logger.error(f"Failed to add contributor sync job: {e}")
+
+        # 贡献者增量采集任务 - 每 6 小时执行一次
+        try:
+            contributor_incremental_interval = getattr(settings, 'CONTRIBUTOR_INCREMENTAL_INTERVAL_MINUTES', 360)
+            self.scheduler.add_job(
+                self._sync_contributors_incremental_job,
+                trigger=IntervalTrigger(minutes=contributor_incremental_interval),
+                id="contributor_incremental_sync",
+                name="Contributor Incremental Sync",
+                replace_existing=True,
+            )
+            logger.info(f"Contributor incremental sync scheduled every {contributor_incremental_interval} minutes")
+        except Exception as e:
+            logger.error(f"Failed to add contributor incremental sync job: {e}")
+
     async def apply_db_config_overrides(self) -> None:
         """从数据库读取调度配置，覆盖默认值（异步，仅在事件循环内调用）。
 
@@ -1360,6 +1387,42 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued code metrics collection task %d", task_id)
+
+    async def _sync_contributors_job(self):
+        """每日全量贡献者同步任务"""
+        from datetime import timedelta
+        from collector.contributor_sync import sync_contributors
+
+        try:
+            logger.info("Starting scheduled contributor full sync")
+            since_date = datetime.now(UTC) - timedelta(days=30)
+            result = await sync_contributors(since_date=since_date)
+            logger.info(
+                "Contributor full sync completed: %d contributors, %d commits (%.1fs)",
+                result.contributors_synced,
+                result.commits_classified,
+                result.duration_seconds,
+            )
+        except Exception as e:
+            logger.error("Scheduled contributor sync failed: %s", e, exc_info=True)
+
+    async def _sync_contributors_incremental_job(self):
+        """增量贡献者同步任务（每6小时）"""
+        from datetime import timedelta
+        from collector.contributor_sync import sync_contributors
+
+        try:
+            logger.info("Starting scheduled contributor incremental sync")
+            since_date = datetime.now(UTC) - timedelta(hours=6)
+            result = await sync_contributors(since_date=since_date)
+            logger.info(
+                "Contributor incremental sync completed: %d contributors, %d commits (%.1fs)",
+                result.contributors_synced,
+                result.commits_classified,
+                result.duration_seconds,
+            )
+        except Exception as e:
+            logger.error("Scheduled contributor incremental sync failed: %s", e, exc_info=True)
 
 # 全局调度器实例
 _scheduler: DataSyncScheduler | None = None

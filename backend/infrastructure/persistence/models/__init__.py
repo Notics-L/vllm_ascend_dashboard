@@ -40,6 +40,7 @@ __all__ = [
     "SchedulerHeartbeat",
     "NpuOccupancyRawEnv", "NpuOccupancySyncState",
     "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
+    "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
 ]
 
 
@@ -993,3 +994,125 @@ class NpuOccupancySyncState(Base):
     active_task_id = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+
+
+class Contributor(Base):
+    """贡献者主表"""
+    __tablename__ = "contributors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    github_id = Column(BigInteger, nullable=False, unique=True, index=True)
+    login = Column(String(100), nullable=False, unique=True, index=True)
+    avatar_url = Column(String(500))
+    email = Column(String(200))
+    name = Column(String(200))
+    is_community = Column(Boolean, default=True, index=True)
+    role_types = Column(JSON)
+    company = Column(String(200))
+    employee_id = Column(String(100), nullable=True, index=True)
+    first_contribution_at = Column(TIMESTAMP)
+    last_contribution_at = Column(TIMESTAMP)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class ContributorMetrics(Base):
+    """贡献者聚合指标表"""
+    __tablename__ = "contributor_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    merged_pr_count = Column(Integer, default=0)
+    pending_pr_count = Column(Integer, default=0)
+    code_additions = Column(Integer, default=0)
+    code_deletions = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    approval_count = Column(Integer, default=0)
+    merge_count = Column(Integer, default=0)
+    core_module_count = Column(Integer, default=0)
+    closed_pr_count = Column(Integer, default=0)
+    contribution_score = Column(Float, default=0)
+    error_score = Column(Float, default=0)
+    quadrant = Column(String(20))
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint('contributor_login', 'period_start', 'period_end', name='uq_contributor_metrics_period'),
+    )
+
+
+class CommitClassification(Base):
+    """提交分类记录表"""
+    __tablename__ = "commit_classifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    commit_sha = Column(String(40), nullable=False, unique=True, index=True)
+    commit_message = Column(Text)
+    commit_type = Column(String(20), nullable=False, index=True)
+    confidence = Column(Float, default=1.0)
+    modules_touched = Column(JSON)
+    files_changed_count = Column(Integer, default=0)
+    is_chip_specific = Column(Boolean, default=False)
+    chip_target = Column(String(50))
+    contributor_login = Column(String(100), index=True)
+    pr_number = Column(Integer, index=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ErrorRecord(Base):
+    """出错记录表"""
+    __tablename__ = "error_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    error_type = Column(String(50), nullable=False, index=True)
+    related_pr_number = Column(Integer, index=True)
+    related_commit_sha = Column(String(40))
+    revert_count = Column(Integer, default=0)
+    bugfix_linked_count = Column(Integer, default=0)
+    ci_failure_count = Column(Integer, default=0)
+    nightly_failure_count = Column(Integer, default=0)
+    weight_score = Column(Float, default=0)
+    description = Column(Text)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ImageBuildPlan(Base):
+    """镜像构建计划记录表"""
+    __tablename__ = "image_build_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pr_number = Column(Integer, nullable=False, index=True)
+    commit_sha = Column(String(40), nullable=False)
+    commit_type = Column(String(20))
+    build_type = Column(String(50), nullable=False)
+    chips = Column(JSON)
+    os_list = Column(JSON)
+    cache_strategy = Column(String(50))
+    estimated_saving_percent = Column(Float, default=0)
+    actual_execution = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class QuadrantSnapshot(Base):
+    """四象限历史快照表"""
+    __tablename__ = "quadrant_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    quadrant = Column(String(20), nullable=False)
+    contribution_score = Column(Float, default=0)
+    error_score = Column(Float, default=0)
+    meta = Column(JSON)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint('contributor_login', 'snapshot_date', name='uq_quadrant_snapshot_date'),
+    )

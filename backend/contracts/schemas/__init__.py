@@ -73,6 +73,18 @@ __all__ = [
     # Log Center
     "LogQueryRequest", "LogEntryResponse", "LogQueryResponse",
     "LogSourceInfo", "LogSourcesResponse",
+    # Contributor Board
+    "ContributorBase", "ContributorResponse", "ContributorDetailResponse",
+    "ContributorListFilter", "ContributorListResponse",
+    "QuadrantPoint", "QuadrantDataResponse",
+    "CommitClassificationResponse", "ClassificationSummary",
+    "BuildPlanEvaluateRequest", "BuildPlanResponse", "BuildOptimizationStats",
+    "BuildPlanListFilter", "BuildPlanListResponse",
+    "ContributorRankingItem", "ContributorRankingResponse",
+    "ContributorTrendPoint", "ContributorTrendResponse",
+    "ClassificationTrendPoint", "ClassificationTrendResponse",
+    "ContributorOverviewStats",
+    "ContributorSyncRequest", "ContributorSyncResponse",
 ]
 
 
@@ -1146,4 +1158,29 @@ from .test_board import (
     TestOverviewResponse,
     TestRunResponse,
     TestSuiteResponse,
+)
+from .contributor_board import (
+    BuildOptimizationStats,
+    BuildPlanEvaluateRequest,
+    BuildPlanListFilter,
+    BuildPlanListResponse,
+    BuildPlanResponse,
+    ClassificationSummary,
+    ClassificationTrendPoint,
+    ClassificationTrendResponse,
+    CommitClassificationResponse,
+    ContributorBase,
+    ContributorDetailResponse,
+    ContributorListFilter,
+    ContributorListResponse,
+    ContributorOverviewStats,
+    ContributorRankingItem,
+    ContributorRankingResponse,
+    ContributorResponse,
+    ContributorSyncRequest,
+    ContributorSyncResponse,
+    ContributorTrendPoint,
+    ContributorTrendResponse,
+    QuadrantDataResponse,
+    QuadrantPoint,
 )

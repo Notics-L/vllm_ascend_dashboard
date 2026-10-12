@@ -21,6 +21,7 @@ import CIBoardConfig from './pages/CIBoardConfig'
 import GitHubActivityDetail from './pages/GitHubActivityDetail'
 import CommitAnalysisDetail from './pages/CommitAnalysisDetail'
 import ProjectBoard from './pages/ProjectBoard'
+import ContributorBoard, { ContributorDetailPage } from './pages/ContributorBoard'
 import ProjectBoardConfig from './pages/ProjectBoardConfig'
 import PRPipelineBoard from './pages/PRPipelineBoard'
 import PRDetail from './pages/PRDetail'
@@ -165,6 +166,9 @@ function App() {
               <Route path="ci" element={<CIBoard />} />
               {/* Project Dashboard */}
               <Route path="project" element={<ProjectBoard />} />
+              {/* Contributor Board */}
+              <Route path="contributor-board" element={<ContributorBoard />} />
+              <Route path="contributor-board/detail/:login" element={<ContributorDetailPage />} />
               {/* CI 详情页面 */}
               <Route path="ci/runs/:runId" element={<WorkflowDetail />} />
               <Route path="ci/jobs/:jobId" element={<JobDetail />} />

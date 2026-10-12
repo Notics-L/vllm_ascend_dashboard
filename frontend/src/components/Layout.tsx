@@ -52,6 +52,7 @@ const primaryNavigation: NavigationItem[] = [
     label: '研发交付',
     children: [
       { key: '/project', icon: <GithubOutlined />, label: '项目动态' },
+      { key: '/contributor-board', icon: <CodeOutlined />, label: '贡献者分析' },
       { key: '/pr-pipeline', icon: <PullRequestOutlined />, label: 'PR 流水线' },
       { key: '/ci', icon: <CheckCircleOutlined />, label: 'CI 运行' },
     ],
@@ -99,6 +100,7 @@ const routeMeta = [
   { prefix: '/alert-rules', title: '告警规则', section: '资源与响应' },
   { prefix: '/models', title: '模型验证', section: '质量与模型' },
   { prefix: '/project', title: '项目动态', section: '研发交付' },
+  { prefix: '/contributor-board', title: '贡献者分析', section: '研发交付' },
   { prefix: '/ci', title: 'CI 运行', section: '研发交付' },
   { prefix: '/logs', title: '日志中心', section: '资源与响应' },
   { prefix: '/user-stats', title: '用户统计', section: '管理中心' },
