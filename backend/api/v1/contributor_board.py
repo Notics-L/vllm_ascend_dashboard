@@ -5,6 +5,12 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+
+
+class BuildPlanFilterOptions(BaseModel):
+    commit_types: list[str]
+    build_types: list[str]
 
 from api.deps import CurrentAdminUser, CurrentUser, DbSession
 from contracts.schemas.contributor_board import (
@@ -48,12 +54,30 @@ async def get_classification_stats(
 async def get_build_plans(
     db: DbSession,
     build_type: str | None = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    commit_type: str | None = Query(None),
+    created_after: date | None = Query(None),
+    created_before: date | None = Query(None),
+    limit: int = Query(20, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     """获取构建计划列表"""
     service = get_contributor_board_service()
-    return await service.get_build_plans_from_db(db, build_type=build_type, limit=limit, offset=offset)
+    return await service.get_build_plans_from_db(
+        db,
+        build_type=build_type,
+        commit_type=commit_type,
+        created_after=created_after,
+        created_before=created_before,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/builds/filter_options")
+async def get_build_filter_options(db: DbSession):
+    """获取构建计划筛选选项（去重后的 commit_type 和 build_type 列表）"""
+    service = get_contributor_board_service()
+    return await service.get_build_plan_filter_options(db)
 
 
 @router.get("/builds/stats", response_model=BuildOptimizationStats)

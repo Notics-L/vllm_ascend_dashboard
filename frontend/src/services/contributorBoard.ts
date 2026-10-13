@@ -60,14 +60,28 @@ export interface BuildPlan {
 /**
  * 获取构建计划列表
  */
-export const getBuildPlans = async (
-  buildType?: string,
-  limit: number = 100,
-  offset: number = 0
-) => {
-  const params: Record<string, unknown> = { limit, offset }
-  if (buildType) params.build_type = buildType
-  const response = await api.get<{ plans: BuildPlan[]; total: number }>('/contributor-board/builds/plans', { params })
+export const getBuildPlans = async (params?: {
+  build_type?: string | null
+  commit_type?: string | null
+  created_after?: string | null
+  created_before?: string | null
+  limit?: number
+  offset?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    limit: params?.limit ?? 20,
+    offset: params?.offset ?? 0,
+  }
+  if (params?.build_type) queryParams.build_type = params.build_type
+  if (params?.commit_type) queryParams.commit_type = params.commit_type
+  if (params?.created_after) queryParams.created_after = params.created_after
+  if (params?.created_before) queryParams.created_before = params.created_before
+  const response = await api.get<{ plans: BuildPlan[]; total: number }>('/contributor-board/builds/plans', { params: queryParams })
+  return response.data
+}
+
+export const getBuildFilterOptions = async () => {
+  const response = await api.get<{ commit_types: string[]; build_types: string[] }>('/contributor-board/builds/filter_options')
   return response.data
 }
 

@@ -190,7 +190,10 @@ class ContributorBoardService:
     async def get_build_plans_from_db(
         db,
         build_type: str | None = None,
-        limit: int = 100,
+        commit_type: str | None = None,
+        created_after: date | None = None,
+        created_before: date | None = None,
+        limit: int = 20,
         offset: int = 0,
     ) -> BuildPlanListResponse:
         stmt = select(ImageBuildPlan)
@@ -199,6 +202,17 @@ class ContributorBoardService:
         if build_type:
             stmt = stmt.where(ImageBuildPlan.build_type == build_type)
             count_stmt = count_stmt.where(ImageBuildPlan.build_type == build_type)
+        if commit_type:
+            stmt = stmt.where(ImageBuildPlan.commit_type == commit_type)
+            count_stmt = count_stmt.where(ImageBuildPlan.commit_type == commit_type)
+        if created_after:
+            stmt = stmt.where(ImageBuildPlan.created_at >= created_after)
+            count_stmt = count_stmt.where(ImageBuildPlan.created_at >= created_after)
+        if created_before:
+            from datetime import datetime as _dt, time
+            before_end = _dt.combine(created_before, time(23, 59, 59, 999999))
+            stmt = stmt.where(ImageBuildPlan.created_at <= before_end)
+            count_stmt = count_stmt.where(ImageBuildPlan.created_at <= before_end)
 
         total = int((await db.execute(count_stmt)).scalar() or 0)
 
@@ -227,10 +241,27 @@ class ContributorBoardService:
             total=total,
         )
 
-    async def get_overview_stats(self, db) -> ContributorOverviewStats:
-        classification_summary = await self.get_classification_summary_from_db(db)
-        build_stats = await self.get_build_optimization_stats_from_db(db)
+    @staticmethod
+    async def get_build_plan_filter_options(db) -> dict:
+        commit_types_result = await db.execute(
+            select(ImageBuildPlan.commit_type)
+            .where(ImageBuildPlan.commit_type.isnot(None), ImageBuildPlan.commit_type != "")
+            .distinct()
+            .order_by(ImageBuildPlan.commit_type)
+        )
+        commit_types = [row[0] for row in commit_types_result.all()]
 
+        build_types_result = await db.execute(
+            select(ImageBuildPlan.build_type)
+            .distinct()
+            .order_by(ImageBuildPlan.build_type)
+        )
+        build_types = [row[0] for row in build_types_result.all()]
+
+        return {"commit_types": commit_types, "build_types": build_types}
+
+    @staticmethod
+    async def get_overview_stats(db) -> ContributorOverviewStats:
         contributors_result = await db.execute(
             select(func.count(Contributor.id))
         )
@@ -394,8 +425,8 @@ class ContributorBoardService:
         )
 
     # ---- 四象限数据 ----
-
-    async def get_quadrant_data(self, db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> QuadrantDataResponse:
+    @staticmethod
+    async def get_quadrant_data(db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> QuadrantDataResponse:
         metrics_stmt = select(ContributorMetrics)
 
         conditions = []
@@ -456,9 +487,8 @@ class ContributorBoardService:
         )
 
     # ---- 排行榜 ----
-
+    @staticmethod
     async def get_ranking(
-        self,
         db,
         role_type: str = "developer",
         repo_name: str | None = None,
@@ -563,13 +593,13 @@ class ContributorBoardService:
 
     # ---- 趋势数据 ----
 
-    async def get_contributor_trend(
-        self,
+    @staticmethod
+    async def _fetch_contributor_metrics(
         db,
         login: str,
         period_start: date | None = None,
         period_end: date | None = None,
-    ) -> ContributorTrendResponse:
+    ):
         stmt = (
             select(ContributorMetrics)
             .where(ContributorMetrics.contributor_login == login)
@@ -582,7 +612,18 @@ class ContributorBoardService:
             stmt = stmt.where(ContributorMetrics.period_end <= period_end)
 
         result = await db.execute(stmt)
-        metrics = result.scalars().all()
+        return result.scalars().all()
+
+    async def get_contributor_trend(
+        self,
+        db,
+        login: str,
+        period_start: date | None = None,
+        period_end: date | None = None,
+    ) -> ContributorTrendResponse:
+        metrics = await self._fetch_contributor_metrics(
+            db, login, period_start, period_end
+        )
 
         points: list[ContributorTrendPoint] = [
             ContributorTrendPoint(
@@ -614,8 +655,8 @@ class ContributorBoardService:
     async def get_module_hotspot(db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> ModuleHotspotResponse:
         return await role_analytics.get_module_hotspot(db, repo_name=repo_name, period_start=period_start, period_end=period_end)
 
+    @staticmethod
     async def get_role_ranking(
-        self,
         db,
         role_type: str = "developer",
         repo_name: str | None = None,
@@ -675,19 +716,9 @@ class ContributorBoardService:
         period_start: date | None = None,
         period_end: date | None = None,
     ) -> ExtendedTrendResponse:
-        stmt = (
-            select(ContributorMetrics)
-            .where(ContributorMetrics.contributor_login == login)
-            .order_by(ContributorMetrics.period_start)
+        metrics = await ContributorBoardService._fetch_contributor_metrics(
+            db, login, period_start, period_end
         )
-
-        if period_start:
-            stmt = stmt.where(ContributorMetrics.period_start >= period_start)
-        if period_end:
-            stmt = stmt.where(ContributorMetrics.period_end <= period_end)
-
-        result = await db.execute(stmt)
-        metrics = result.scalars().all()
 
         from contributor_board.policy_engine import get_trend_data
         trend = get_trend_data(login, list(metrics))

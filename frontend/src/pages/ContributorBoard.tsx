@@ -1,85 +1,83 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
+import {useNavigate, useParams} from 'react-router-dom'
 import {
-  Card,
-  Table,
-  Tag,
-  Space,
-  Statistic,
-  Spin,
-  message,
-  Typography,
-  Row,
-  Col,
-  Tabs,
-  Button,
-  Avatar,
-  Descriptions,
-  Empty,
   Alert,
-  Divider,
-  Select,
+  Avatar,
+  Button,
+  Card,
+  Col,
   DatePicker,
-  Progress,
-  Input,
-  Modal,
+  Descriptions,
+  Divider,
+  Empty,
   Form,
+  Input,
+  message,
+  Modal,
   Radio,
+  Row,
+  Select,
+  Space,
+  Spin,
+  Statistic,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
 } from 'antd'
 import {
-  GithubOutlined,
   CodeOutlined,
-  RocketOutlined,
-  TrophyOutlined,
-  ReloadOutlined,
   DownloadOutlined,
+  FilterOutlined,
+  GithubOutlined,
+  ReloadOutlined,
+  RocketOutlined,
   SearchOutlined,
   SortAscendingOutlined,
-  DeleteOutlined,
+  TrophyOutlined,
 } from '@ant-design/icons'
 import {
-  PieChart,
-  Pie,
+  Bar,
+  BarChart,
+  CartesianGrid,
   Cell,
-  Tooltip as ChartsTooltip,
-  ResponsiveContainer,
   Legend,
-  ScatterChart,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ReferenceLine,
+  ResponsiveContainer,
   Scatter,
+  ScatterChart,
+  Tooltip as ChartsTooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
   ZAxis,
-  ReferenceLine,
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
 } from 'recharts'
 import dayjs from 'dayjs'
 import {
-  getClassificationSummary,
-  getBuildOptimizationStats,
-  getBuildPlans,
-  getQuadrantData,
-  getContributorDetail,
-  getRanking,
-  getRoleStats,
-  getModuleHotspot,
-  getContributorPolicy,
-  getExtendedTrend,
-  syncContributors,
-  getReposList,
-  type ClassificationSummary,
   type BuildOptimizationStats,
   type BuildPlan,
+  type ClassificationSummary,
+  type ContributorDetail, ExtendedTrend,
+  getBuildFilterOptions,
+  getBuildOptimizationStats,
+  getBuildPlans,
+  getClassificationSummary,
+  getContributorDetail,
+  getContributorPolicy,
+  getExtendedTrend,
+  getModuleHotspot,
+  getQuadrantData,
+  getRanking,
+  getReposList,
+  getRoleStats,
+  type ModuleHotspotResponse, PolicyResult,
   type QuadrantData,
-  type ContributorDetail,
   type RankingItem,
   type RoleStats,
-  type ModuleHotspotResponse,
-  type PolicyResult,
-  type ExtendedTrend,
+  syncContributors,
 } from '../services/contributorBoard'
 
 const { Title, Text } = Typography
@@ -315,20 +313,101 @@ function ClassificationTab({ data, loading }: { data: ClassificationSummary | nu
 /*                            构建 Tab 内容                            */
 /* ------------------------------------------------------------------ */
 
-function BuildsTab({ stats, statsLoading, plans, plansTotal, plansLoading }: {
-  stats: BuildOptimizationStats | null
-  statsLoading: boolean
-  plans: BuildPlan[]
-  plansTotal: number
-  plansLoading: boolean
-}) {
+function BuildsTab() {
+  const [buildStats, setBuildStats] = useState<BuildOptimizationStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+
+  const [plans, setPlans] = useState<BuildPlan[]>([])
+  const [plansTotal, setPlansTotal] = useState(0)
+  const [plansLoading, setPlansLoading] = useState(false)
+
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
+  const [filterCommitType, setFilterCommitType] = useState<string | undefined>(undefined)
+  const [filterBuildType, setFilterBuildType] = useState<string | undefined>(undefined)
+  const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
+  const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
+  // 加载统计数据
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setStatsLoading(true)
+      try {
+        const [statsData, optionsData] = await Promise.all([
+          getBuildOptimizationStats(),
+          getBuildFilterOptions(),
+        ])
+        if (!cancelled) {
+          await new Promise(r => setTimeout(r, 400))
+          setBuildStats(statsData)
+          setFilterOptions({
+            commitTypes: optionsData.commit_types || [],
+            buildTypes: optionsData.build_types || [],
+          })
+        }
+      } catch { /* ignore */ } finally {
+        if (!cancelled) setStatsLoading(false)
+      }
+    }
+    load().then()
+    return () => { cancelled = true }
+  }, [])
+
+  // 加载构建计划列表
+  const fetchPlans = useCallback(async (page: number, size: number) => {
+    setPlansLoading(true)
+    try {
+      const data = await getBuildPlans({
+        commit_type: filterCommitType || null,
+        build_type: filterBuildType || null,
+        created_after: filterDateRange?.[0]?.format('YYYY-MM-DD') || null,
+        created_before: filterDateRange?.[1]?.format('YYYY-MM-DD') || null,
+        limit: size,
+        offset: (page - 1) * size,
+      })
+      await new Promise(r => setTimeout(r, 300))
+      setPlans(data.plans)
+      setPlansTotal(data.total)
+    } catch { /* ignore */ } finally {
+      setPlansLoading(false)
+    }
+  }, [filterCommitType, filterBuildType, filterDateRange])
+
+  useEffect(() => {
+    fetchPlans(pagination.current, pagination.pageSize).then()
+  }, [fetchPlans, pagination.current, pagination.pageSize])
+
+  const handleExportCSV = () => {
+    const headers = ['PR 号', 'Commit SHA', 'Commit Type', 'Build Type', '节省比例', '推理说明', '创建时间']
+    const rows = plans.map(p => [
+      `#${p.pr_number}`, p.commit_sha.slice(0, 8), p.commit_type,
+      buildTypeLabels[p.build_type] || p.build_type, `${Math.round(p.estimated_saving_percent)}%`,
+      p.reasoning || '-', p.created_at ? dayjs(p.created_at).format('YYYY-MM-DD HH:mm') : '-',
+    ])
+    const csvContent = ['\uFEFF', headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `构建计划_${dayjs().format('YYYYMMDD')}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleClearFilters = () => {
+    setFilterCommitType(undefined)
+    setFilterBuildType(undefined)
+    setFilterDateRange(null)
+    setPagination(p => ({ ...p, current: 1 }))
+  }
+
+  const hasActiveFilter = filterCommitType || filterBuildType || filterDateRange
+
   const buildPlanColumns = [
     {
       title: 'PR 号',
       dataIndex: 'pr_number',
       key: 'pr_number',
       width: 80,
-      sorter: (a: BuildPlan, b: BuildPlan) => a.pr_number - b.pr_number,
       render: (prNumber: number) => (
         <a href={`https://github.com/vllm-project/vllm-ascend/pull/${prNumber}`} target="_blank" rel="noopener noreferrer">
           #{prNumber}
@@ -393,33 +472,75 @@ function BuildsTab({ stats, statsLoading, plans, plansTotal, plansLoading }: {
       <Row gutter={[16, 16]}>
         <Col span={6}>
           <Card>
-            <Statistic title="总评估数" value={stats?.total_evaluations ?? 0} valueStyle={{ color: '#5b46f5' }} />
+            <Statistic title="总评估数" value={buildStats?.total_evaluations ?? 0} valueStyle={{ color: '#5b46f5' }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic title="已跳过构建" value={stats?.skipped_builds ?? 0} suffix="次" valueStyle={{ color: '#52c41a' }} />
+            <Statistic title="已跳过构建" value={buildStats?.skipped_builds ?? 0} suffix="次" valueStyle={{ color: '#52c41a' }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic title="减少构建" value={stats?.reduced_builds ?? 0} suffix="次" valueStyle={{ color: '#1890ff' }} />
+            <Statistic title="减少构建" value={buildStats?.reduced_builds ?? 0} suffix="次" valueStyle={{ color: '#1890ff' }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic title="平均节省" value={stats ? Math.round(stats.avg_saving_percent) : 0} suffix="%" valueStyle={{ color: '#fa8c16' }} />
+            <Statistic title="平均节省" value={buildStats ? Math.round(buildStats.avg_saving_percent) : 0} suffix="%" valueStyle={{ color: '#fa8c16' }} />
           </Card>
         </Col>
 
         <Col span={24}>
-          <Card title="构建计划记录">
+          <Card
+            title="构建计划记录"
+            extra={
+              <Space size="small">
+                <Select
+                  allowClear
+                  placeholder="Commit Type"
+                  value={filterCommitType}
+                  onChange={(v) => { setFilterCommitType(v); setPagination(p => ({ ...p, current: 1 })) }}
+                  style={{ width: 150 }}
+                  options={filterOptions.commitTypes.map(t => ({ label: t, value: t }))}
+                />
+                <Select
+                  allowClear
+                  placeholder="Build Type"
+                  value={filterBuildType}
+                  onChange={(v) => { setFilterBuildType(v); setPagination(p => ({ ...p, current: 1 })) }}
+                  style={{ width: 160 }}
+                  options={filterOptions.buildTypes.map(t => ({ label: buildTypeLabels[t] || t, value: t }))}
+                />
+                <DatePicker.RangePicker
+                  value={filterDateRange}
+                  onChange={(dates) => { setFilterDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null); setPagination(p => ({ ...p, current: 1 })) }}
+                  placeholder={['开始日期', '结束日期']}
+                />
+                {hasActiveFilter && (
+                  <Button size="small" icon={<FilterOutlined />} onClick={handleClearFilters}>清除筛选</Button>
+                )}
+                <Button size="small" icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
+              </Space>
+            }
+          >
             <Table
               columns={buildPlanColumns}
               dataSource={plans}
               loading={plansLoading}
-              rowKey={(record) => `${record.pr_number}-${record.commit_sha}`}
-              pagination={{ total: plansTotal, pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+              rowKey={(record: BuildPlan) => `${record.pr_number}-${record.commit_sha}`}
+              pagination={{
+                current: pagination.current,
+                pageSize: pagination.pageSize,
+                total: plansTotal,
+                pageSizeOptions: [10, 20, 50],
+                showSizeChanger: true,
+                showTotal: (total) => `共 ${total} 条`,
+                showQuickJumper: true,
+                onChange: (page, size) => {
+                  setPagination({ current: page, pageSize: size })
+                },
+              }}
               scroll={{ x: 1200 }}
             />
           </Card>
@@ -464,8 +585,22 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
     return Array.from(deduped.values())
   })()
 
-  // 散点图缩放状态（鼠标滚轮缩放 + 重置）
+  // 散点图缩放 — 框选缩放（类似 echarts 的 brush）
   const [zoomDomain, setZoomDomain] = useState<{ x: [number, number] | null; y: [number, number] | null }>({ x: null, y: null })
+
+  const [brushing, setBrushing] = useState(false)
+  const [brushStart, setBrushStart] = useState<{ x: number; y: number } | null>(null)
+  const [brushEnd, setBrushEnd] = useState<{ x: number; y: number } | null>(null)
+  const svgBoundsRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+
+  // 计算数据范围
+  const xMax = Math.max(...scatterData.map(p => p.x), 1)
+  const yMaxRaw = Math.max(...scatterData.map(p => p.y), 1)
+  const yMax = Math.max(12, Math.ceil((yMaxRaw + 1) * 1.2))
+  const xDomain: [number, number] = zoomDomain.x || [0, xMax]
+  const yDomain: [number, number] = zoomDomain.y || [0, yMax]
+
+  const hasZoom = zoomDomain.x !== null || zoomDomain.y !== null
 
   const isHighlightedPoint = useCallback((login: string) => {
     if (!searchLogin.trim()) return false
@@ -488,18 +623,82 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
     }
   }
 
-  const handleClearSearch = () => {
-    setSearchLogin('')
-  }
 
-  const handleWheelZoom = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    setZoomDomain({ x: null, y: null })
-  }, [])
 
   const handleResetZoom = () => {
     setZoomDomain({ x: null, y: null })
   }
+
+  // 框选缩放逻辑 — 通过 div.onMouseDown 触发，mousemove/mouseUp 走全局事件
+  const finishBrush = useCallback(() => {
+    if (!brushing || !brushStart || !brushEnd || !svgBoundsRef.current) {
+      setBrushing(false)
+      setBrushStart(null)
+      setBrushEnd(null)
+      return
+    }
+
+    const bounds = svgBoundsRef.current
+    // 图表内容区域（去掉左右 Y 轴和 X 轴标签区域的大致比例）
+    const margin = { left: 60, right: 20, top: 10, bottom: 40 }
+    const plotW = bounds.w - margin.left - margin.right
+    const plotH = bounds.h - margin.top - margin.bottom
+
+    const curXDomain = zoomDomain.x || [0, Math.max(...scatterData.map(p => p.x), 1)]
+    const allYMax = Math.max(...scatterData.map(p => p.y), 1)
+    const curYDomain = zoomDomain.y || [0, Math.max(12, Math.ceil((allYMax + 1) * 1.2))]
+
+    const sx = Math.min(brushStart.x, brushEnd.x)
+    const sy = Math.min(brushStart.y, brushEnd.y)
+    const ex = Math.max(brushStart.x, brushEnd.x)
+    const ey = Math.max(brushStart.y, brushEnd.y)
+
+    // 转换为数据坐标
+    const plotStartX = margin.left + Math.max(0, sx - margin.left)
+    const plotEndX = margin.left + Math.min(plotW, ex - margin.left)
+    const plotStartY = margin.top + Math.max(0, sy - margin.top)
+    const plotEndY = margin.top + Math.min(plotH, ey - margin.top)
+
+    // 只有框选区域足够大才触发缩放
+    if (plotEndX - plotStartX > 10 && plotEndY - plotStartY > 10) {
+      const newXMin = curXDomain[0] + (curXDomain[1] - curXDomain[0]) * (plotStartX - margin.left) / plotW
+      const newXMax = curXDomain[0] + (curXDomain[1] - curXDomain[0]) * (plotEndX - margin.left) / plotW
+      const newYMax = curYDomain[1] - (curYDomain[1] - curYDomain[0]) * (plotStartY - margin.top) / plotH
+      const newYMin = curYDomain[1] - (curYDomain[1] - curYDomain[0]) * (plotEndY - margin.top) / plotH
+
+      setZoomDomain({
+        x: [newXMin, newXMax],
+        y: [newYMin, newYMax],
+      })
+    }
+
+    setBrushing(false)
+    setBrushStart(null)
+    setBrushEnd(null)
+  }, [brushing, brushStart, brushEnd, scatterData, zoomDomain])
+
+  // 全局 mousemove / mouseup 监听（当用户框选时）
+  useEffect(() => {
+    if (!brushing) return
+
+    const handleMove = (e: MouseEvent) => {
+      if (!svgBoundsRef.current) return
+      setBrushEnd({ x: e.clientX - svgBoundsRef.current.x, y: e.clientY - svgBoundsRef.current.y })
+    }
+
+    const handleUp = () => {
+      finishBrush()
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+  }, [brushing, finishBrush])
 
   const handleExportPNG = useCallback(() => {
     if (chartRef.current) {
@@ -584,69 +783,122 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
                   prefix={<SearchOutlined />}
                   onPressEnter={handleLocate}
                 />
-                {zoomDomain.x || zoomDomain.y ? (
+                {hasZoom ? (
                   <Button size="small" danger onClick={handleResetZoom}>重置缩放</Button>
                 ) : null}
                 <Button size="small" onClick={handleExportPNG} icon={<DownloadOutlined />}>导出PNG</Button>
               </Space>
             }
           >
-            <div style={{ height: 530 }} ref={chartRef}>
+            <div
+              style={{ height: 490, position: 'relative', cursor: brushing ? 'crosshair' : undefined }}
+              ref={chartRef}
+              onMouseDown={(e) => {
+                // 仅在点击空白区域时触发框选（点散点时事件已被散点拦截，不会冒泡到这里）
+                if (e.button !== 0) return
+                if (!chartRef.current) return
+                const rect = chartRef.current.getBoundingClientRect()
+                svgBoundsRef.current = {
+                  x: rect.left,
+                  y: rect.top,
+                  w: rect.width,
+                  h: rect.height,
+                }
+                setBrushing(true)
+                const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+                setBrushStart(pt)
+                setBrushEnd(pt)
+              }}
+            >
               {scatterData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart>
-                    <CartesianGrid />
-                    <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={zoomDomain.x || [0, 'dataMax']} />
-                    <YAxis type="number" dataKey="y" name="出错分数" unit="分" domain={zoomDomain.y || [0, 'auto']} allowDataOverflow={false} />
-                    <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
-                    <ChartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#999' }} />
+                <>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart>
+                      <CartesianGrid />
+                      <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} />
+                      <YAxis type="number" dataKey="y" name="出错分数" unit="分" domain={yDomain} allowDataOverflow={false} />
+                      <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
+                      <ChartsTooltip content={<CustomTooltip />} cursor={!brushing ? { stroke: '#999' } : undefined} />
 
-                    {data?.quad_x != null && (
-                      <>
-                        <ReferenceLine x={data.quad_x} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
-                        <ReferenceLine y={data.quad_y} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
-                      </>
-                    )}
+                      {data?.quad_x != null && (
+                        <>
+                          <ReferenceLine x={data.quad_x} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
+                          <ReferenceLine y={data.quad_y} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
+                        </>
+                      )}
 
-                    <Scatter
-                      data={scatterData}
-                      shape={(props: { cx?: number; cy?: number; payload?: ScatterDataPoint }) => {
-                        const { cx, cy, payload } = props
-                        if (cx == null || cy == null) return <circle cx={0} cy={0} r={0} />
-                        const isHighlighted = payload ? isHighlightedPoint(payload.login) : false
-                        return (
-                          <g onClick={(e) => {
-                            e.stopPropagation()
-                            if (payload) handlePointClick(payload)
-                          }}>
-                            <circle cx={cx} cy={cy} r={isHighlighted ? 16 : 10} fill="transparent" />
-                            <circle
-                              cx={cx}
-                              cy={cy}
-                              r={isHighlighted ? 8 : 5}
-                              fill={quadrantColors[payload?.quadrant ?? ''] || '#d9d9d9'}
-                              stroke={isHighlighted ? '#ff4d4f' : '#fff'}
-                              strokeWidth={isHighlighted ? 3 : 2}
-                              style={{ cursor: 'pointer' }}>
-                                <title>{payload?.login}</title>
-                              </circle>
-                              {isHighlighted && (
-                                <text x={cx} y={cy - 12} textAnchor="middle" fill="#ff4d4f" fontSize={11} fontWeight="bold">
-                                  {payload?.login}
-                                </text>
-                              )}
-                          </g>
-                        )
+                      <Scatter
+                        data={scatterData}
+                        shape={(props: { cx?: number; cy?: number; payload?: ScatterDataPoint }) => {
+                          const { cx, cy, payload } = props
+                          if (cx == null || cy == null) return <circle cx={0} cy={0} r={0} />
+                          const isHighlighted = payload ? isHighlightedPoint(payload.login) : false
+                          return (
+                            <g
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (payload) handlePointClick(payload)
+                              }}
+                              onMouseDown={(e) => {
+                                e.stopPropagation()
+                              }}
+                            >
+                              <circle cx={cx} cy={cy} r={isHighlighted ? 16 : 10} fill="transparent" />
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={isHighlighted ? 8 : 5}
+                                fill={quadrantColors[payload?.quadrant ?? ''] || '#d9d9d9'}
+                                stroke={isHighlighted ? '#ff4d4f' : '#fff'}
+                                strokeWidth={isHighlighted ? 3 : 2}
+                                style={{ cursor: 'pointer' }}>
+                                  <title>{payload?.login}</title>
+                                </circle>
+                                {isHighlighted && (
+                                  <text x={cx} y={cy - 12} textAnchor="middle" fill="#ff4d4f" fontSize={11} fontWeight="bold">
+                                    {payload?.login}
+                                  </text>
+                                )}
+                            </g>
+                          )
+                        }}
+                       />
+
+                    </ScatterChart>
+                  </ResponsiveContainer>
+
+                  {/* 框选高亮矩形 */}
+                  {brushing && brushStart && brushEnd && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: Math.min(brushStart.x, brushEnd.x),
+                        top: Math.min(brushStart.y, brushEnd.y),
+                        width: Math.abs(brushEnd.x - brushStart.x),
+                        height: Math.abs(brushEnd.y - brushStart.y),
+                        background: 'rgba(255, 77, 79, 0.12)',
+                        border: '1.5px dashed #ff4d4f',
+                        pointerEvents: 'none',
+                        boxSizing: 'border-box',
+                        zIndex: 20,
                       }}
-                     />
-                  </ScatterChart>
-                </ResponsiveContainer>
+                    />
+                  )}
+                </>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
                   <Text type="secondary">暂无数据 — 先执行同步采集</Text>
                 </div>
               )}
             </div>
+            {hasZoom && (
+              <div style={{ marginTop: 4, padding: '6px 12px', background: '#f6f8fa', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  缩放范围: X {xDomain[0].toFixed(1)}~{xDomain[1].toFixed(1)}, Y {yDomain[0].toFixed(1)}~{yDomain[1].toFixed(1)}
+                </Text>
+                <Button type="link" size="small" danger onClick={handleResetZoom}>重置缩放</Button>
+              </div>
+            )}
           </Card>
         </Col>
       </Row>
@@ -782,12 +1034,11 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
 
   const displayData = useMemo(() => {
     const seen = new Set<string>()
-    const unique = rankings.filter(r => {
+    let data = rankings.filter(r => {
       if (seen.has(r.login)) return false
       seen.add(r.login)
       return true
     })
-    let data = unique
     if (searchText) {
       const lower = searchText.toLowerCase()
       data = data.filter(r =>
@@ -1270,13 +1521,6 @@ function ContributorBoard() {
   const [classificationData, setClassificationData] = useState<ClassificationSummary | null>(null)
   const [classificationLoading, setClassificationLoading] = useState(false)
 
-  const [buildStats, setBuildStats] = useState<BuildOptimizationStats | null>(null)
-  const [buildStatsLoading, setBuildStatsLoading] = useState(false)
-
-  const [buildPlans, setBuildPlans] = useState<BuildPlan[]>([])
-  const [buildPlansTotal, setBuildPlansTotal] = useState(0)
-  const [buildPlansLoading, setBuildPlansLoading] = useState(false)
-
   const [quadrantData, setQuadrantData] = useState<QuadrantData | null>(null)
   const [quadrantLoading, setQuadrantLoading] = useState(false)
 
@@ -1285,8 +1529,6 @@ function ContributorBoard() {
 
   useEffect(() => {
     loadClassification()
-    loadBuildStats()
-    loadBuildPlans()
     loadQuadrantData()
     loadRepos()
   }, [])
@@ -1312,35 +1554,6 @@ function ContributorBoard() {
     }
   }
 
-  const loadBuildStats = async () => {
-    setBuildStatsLoading(true)
-    try {
-      const data = await getBuildOptimizationStats()
-      await new Promise(r => setTimeout(r, 400))
-      setBuildStats(data)
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { detail?: string } }; message?: string }
-      message.error('加载构建优化统计失败：' + (err.response?.data?.detail || err.message || '未知错误'))
-    } finally {
-      setBuildStatsLoading(false)
-    }
-  }
-
-  const loadBuildPlans = async () => {
-    setBuildPlansLoading(true)
-    try {
-      const data = await getBuildPlans(undefined, 100, 0)
-      await new Promise(r => setTimeout(r, 400))
-      setBuildPlans(data.plans)
-      setBuildPlansTotal(data.total)
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { detail?: string } }; message?: string }
-      message.error('加载构建计划失败：' + (err.response?.data?.detail || err.message || '未知错误'))
-    } finally {
-      setBuildPlansLoading(false)
-    }
-  }
-
   const loadQuadrantData = async () => {
     setQuadrantLoading(true)
     try {
@@ -1363,7 +1576,7 @@ function ContributorBoard() {
     {
       key: 'builds',
       label: <><RocketOutlined /> 构建优化统计</>,
-      children: <BuildsTab stats={buildStats} statsLoading={buildStatsLoading} plans={buildPlans} plansTotal={buildPlansTotal} plansLoading={buildPlansLoading} />,
+      children: <BuildsTab />,
     },
     {
       key: 'quadrant',
