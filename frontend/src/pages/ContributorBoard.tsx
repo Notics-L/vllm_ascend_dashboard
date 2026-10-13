@@ -55,7 +55,6 @@ import {
   Line,
   BarChart,
   Bar,
-  Brush,
 } from 'recharts'
 import dayjs from 'dayjs'
 import {
@@ -447,15 +446,31 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
   const chartRef = useRef<HTMLDivElement>(null)
   const [searchLogin, setSearchLogin] = useState('')
 
-  const scatterData: ScatterDataPoint[] = (data?.points ?? []).map(p => ({
-    x: p.contribution_score,
-    y: p.error_score,
-    z: p.merged_pr_count,
-    login: p.login,
-    quadrant: p.quadrant,
-  }))
+  const scatterData: ScatterDataPoint[] = (() => {
+    const deduped = new Map<string, ScatterDataPoint>()
+    ;(data?.points ?? []).forEach(p => {
+      const pt: ScatterDataPoint = {
+        x: p.contribution_score,
+        y: p.error_score,
+        z: p.merged_pr_count,
+        login: p.login,
+        quadrant: p.quadrant,
+      }
+      const existing = deduped.get(p.login)
+      if (!existing || pt.z > existing.z || (pt.z === existing.z && pt.x > existing.x)) {
+        deduped.set(p.login, pt)
+      }
+    })
+    return Array.from(deduped.values())
+  })()
 
-  const highlightedLogin = searchLogin.trim().toLowerCase()
+  // 散点图缩放状态（鼠标滚轮缩放 + 重置）
+  const [zoomDomain, setZoomDomain] = useState<{ x: [number, number] | null; y: [number, number] | null }>({ x: null, y: null })
+
+  const isHighlightedPoint = useCallback((login: string) => {
+    if (!searchLogin.trim()) return false
+    return login.toLowerCase().includes(searchLogin.trim().toLowerCase())
+  }, [searchLogin])
 
   const handlePointClick = (point: ScatterDataPoint | undefined) => {
     if (point?.login) {
@@ -464,16 +479,26 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
   }
 
   const handleLocate = () => {
-    const found = scatterData.find(p => p.login.toLowerCase() === highlightedLogin)
-    if (found) {
-      message.success(`已定位到贡献者: ${found.login} (点击散点查看详情)`)
-    } else if (highlightedLogin) {
-      message.warning(`未找到贡献者: ${searchLogin}`)
+    if (!searchLogin.trim()) return
+    const found = scatterData.filter(p => p.login.toLowerCase().includes(searchLogin.trim().toLowerCase()))
+    if (found.length > 0) {
+      message.success(`找到 ${found.length} 位贡献者: ${found.map(p => p.login).join(', ')} (点击散点查看详情)`)
+    } else {
+      message.warning(`未找到匹配的贡献者: ${searchLogin}`)
     }
   }
 
   const handleClearSearch = () => {
     setSearchLogin('')
+  }
+
+  const handleWheelZoom = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    setZoomDomain({ x: null, y: null })
+  }, [])
+
+  const handleResetZoom = () => {
+    setZoomDomain({ x: null, y: null })
   }
 
   const handleExportPNG = useCallback(() => {
@@ -506,20 +531,16 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
     }
   }, [])
 
-  const handleSearch = () => {
-    handleLocate()
-  }
-
   const CustomTooltip = (props: { active?: boolean; payload?: { payload: ScatterDataPoint }[] }) => {
     if (props.active && props.payload?.[0]?.payload) {
       const p = props.payload[0].payload
-      const isHighlighted = p.login.toLowerCase() === highlightedLogin
+      const isHighlighted = isHighlightedPoint(p.login)
       return (
         <Card size="small" style={{ minWidth: 180, border: isHighlighted ? '2px solid #ff4d4f' : undefined }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Avatar src={`https://avatars.githubusercontent.com/${p.login}`} size="small" icon={<GithubOutlined />} />
             <Text strong>{p.login}</Text>
-            {isHighlighted && <Tag color="red">定位</Tag>}
+            {isHighlighted && <Tag color="red">匹配</Tag>}
           </div>
           <Divider style={{ margin: '8px 0' }} />
           <Text>贡献分数: {p.x.toFixed(1)}</Text>
@@ -553,19 +574,19 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
             title="四象限散点图"
             extra={
               <Space size="small">
-                <Input.Search
-                  placeholder="搜索贡献者高亮"
+                <Input
+                  placeholder="输入用户名模糊高亮"
                   value={searchLogin}
                   onChange={e => setSearchLogin(e.target.value)}
-                  onSearch={handleLocate}
                   allowClear
-                  onClear={handleClearSearch}
                   size="small"
                   style={{ width: 200 }}
                   prefix={<SearchOutlined />}
+                  onPressEnter={handleLocate}
                 />
-                <Button size="small" onClick={handleLocate} icon={<SearchOutlined />}>定位</Button>
-                <Button size="small" onClick={handleClearSearch}>清除</Button>
+                {zoomDomain.x || zoomDomain.y ? (
+                  <Button size="small" danger onClick={handleResetZoom}>重置缩放</Button>
+                ) : null}
                 <Button size="small" onClick={handleExportPNG} icon={<DownloadOutlined />}>导出PNG</Button>
               </Space>
             }
@@ -575,8 +596,8 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart>
                     <CartesianGrid />
-                    <XAxis type="number" dataKey="x" name="贡献分数" unit="分" />
-                    <YAxis type="number" dataKey="y" name="出错分数" unit="分" />
+                    <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={zoomDomain.x || [0, 'dataMax']} />
+                    <YAxis type="number" dataKey="y" name="出错分数" unit="分" domain={zoomDomain.y || [0, 'auto']} allowDataOverflow={false} />
                     <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
                     <ChartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#999' }} />
 
@@ -592,7 +613,7 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
                       shape={(props: { cx?: number; cy?: number; payload?: ScatterDataPoint }) => {
                         const { cx, cy, payload } = props
                         if (cx == null || cy == null) return <circle cx={0} cy={0} r={0} />
-                        const isHighlighted = payload?.login.toLowerCase() === highlightedLogin
+                        const isHighlighted = payload ? isHighlightedPoint(payload.login) : false
                         return (
                           <g onClick={(e) => {
                             e.stopPropagation()
@@ -607,24 +628,17 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
                               stroke={isHighlighted ? '#ff4d4f' : '#fff'}
                               strokeWidth={isHighlighted ? 3 : 2}
                               style={{ cursor: 'pointer' }}>
-                              <title>{payload?.login}</title>
-                            </circle>
-                            {isHighlighted && (
-                              <text x={cx} y={cy - 12} textAnchor="middle" fill="#ff4d4f" fontSize={11} fontWeight="bold">
-                                {payload?.login}
-                              </text>
-                            )}
+                                <title>{payload?.login}</title>
+                              </circle>
+                              {isHighlighted && (
+                                <text x={cx} y={cy - 12} textAnchor="middle" fill="#ff4d4f" fontSize={11} fontWeight="bold">
+                                  {payload?.login}
+                                </text>
+                              )}
                           </g>
                         )
                       }}
-                    />
-                    <Brush
-                      dataKey="x"
-                      height={40}
-                      stroke="#5b46f5"
-                      fill="#e0e7ff"
-                      travellerWidth={10}
-                    />
+                     />
                   </ScatterChart>
                 </ResponsiveContainer>
               ) : (
@@ -653,7 +667,7 @@ const sortableColumns: { key: string; label: string }[] = [
   { key: 'login', label: '用户名' },
 ]
 
-function RankingTab({ loading: _ }: { loading: boolean }) {
+function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRepo: string | undefined }) {
   const navigate = useNavigate()
   const [roleType, setRoleType] = useState('developer')
   const [rankings, setRankings] = useState<RankingItem[]>([])
@@ -661,9 +675,8 @@ function RankingTab({ loading: _ }: { loading: boolean }) {
   const [syncLoading, setSyncLoading] = useState(false)
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
-  const [repos, setRepos] = useState<string[]>([])
-  const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
@@ -671,58 +684,58 @@ function RankingTab({ loading: _ }: { loading: boolean }) {
 
   const [form] = Form.useForm()
 
-  useEffect(() => {
-    const loadRepos = async () => {
-      try {
-        const data = await getReposList()
-        setRepos(data.repos ?? [])
-      } catch { /* ignore */ }
-    }
-    loadRepos()
-  }, [])
-
-  const loadRanking = useCallback(async () => {
+  const fetchRanking = useCallback(async (page: number, size: number) => {
     setRankingLoading(true)
     try {
-      const data = await getRanking(roleType, 50, {
+      const sortKey = sortRules.length > 0 ? sortRules[0].field : undefined
+      const sortDir = sortRules.length > 0 ? sortRules[0].order : 'desc'
+      const data = await getRanking(roleType, size, {
         repo_name: selectedRepo || null,
         period_start: dateRange?.[0]?.format('YYYY-MM-DD') || null,
         period_end: dateRange?.[1]?.format('YYYY-MM-DD') || null,
+        sort_by: sortKey,
+        sort_order: sortDir,
       })
+      // 最小 loading 延迟 300ms，避免接口返回太快导致闪烁
+      await new Promise(r => setTimeout(r, 300))
       setRankings(data.rankings)
     } finally {
       setRankingLoading(false)
     }
-  }, [roleType, selectedRepo, dateRange])
+  }, [roleType, selectedRepo, dateRange, sortRules])
 
-  const loadRoleStats = useCallback(async () => {
-    try {
-      const data = await getRoleStats({ repo_name: selectedRepo || undefined })
-      setRoleStats(data)
-    } catch { /* ignore */ }
-  }, [selectedRepo])
+  useEffect(() => {
+    fetchRanking(pagination.current, pagination.pageSize)
+  }, [fetchRanking, pagination.current, pagination.pageSize])
 
-  const loadModuleHotspot = useCallback(async () => {
-    try {
-      const data = await getModuleHotspot({
-        repo_name: selectedRepo || null,
-        period_start: dateRange?.[0]?.format('YYYY-MM-DD') || null,
-        period_end: dateRange?.[1]?.format('YYYY-MM-DD') || null,
-      })
-      setModuleHotspot(data)
-    } catch { /* ignore */ }
+  useEffect(() => {
+    let cancelled = false
+    const loadStats = async () => {
+      try {
+        const [_roleStats, _moduleHotspot] = await Promise.all([
+          getRoleStats({ repo_name: selectedRepo || undefined }),
+          getModuleHotspot({
+            repo_name: selectedRepo || null,
+            period_start: dateRange?.[0]?.format('YYYY-MM-DD') || null,
+            period_end: dateRange?.[1]?.format('YYYY-MM-DD') || null,
+          }),
+        ])
+        if (!cancelled) {
+          setRoleStats(_roleStats)
+          setModuleHotspot(_moduleHotspot)
+        }
+      } catch { /* ignore */ }
+    }
+    loadStats()
+    return () => { cancelled = true }
   }, [selectedRepo, dateRange])
-
-  useEffect(() => { loadRanking() }, [loadRanking])
-  useEffect(() => { loadRoleStats() }, [loadRoleStats])
-  useEffect(() => { loadModuleHotspot() }, [loadModuleHotspot])
 
   const handleSync = async () => {
     setSyncLoading(true)
     try {
       await syncContributors(undefined, false)
       message.success('同步已触发，请在后台日志中查看进度')
-      await loadRanking()
+      await fetchRanking(pagination.current, pagination.pageSize)
     } catch {
       message.error('同步触发失败')
     } finally {
@@ -794,12 +807,14 @@ function RankingTab({ loading: _ }: { loading: boolean }) {
   const handleApplySort = () => {
     const values = form.getFieldsValue()
     setSortRules(prev => [...prev, { field: values.field, order: values.order || 'desc' }])
+    setPagination(p => ({ ...p, current: 1 }))
     form.resetFields()
     setSortModalOpen(false)
   }
 
   const handleRemoveSortRule = (index: number) => {
     setSortRules(prev => prev.filter((_, i) => i !== index))
+    setPagination(p => ({ ...p, current: 1 }))
   }
 
   const rankingColumns = [
@@ -905,23 +920,13 @@ function RankingTab({ loading: _ }: { loading: boolean }) {
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={24}>
           <Space wrap>
-            <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => setRoleType('developer')}>开发者排行</Button>
-            <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => setRoleType('reviewer')}>检视者排行</Button>
-            <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => setRoleType('maintainer')}>Maintainer 排行</Button>
+            <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => { setRoleType('developer'); setPagination(p => ({ ...p, current: 1 })) }}>开发者排行</Button>
+            <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>检视者排行</Button>
+            <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => { setRoleType('maintainer'); setPagination(p => ({ ...p, current: 1 })) }}>Maintainer 排行</Button>
             <span style={{ borderLeft: '1px solid #d9d9d9', margin: '0 4px' }} />
-            {repos.length > 0 && (
-              <Select
-                allowClear
-                placeholder="选择仓库"
-                value={selectedRepo}
-                onChange={setSelectedRepo}
-                style={{ width: 200 }}
-                options={repos.map(r => ({ label: r, value: r }))}
-              />
-            )}
             <DatePicker.RangePicker
               value={dateRange}
-              onChange={(dates) => setDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+              onChange={(dates) => { setDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null); setPagination(p => ({ ...p, current: 1 })) }}
               placeholder={['起始日期', '结束日期']}
             />
             <Button icon={<ReloadOutlined />} loading={syncLoading} onClick={handleSync}>同步数据</Button>
@@ -998,12 +1003,17 @@ function RankingTab({ loading: _ }: { loading: boolean }) {
           columns={rankingColumns}
           dataSource={displayData}
           rowKey="login"
+          loading={rankingLoading}
           pagination={{
-            pageSize: 20,
-            pageSizeOptions: ['10', '20', '50'],
+            current: pagination.current,
+            pageSize: pagination.pageSize,
+            pageSizeOptions: [10, 20, 50],
             showSizeChanger: true,
             showTotal: (total) => `共 ${total} 条`,
             showQuickJumper: true,
+            onChange: (page, size) => {
+              setPagination({ current: page, pageSize: size })
+            },
           }}
         />
       </Card>
@@ -1270,17 +1280,29 @@ function ContributorBoard() {
   const [quadrantData, setQuadrantData] = useState<QuadrantData | null>(null)
   const [quadrantLoading, setQuadrantLoading] = useState(false)
 
+  const [repos, setRepos] = useState<string[]>([])
+  const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
+
   useEffect(() => {
     loadClassification()
     loadBuildStats()
     loadBuildPlans()
     loadQuadrantData()
+    loadRepos()
   }, [])
+
+  const loadRepos = async () => {
+    try {
+      const data = await getReposList()
+      setRepos(data.repos ?? [])
+    } catch { /* ignore */ }
+  }
 
   const loadClassification = async () => {
     setClassificationLoading(true)
     try {
       const data = await getClassificationSummary()
+      await new Promise(r => setTimeout(r, 400))
       setClassificationData(data)
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } }; message?: string }
@@ -1294,6 +1316,7 @@ function ContributorBoard() {
     setBuildStatsLoading(true)
     try {
       const data = await getBuildOptimizationStats()
+      await new Promise(r => setTimeout(r, 400))
       setBuildStats(data)
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } }; message?: string }
@@ -1307,6 +1330,7 @@ function ContributorBoard() {
     setBuildPlansLoading(true)
     try {
       const data = await getBuildPlans(undefined, 100, 0)
+      await new Promise(r => setTimeout(r, 400))
       setBuildPlans(data.plans)
       setBuildPlansTotal(data.total)
     } catch (error: unknown) {
@@ -1321,6 +1345,7 @@ function ContributorBoard() {
     setQuadrantLoading(true)
     try {
       const data = await getQuadrantData()
+      await new Promise(r => setTimeout(r, 400))
       setQuadrantData(data)
     } catch {
       // silently fail - quadrant data may require admin role
@@ -1348,7 +1373,7 @@ function ContributorBoard() {
     {
       key: 'ranking',
       label: <><TrophyOutlined /> 排行榜</>,
-      children: <RankingTab loading={quadrantLoading} />,
+      children: <RankingTab loading={quadrantLoading} selectedRepo={selectedRepo} />,
     },
   ]
 
@@ -1363,6 +1388,20 @@ function ContributorBoard() {
           vLLM Ascend 提交分类、构建优化与贡献者分析
         </Text>
       </div>
+
+      {repos.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Select
+            allowClear
+            placeholder="选择仓库（影响排行榜 Tab）"
+            value={selectedRepo}
+            onChange={setSelectedRepo}
+            style={{ width: 260 }}
+            options={repos.map(r => ({ label: r, value: r }))}
+            suffixIcon={<SearchOutlined />}
+          />
+        </div>
+      )}
 
       <Tabs defaultActiveKey="classification" items={tabItems} />
     </div>
