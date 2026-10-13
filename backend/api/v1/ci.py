@@ -11,6 +11,7 @@ import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
+import yaml
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import case, func, or_, select, text
 
@@ -252,6 +253,236 @@ def _extract_log_error_summary(log_text: str) -> str | None:
     best_score = max(item[0] for item in candidates)
     summary = [line for score, line in candidates if score == best_score][-1]
     return summary if len(summary) <= 240 else f"{summary[:237]}..."
+
+
+def _benchmark_log_sections(log_text: str) -> list[tuple[str, list[str]]]:
+    """Return benchmark evidence from each explicit Run Pytest / Stream logs step."""
+    lines = log_text.splitlines()
+    starts = [
+        (index, "run_pytest" if "run pytest" in line.lower() else "stream_logs")
+        for index, line in enumerate(lines)
+        if "run pytest" in line.lower() or "stream logs" in line.lower()
+    ]
+    sections: list[tuple[str, list[str]]] = []
+    for start, source_step in starts:
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            lowered = lines[index].lower()
+            if "##[group]" in lowered or "post job cleanup" in lowered:
+                end = index
+                break
+        sections.append((source_step, lines[start:end]))
+    return sections
+
+
+def _case_name_near(lines: list[str], index: int, metric_type: str, default_case_name: str | None = None) -> str:
+    """Use the nearest aisbench case or dataset as the chart series identity."""
+    for line in reversed(lines[max(0, index - 100):index + 1]):
+        case_match = re.search(r"[\"']case_name[\"']\s*:\s*[\"']([^\"']+)", line, re.I)
+        if case_match:
+            return case_match.group(1)
+        dataset_match = re.search(r"accuracy\s+of\s+([^,\s]+)", line, re.I)
+        if dataset_match:
+            return dataset_match.group(1)
+    if default_case_name and metric_type == "ott":
+        return default_case_name
+    return "OTT" if metric_type == "ott" else "Accuracy"
+
+
+def _parse_benchmark_metrics(log_text: str) -> list[dict[str, Any]]:
+    """Parse benchmark metrics from explicit Run Pytest and Stream logs steps."""
+    metrics: dict[tuple[str, str], dict[str, Any]] = {}
+    case_metadata: dict[str, dict[str, Any]] = {}
+    ott_pattern = re.compile(
+        r"output\s+token\s+throughput\s*(?:is|:|=|[|│])\s*(?:total\s*[|│]\s*)?([0-9]+(?:\.[0-9]+)?)",
+        re.I,
+    )
+    accuracy_pattern = re.compile(
+        r"(?:\baccuracy\s+of\s+[^,\s]+\s+is\s*|[|│]\s*accuracy\s*[|│]\s*(?:total\s*[|│]\s*)?)([0-9]+(?:\.[0-9]+)?)",
+        re.I,
+    )
+    accuracy_markdown_pattern = re.compile(
+        r"[|│]\s*[^|│]+\s*[|│]\s*[^|│]+\s*[|│]\s*accuracy\s*[|│]\s*[^|│]+\s*[|│]\s*([0-9]+(?:\.[0-9]+)?)",
+        re.I,
+    )
+    baseline_pattern = re.compile(r"baseline\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", re.I)
+
+    for source_step, lines in _benchmark_log_sections(log_text):
+        for index, line in enumerate(lines):
+            if "the following aisbench case failed" in line.lower():
+                case_type_match = re.search(r"[\"']case_type[\"']\s*:\s*[\"']([^\"']+)", line, re.I)
+                if case_type_match:
+                    baseline_match = re.search(r"[\"']baseline[\"']\s*:\s*([0-9]+(?:\.[0-9]+)?)", line, re.I)
+                    threshold_match = re.search(r"[\"']threshold[\"']\s*:\s*([0-9]+(?:\.[0-9]+)?)", line, re.I)
+                    reason = line.partition("reason is")[2].strip() or None
+                    case_metadata[case_type_match.group(1).lower()] = {
+                        "baseline": float(baseline_match.group(1)) if baseline_match else None,
+                        "threshold": float(threshold_match.group(1)) if threshold_match else None,
+                        "reason": reason,
+                        "source_step": source_step,
+                        "source_excerpt": line.strip()[:500],
+                    }
+            for metric_type, pattern, unit in (
+                ("ott", ott_pattern, "token/s"),
+                ("accuracy", accuracy_pattern, "%"),
+            ):
+                match = pattern.search(line)
+                if metric_type == "accuracy" and not match:
+                    # Successful aisbench output uses a Markdown row such as
+                    # ``| gsm8k | 50861a | accuracy | gen | 96.06 |``.
+                    match = accuracy_markdown_pattern.search(line)
+                if not match:
+                    continue
+                # Prefer the metric line itself.  Looking backwards can attach
+                # an OTT baseline to a following accuracy verdict.
+                baseline_match = baseline_pattern.search(line)
+                if not baseline_match:
+                    baseline_match = baseline_pattern.search(
+                        " ".join(lines[index + 1:min(len(lines), index + 3)])
+                    )
+                # OTT is the same throughput metric across benchmark cases.
+                # Keep it in one history series so a case label emitted later
+                # in a failed log cannot hide otherwise comparable values.
+                case_name = "OTT" if metric_type == "ott" else "Accuracy"
+                metrics[(metric_type, case_name)] = {
+                    "case_name": case_name,
+                    "metric_type": metric_type,
+                    "value": float(match.group(1)),
+                    "baseline": float(baseline_match.group(1)) if baseline_match else None,
+                    "unit": unit,
+                    "source_step": source_step,
+                    "source_excerpt": line.strip()[:500],
+                }
+
+    for metric in metrics.values():
+        metadata = case_metadata.get(metric["metric_type"])
+        if not metadata:
+            continue
+        if metric["baseline"] is None:
+            metric["baseline"] = metadata["baseline"]
+        threshold = metadata["threshold"]
+        if threshold is not None and threshold <= 1:
+            metric["threshold_ratio"] = threshold
+            metric["threshold_tolerance"] = None
+        elif threshold is not None:
+            metric["threshold_ratio"] = None
+            metric["threshold_tolerance"] = threshold
+        metric["reason"] = metadata["reason"]
+
+    # Aisbench can fail before calculating accuracy.  Preserve that state as
+    # null so the chart does not turn a runtime error into an Accuracy = 0.
+    accuracy_metadata = case_metadata.get("accuracy")
+    if accuracy_metadata and not any(metric["metric_type"] == "accuracy" for metric in metrics.values()):
+        threshold = accuracy_metadata["threshold"]
+        metrics[("accuracy", "Accuracy")] = {
+            "case_name": "Accuracy",
+            "metric_type": "accuracy",
+            "value": None,
+            "baseline": accuracy_metadata["baseline"],
+            "threshold_ratio": threshold if threshold is not None and threshold <= 1 else None,
+            "threshold_tolerance": threshold if threshold is not None and threshold > 1 else None,
+            "reason": accuracy_metadata["reason"],
+            "unit": "%",
+            "source_step": accuracy_metadata["source_step"],
+            "source_excerpt": accuracy_metadata["source_excerpt"],
+        }
+    return list(metrics.values())
+
+
+# Version 6 excludes zero-baseline warmup cases when resolving the YAML gate.
+_PERFORMANCE_TRENDS_CACHE_VERSION = 6
+
+
+def _benchmark_config_reference(log_text: str) -> str | None:
+    """Find the case YAML path (or filename) emitted by the nightly matrix."""
+    paths = re.findall(r"(tests/e2e/[A-Za-z0-9_./-]+\.ya?ml)", log_text, re.I)
+    if paths:
+        return paths[-1]
+    names = re.findall(r"\b([A-Za-z0-9_][A-Za-z0-9_.-]*\.ya?ml)\b", log_text, re.I)
+    return names[-1] if names else None
+
+
+def _apply_benchmark_config(metrics: list[dict[str, Any]], yaml_content: str, config_path: str, head_sha: str) -> None:
+    """Fill successful log metrics from the exact-run benchmark YAML."""
+    try:
+        document = yaml.safe_load(yaml_content) or {}
+    except yaml.YAMLError as exc:
+        logger.warning("Unable to parse benchmark YAML %s: %s", config_path, exc)
+        return
+    benchmarks = document.get("benchmarks", {}) if isinstance(document, dict) else {}
+    if not isinstance(benchmarks, dict):
+        return
+    for metric in metrics:
+        candidates = [
+            (name, value) for name, value in benchmarks.items()
+            if isinstance(value, dict) and value.get("case_type") == (
+                "performance" if metric["metric_type"] == "ott" else "accuracy"
+            )
+        ]
+        if not candidates:
+            continue
+        # YAMLs can include a zero-baseline perf_warmup case before the real
+        # performance gate; it must not become the benchmark baseline.
+        candidates.sort(key=lambda candidate: (
+            "warmup" in str(candidate[0]).lower(),
+            not isinstance(candidate[1].get("baseline"), (int, float)) or candidate[1]["baseline"] == 0,
+        ))
+        config = candidates[0][1]
+        if metric.get("baseline") is None and isinstance(config.get("baseline"), (int, float)):
+            metric["baseline"] = float(config["baseline"])
+        threshold = config.get("threshold")
+        if isinstance(threshold, (int, float)):
+            metric["threshold_ratio"] = float(threshold) if threshold <= 1 else None
+            metric["threshold_tolerance"] = float(threshold) if threshold > 1 else None
+        metric["config_path"] = config_path
+        metric["config_head_sha"] = head_sha
+
+
+def _performance_trends_cache(job: CIJob) -> dict[str, Any] | None:
+    """Return a valid immutable-Job trend cache, if one is available."""
+    if job.status != "completed":
+        return None
+    evidence = _json_object(job.data).get("dashboard_evidence")
+    if not isinstance(evidence, dict):
+        return None
+    cache = evidence.get("performance_trends")
+    if not isinstance(cache, dict) or cache.get("version") != _PERFORMANCE_TRENDS_CACHE_VERSION:
+        return None
+    if not isinstance(cache.get("items"), list):
+        return None
+    return cache
+
+
+def _with_performance_trend_job_context(job: CIJob, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add live Job metadata to cached or freshly parsed benchmark items."""
+    github_job_url = (
+        f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}"
+        f"/actions/runs/{job.run_id}/job/{job.job_id}"
+    )
+    return [
+        {
+            **item,
+            "job_id": job.job_id,
+            "run_id": job.run_id,
+            "started_at": job.started_at,
+            "conclusion": job.conclusion,
+            "github_job_url": github_job_url,
+        }
+        for item in items
+    ]
+
+
+def _save_performance_trends_cache(job: CIJob, items: list[dict[str, Any]], reason: str | None) -> None:
+    """Store parsed evidence alongside the existing GitHub Job payload."""
+    payload = _json_object(job.data)
+    evidence = payload.setdefault("dashboard_evidence", {})
+    evidence["performance_trends"] = {
+        "version": _PERFORMANCE_TRENDS_CACHE_VERSION,
+        "collected_at": datetime.now(UTC).isoformat(),
+        "items": items,
+        "reason": reason,
+    }
+    job.data = json.dumps(payload)
 
 
 def _build_log_root_cause_context(log_text: str, max_chars: int = 14000) -> str:
@@ -1061,6 +1292,114 @@ async def refresh_run_version_snapshot(run_id: int, current_user: CurrentAdminUs
                 await db.commit()
                 return snapshot
     raise HTTPException(status_code=422, detail="Version information was not found in available version-reporting logs")
+
+
+@router.get("/job-performance-trends")
+async def get_job_performance_trends(
+    db: DbSession,
+    job_ids: list[int] = Query(..., min_length=1, max_length=30),
+):
+    """Read benchmark metrics from a Job cache, then GitHub logs on cache miss."""
+    unique_job_ids = list(dict.fromkeys(job_ids))
+    result = await db.execute(
+        select(CIJob, CIResult)
+        .outerjoin(CIResult, CIResult.run_id == CIJob.run_id)
+        .where(CIJob.job_id.in_(unique_job_ids))
+    )
+    job_rows = result.all()
+    jobs_by_id = {job.job_id: job for job, _ in job_rows}
+    runs_by_job = {job.job_id: run for job, run in job_rows}
+    results: list[dict[str, Any]] = []
+    cache_misses: list[tuple[CIJob, CIResult | None]] = []
+    for job_id in unique_job_ids:
+        job = jobs_by_id.get(job_id)
+        if job is None:
+            results.append({"job_id": job_id, "items": [], "reason": "Job not found"})
+            continue
+        cache = _performance_trends_cache(job)
+        if cache is not None:
+            results.append({
+                "job_id": job_id,
+                "items": _with_performance_trend_job_context(job, cache["items"]),
+                "reason": cache.get("reason"),
+            })
+            continue
+        cache_misses.append((job, runs_by_job.get(job.job_id)))
+
+    if not cache_misses:
+        return {
+            "items": [item for parsed in results for item in parsed["items"]],
+            "unavailable": [
+                {"job_id": parsed["job_id"], "reason": parsed["reason"]}
+                for parsed in results if parsed["reason"]
+            ],
+        }
+    if not settings.GITHUB_TOKEN:
+        raise HTTPException(status_code=503, detail="GitHub Token is not configured")
+
+    from infrastructure.clients.github_client import GitHubClient
+    semaphore = asyncio.Semaphore(3)
+
+    async def parse_one(job: CIJob, run: CIResult | None) -> dict[str, Any]:
+        try:
+            async with semaphore:
+                async with GitHubClient(
+                    token=settings.GITHUB_TOKEN,
+                    owner=settings.GITHUB_OWNER,
+                    repo=settings.GITHUB_REPO,
+                ) as client:
+                    log_text = await client.get_job_logs(job.job_id)
+            items = _parse_benchmark_metrics(log_text)
+            config_reference = _benchmark_config_reference(log_text)
+            if items and config_reference and run and run.head_sha:
+                try:
+                    async with GitHubClient(
+                        token=settings.GITHUB_TOKEN,
+                        owner=settings.GITHUB_OWNER,
+                        repo=settings.GITHUB_REPO,
+                    ) as client:
+                        config_path = config_reference
+                        if not config_path.startswith("tests/"):
+                            candidates = await client.find_repository_paths_by_filename(
+                                config_reference, run.head_sha
+                            )
+                            config_path = next(
+                                (path for path in candidates if "/configs/" in path),
+                                candidates[0] if candidates else "",
+                            )
+                        if config_path:
+                            _apply_benchmark_config(
+                                items,
+                                await client.get_repository_file_content(config_path, run.head_sha),
+                                config_path,
+                                run.head_sha,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to read benchmark YAML %s at %s for job %s: %s",
+                        config_reference, run.head_sha, job.job_id, exc,
+                    )
+            reason = None if items else "No benchmark metric found in Run Pytest or Stream logs"
+            if job.status == "completed":
+                _save_performance_trends_cache(job, items, reason)
+            return {
+                "job_id": job.job_id,
+                "items": _with_performance_trend_job_context(job, items),
+                "reason": reason,
+            }
+        except Exception as exc:
+            logger.warning("Failed to read benchmark metrics for job %s: %s", job.job_id, exc)
+            return {"job_id": job.job_id, "items": [], "reason": "GitHub logs unavailable or expired"}
+
+    results.extend(await asyncio.gather(*(parse_one(job, run) for job, run in cache_misses)))
+    await db.commit()
+    return {
+        "items": [item for parsed in results for item in parsed["items"]],
+        "unavailable": [
+            {"job_id": parsed["job_id"], "reason": parsed["reason"]}
+            for parsed in results if parsed["reason"]
+        ],
+    }
 
 
 @router.get("/job-comparison")
