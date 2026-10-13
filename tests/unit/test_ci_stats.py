@@ -216,10 +216,34 @@ benchmarks:
     assert ott["threshold_ratio"] == 0.97
 
 
+def test_success_metric_reads_benchmark_nested_under_yaml_test_case():
+    metrics = _parse_benchmark_metrics(
+        "2026-10-12T17:00:59Z │ Output Token Throughput │ total │ 1280.7847 token/s │\n"
+    )
+    config = """
+test_cases:
+  - name: Qwen3_6_27b_A5_Acceptance_Rate_02
+    benchmarks:
+      perf:
+        case_type: performance
+        baseline: 342
+        threshold: 0.95
+"""
+
+    _apply_benchmark_config(metrics, config, "tests/e2e/cases/Qwen3_6_27b_A5.yaml", "deadbeef")
+
+    ott = metrics[0]
+    assert ott["baseline"] == 342
+    assert ott["threshold_ratio"] == 0.95
+
+
 def test_benchmark_config_reference_prefers_full_path():
     log = "running tests/e2e/cases/models/configs/Qwen/QWEN3_235B_PD_3_5K_1_5k.yaml"
 
     assert _benchmark_config_reference(log) == "tests/e2e/cases/models/configs/Qwen/QWEN3_235B_PD_3_5K_1_5k.yaml"
+    assert _benchmark_config_reference(
+        "single-node (main, Qwen3_6_27b_A5.yaml, tests/e2e/cases/model... / Qwen3_6_27b_A5)"
+    ) == "Qwen3_6_27b_A5.yaml"
 
 
 def test_parse_benchmark_metrics_reads_unicode_stream_log_table():
@@ -239,6 +263,22 @@ def test_parse_benchmark_metrics_reads_unicode_stream_log_table():
     assert ott["value"] == 0.0
     assert ott["baseline"] == 3583.8747
     assert ott["source_step"] == "run_pytest"
+
+
+def test_parse_benchmark_metrics_falls_back_when_downloaded_log_has_no_step_heading():
+    log = "2026-10-12T17:00:59Z │ Output Token Throughput │ total │ 1280.7847 token/s │\n"
+
+    metrics = _parse_benchmark_metrics(log)
+
+    assert metrics == [{
+        "case_name": "OTT",
+        "metric_type": "ott",
+        "value": 1280.7847,
+        "baseline": None,
+        "unit": "token/s",
+        "source_step": "run_pytest",
+        "source_excerpt": log.strip(),
+    }]
 
 
 def test_parse_benchmark_metrics_does_not_treat_accuracy_configuration_as_result():
