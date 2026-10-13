@@ -8,11 +8,17 @@ from sqlalchemy.dialects import mysql
 
 from api.v1.ci import (
     _build_log_root_cause_context,
+    _apply_benchmark_config,
+    _benchmark_config_reference,
     _extract_log_error_summary,
     _extract_merged_pr_number,
     _extract_revert_target,
     _fetch_pr_details_bounded,
     _merged_within_commit_boundary,
+    _parse_benchmark_metrics,
+    _performance_trends_cache,
+    _save_performance_trends_cache,
+    _with_performance_trend_job_context,
     get_ci_stats,
     list_runs,
 )
@@ -115,6 +121,190 @@ def test_compact_error_prefers_aisbench_verdict_to_generic_exception():
     )
 
     assert "Performance verification failed" in (_extract_log_error_summary(log) or "")
+
+
+def test_parse_benchmark_metrics_reads_success_table_and_failed_baseline():
+    log = (
+        "##[group]Run Pytest\n"
+        "{'case_name': 'vllm-api-stream-chat'}\n"
+        "| Output Token Throughput | total | 901.7436 token/s |\n"
+        "##[group]Stream logs\n"
+        "The current Output Token Throughput is 901.7436 token/s, which is not greater than or equal to 0.97 * baseline 939.8253.\n"
+        "Accuracy verification failed. The accuracy of /datasets/aime2025 is 93.2, which is not within 10 relative to baseline 93.33.\n"
+        "##[group]Post job cleanup\n"
+    )
+
+    metrics = _parse_benchmark_metrics(log)
+    ott = next(item for item in metrics if item["metric_type"] == "ott")
+    accuracy = next(item for item in metrics if item["metric_type"] == "accuracy")
+
+    assert ott["value"] == 901.7436
+    assert ott["case_name"] == "OTT"
+    assert ott["baseline"] == 939.8253
+    assert ott["source_step"] == "stream_logs"
+    assert accuracy["case_name"] == "Accuracy"
+    assert accuracy["baseline"] == 93.33
+
+
+def test_parse_benchmark_metrics_reads_success_markdown_accuracy_table():
+    log = (
+        "##[group]Run Pytest\n"
+        "The markdown format results is as below:\n"
+        "| dataset | version | metric | mode | vllm-api-general-chat |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| gsm8k | 50861a | accuracy | gen | 96.06 |\n"
+    )
+
+    metrics = _parse_benchmark_metrics(log)
+
+    assert metrics == [{
+        "case_name": "Accuracy",
+        "metric_type": "accuracy",
+        "value": 96.06,
+        "baseline": None,
+        "unit": "%",
+        "source_step": "run_pytest",
+        "source_excerpt": "| gsm8k | 50861a | accuracy | gen | 96.06 |",
+    }]
+
+
+def test_success_metrics_get_baseline_from_yaml_at_run_sha():
+    metrics = _parse_benchmark_metrics(
+        "##[group]Run Pytest\n| gsm8k | 50861a | accuracy | gen | 96.06 |\n"
+    )
+    config = """
+benchmarks:
+  acc:
+    case_type: accuracy
+    baseline: 96.74
+    threshold: 2
+  perf_1:
+    case_type: performance
+    baseline: 3583.8747
+    threshold: 0.97
+"""
+
+    _apply_benchmark_config(metrics, config, "tests/e2e/cases/QWEN.yaml", "deadbeef")
+
+    accuracy = metrics[0]
+    assert accuracy["baseline"] == 96.74
+    assert accuracy["threshold_tolerance"] == 2.0
+    assert accuracy["config_path"] == "tests/e2e/cases/QWEN.yaml"
+    assert accuracy["config_head_sha"] == "deadbeef"
+
+
+def test_performance_config_ignores_zero_baseline_warmup_case():
+    metrics = _parse_benchmark_metrics(
+        "##[group]Stream logs\n| Output Token Throughput | total | 1059.36 token/s |\n"
+    )
+    config = """
+benchmarks:
+  perf_warmup:
+    case_type: performance
+    baseline: 0
+    threshold: 0.97
+  perf:
+    case_type: performance
+    baseline: 923.60
+    threshold: 0.97
+"""
+
+    _apply_benchmark_config(metrics, config, "tests/e2e/cases/GLM.yaml", "deadbeef")
+
+    ott = metrics[0]
+    assert ott["baseline"] == 923.60
+    assert ott["threshold_ratio"] == 0.97
+
+
+def test_benchmark_config_reference_prefers_full_path():
+    log = "running tests/e2e/cases/models/configs/Qwen/QWEN3_235B_PD_3_5K_1_5k.yaml"
+
+    assert _benchmark_config_reference(log) == "tests/e2e/cases/models/configs/Qwen/QWEN3_235B_PD_3_5K_1_5k.yaml"
+
+
+def test_parse_benchmark_metrics_reads_unicode_stream_log_table():
+    """Run Pytest tables can use box-drawing separators in GitHub raw logs."""
+    log = (
+        "2026-10-13T03:36:49Z ====> Run pytest entry: tests/e2e/test_multi_node.py\n"
+        "2026-10-13T03:50:42Z │ Output Token Throughput │ total │ 0.0 token/s │\n"
+        "2026-10-13T03:50:42Z [ERROR] The following aisbench case failed: "
+        "{'case_type': 'performance', 'baseline': 3583.8747, 'case_name': 'perf_1'}, "
+        "reason is Performance verification failed. The current Output Token Throughput is 0.0 "
+        "token/s, which is not greater than or equal to 0.97 * baseline 3583.8747.\n"
+    )
+
+    metrics = _parse_benchmark_metrics(log)
+    ott = next(item for item in metrics if item["metric_type"] == "ott" and item["case_name"] == "OTT")
+
+    assert ott["value"] == 0.0
+    assert ott["baseline"] == 3583.8747
+    assert ott["source_step"] == "run_pytest"
+
+
+def test_parse_benchmark_metrics_does_not_treat_accuracy_configuration_as_result():
+    log = (
+        "##[group]Run Pytest\n"
+        "accuracy: 5\n"
+        "{'case_type': 'accuracy', 'baseline': 96.74}\n"
+    )
+
+    assert _parse_benchmark_metrics(log) == []
+
+
+def test_parse_benchmark_metrics_keeps_runtime_failed_accuracy_as_null():
+    log = (
+        "##[group]Stream logs\n"
+        "[ERROR] The following aisbench case failed: {'case_type': 'accuracy', "
+        "'baseline': 96.74, 'threshold': 2, 'case_name': 'acc'}, reason is "
+        "Some errors happened to Aisbench runtime\n"
+    )
+
+    metrics = _parse_benchmark_metrics(log)
+
+    assert len(metrics) == 1
+    accuracy = metrics[0]
+    assert accuracy["case_name"] == "Accuracy"
+    assert accuracy["metric_type"] == "accuracy"
+    assert accuracy["value"] is None
+    assert accuracy["baseline"] == 96.74
+    assert accuracy["threshold_ratio"] is None
+    assert accuracy["threshold_tolerance"] == 2.0
+    assert accuracy["reason"] == "Some errors happened to Aisbench runtime"
+    assert accuracy["source_step"] == "stream_logs"
+
+
+def test_performance_trends_cache_reuses_completed_job_evidence():
+    job = SimpleNamespace(
+        job_id=123,
+        run_id=456,
+        status="completed",
+        started_at=datetime(2026, 10, 13, tzinfo=UTC),
+        conclusion="failure",
+        data='{"github": "payload"}',
+    )
+    metrics = [{"case_name": "OTT", "metric_type": "ott", "value": 100.0, "baseline": 110.0}]
+
+    _save_performance_trends_cache(job, metrics, None)
+    cache = _performance_trends_cache(job)
+
+    assert cache is not None
+    assert cache["items"] == metrics
+    hydrated = _with_performance_trend_job_context(job, cache["items"])
+    assert hydrated[0]["job_id"] == 123
+    assert hydrated[0]["run_id"] == 456
+    assert hydrated[0]["value"] == 100.0
+
+    job.status = "in_progress"
+    assert _performance_trends_cache(job) is None
+
+
+def test_performance_trends_cache_rejects_entries_from_an_older_schema():
+    job = SimpleNamespace(
+        status="completed",
+        data='{"dashboard_evidence": {"performance_trends": {"version": 3, "items": []}}}',
+    )
+
+    assert _performance_trends_cache(job) is None
 
 
 class _RowsResult:

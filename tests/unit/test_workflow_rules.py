@@ -159,7 +159,7 @@ async def test_job_keeps_logical_name_and_original_github_payload():
 
 
 @pytest.mark.asyncio
-async def test_scheduled_ci_sync_passes_current_config_rules_to_collector():
+async def test_scheduled_ci_sync_does_not_use_config_event_as_api_filter():
     config = SimpleNamespace(
         workflow_file="nightly-a3.yml",
         hardware="A3",
@@ -179,6 +179,7 @@ async def test_scheduled_ci_sync_passes_current_config_rules_to_collector():
     assert await collector.collect_workflow_runs(days_back=1) == 1
     kwargs = collector._collect_single_workflow.await_args.kwargs
     assert kwargs["workflow_file"] == "nightly-a3.yml"
+    assert kwargs["event"] is None
     assert kwargs["stats_start_hour"] == 21
     assert kwargs["stats_end_hour"] == 3
     assert kwargs["materialize_name_regex"] == r"^Nightly-A3 [(]scheduled[)]$"

@@ -122,6 +122,29 @@ export interface CIJobComparison {
   warnings: string[]
 }
 
+export interface CIJobPerformanceMetric {
+  job_id: number
+  run_id: number
+  started_at: string | null
+  conclusion: string | null
+  github_job_url: string
+  case_name: string
+  metric_type: 'ott' | 'accuracy'
+  value: number | null
+  baseline: number | null
+  threshold_ratio?: number | null
+  threshold_tolerance?: number | null
+  reason?: string | null
+  unit: string
+  source_step: 'run_pytest' | 'stream_logs'
+  source_excerpt: string
+}
+
+export interface CIJobPerformanceTrends {
+  items: CIJobPerformanceMetric[]
+  unavailable: Array<{ job_id: number; reason: string }>
+}
+
 export interface CIStats {
   total_runs: number
   passed_runs: number
@@ -255,6 +278,14 @@ export const getJobs = async (params?: {
 export const getJobComparison = async (startJobId: number, endJobId: number): Promise<CIJobComparison> => {
   const response = await api.get<CIJobComparison>('/ci/job-comparison', {
     params: { start_job_id: startJobId, end_job_id: endJobId },
+  })
+  return response.data
+}
+
+export const getJobPerformanceTrends = async (jobIds: number[]): Promise<CIJobPerformanceTrends> => {
+  const response = await api.get<CIJobPerformanceTrends>('/ci/job-performance-trends', {
+    params: { job_ids: jobIds },
+    paramsSerializer: { indexes: null },
   })
   return response.data
 }

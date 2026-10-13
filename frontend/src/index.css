@@ -153,6 +153,19 @@ html { scroll-behavior: smooth; }
 .npu-occupancy-timeline-group-head .ant-typography-secondary { font-size: 12px; }
 .npu-occupancy-timeline-row { display: grid; gap: 4px; min-height: 40px; padding: 5px 0; border-bottom: 1px solid #f0f1f4; }
 .npu-occupancy-timeline-task-name { display: flex; gap: 24px; align-items: baseline; color: #45495a; font-size: 13px; flex-wrap: wrap; }
+
+@keyframes job-history-view-enter {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.job-history-view-enter {
+  animation: job-history-view-enter 260ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-history-view-enter { animation: none; }
+}
 .npu-occupancy-timeline-task-name .ant-typography:first-child { color: #5e6372; flex: 0 0 auto; }
 .npu-occupancy-timeline-lane { display: grid; grid-template-columns: 180px minmax(240px, 1fr); gap: 12px; align-items: center; }
 .npu-occupancy-timeline-lane > .ant-typography { font-size: 12px; white-space: nowrap; }

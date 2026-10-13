@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, Button, Card, Collapse, Empty, Modal, Space, Spin, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Collapse, Empty, Modal, Segmented, Space, Spin, Table, Tag, Typography, message } from 'antd'
 import { CopyOutlined, GithubOutlined, RobotOutlined } from '@ant-design/icons'
 import api from '../services/api'
-import { createJobLogRootCause, getJobComparison, getJobLogRootCause, refreshRunVersionSnapshot } from '../services/ci'
-import type { CIJob } from '../services/ci'
+import { createJobLogRootCause, getJobComparison, getJobLogRootCause, getJobPerformanceTrends, refreshRunVersionSnapshot } from '../services/ci'
+import type { CIJob, CIJobPerformanceMetric } from '../services/ci'
 import { formatDuration } from '../utils/ciRenderers'
 import { formatTimezone } from '../utils/timezone'
+import { Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 const { Text, Link } = Typography
 
@@ -110,10 +111,221 @@ function displayValue(value: unknown) {
   return String(value)
 }
 
+function PerformanceAccuracyView({ timeline, loading }: { timeline: CIJob[]; loading: boolean }) {
+  const recentJobIds = timeline.slice(-30).map(item => item.job_id)
+  const [visibleMetrics, setVisibleMetrics] = useState<Array<CIJobPerformanceMetric['metric_type']>>(['ott', 'accuracy'])
+  const trends = useQuery({
+    queryKey: ['job-performance-trends', recentJobIds],
+    queryFn: () => getJobPerformanceTrends(recentJobIds),
+    enabled: recentJobIds.length > 0,
+    staleTime: 5 * 60 * 1000,
+  })
+  const items = [...(trends.data?.items || [])]
+    .sort((left, right) => new Date(left.started_at || 0).getTime() - new Date(right.started_at || 0).getTime())
+  const chartPoints = [...items.reduce((points, item) => {
+    const key = String(item.job_id)
+    const point = points.get(key) || {
+      jobId: item.job_id,
+      timestamp: item.started_at ? formatTimezone(item.started_at, 'MM-DD HH:mm') : '未知时间',
+      fullTimestamp: item.started_at ? formatTimezone(item.started_at, 'YYYY-MM-DD HH:mm:ss') : '未知时间',
+      startedAt: item.started_at || '',
+      ottValue: null as number | null,
+      ottBaseline: null as number | null,
+      ottThreshold: null as number | null,
+      accuracyValue: null as number | null,
+      accuracyBaseline: null as number | null,
+      accuracyThresholdLower: null as number | null,
+      accuracyThresholdUpper: null as number | null,
+      ott: undefined as CIJobPerformanceMetric | undefined,
+      accuracy: undefined as CIJobPerformanceMetric | undefined,
+    }
+    if (item.metric_type === 'ott') {
+      point.ott = item
+      point.ottValue = item.value
+      point.ottBaseline = item.baseline
+      point.ottThreshold = item.baseline !== null && item.threshold_ratio !== null && item.threshold_ratio !== undefined
+        ? item.baseline * item.threshold_ratio : null
+    } else {
+      point.accuracy = item
+      point.accuracyValue = item.value
+      point.accuracyBaseline = item.baseline
+      if (item.baseline !== null && item.threshold_tolerance !== null && item.threshold_tolerance !== undefined) {
+        point.accuracyThresholdLower = item.baseline - item.threshold_tolerance
+        point.accuracyThresholdUpper = item.baseline + item.threshold_tolerance
+      } else if (item.baseline !== null && item.threshold_ratio !== null && item.threshold_ratio !== undefined) {
+        point.accuracyThresholdLower = item.baseline * item.threshold_ratio
+      }
+    }
+    points.set(key, point)
+    return points
+  }, new Map<string, {
+    jobId: number
+    timestamp: string
+    fullTimestamp: string
+    startedAt: string
+    ottValue: number | null
+    ottBaseline: number | null
+    ottThreshold: number | null
+    accuracyValue: number | null
+    accuracyBaseline: number | null
+    accuracyThresholdLower: number | null
+    accuracyThresholdUpper: number | null
+    ott?: CIJobPerformanceMetric
+    accuracy?: CIJobPerformanceMetric
+  }>()).values()].sort((left, right) => new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime())
+  const allMetricsVisible = visibleMetrics.length === 2
+  const xAxisInterval = Math.max(0, Math.ceil(chartPoints.length / 9) - 1)
+  const commonChartValue = (field: 'ottThreshold' | 'accuracyThresholdLower' | 'accuracyThresholdUpper') => {
+    const values = chartPoints.map(point => point[field]).filter((value): value is number => value !== null)
+    return values.length && values.every(value => Math.abs(value - values[0]) < 0.000001) ? values[0] : null
+  }
+  const ottThreshold = commonChartValue('ottThreshold')
+  const accuracyThresholdLower = commonChartValue('accuracyThresholdLower')
+  const accuracyThresholdUpper = commonChartValue('accuracyThresholdUpper')
+  const baselineExtent = (field: 'ottBaseline' | 'accuracyBaseline') => {
+    const points = chartPoints.filter(point => point[field] !== null)
+    return points.length >= 2 ? { start: points[0].timestamp, end: points[points.length - 1].timestamp } : null
+  }
+  const ottBaselineExtent = baselineExtent('ottBaseline')
+  const accuracyBaselineExtent = baselineExtent('accuracyBaseline')
+  const maxAccuracyValue = Math.max(
+    0,
+    ...chartPoints.flatMap(point => [
+      point.accuracyValue,
+      point.accuracyBaseline,
+      point.accuracyThresholdLower,
+      point.accuracyThresholdUpper,
+    ]).filter((value): value is number => value !== null),
+  )
+  // Accuracy gates usually sit close to 100 while failed actual values can be
+  // close to zero. Compress the unused middle range so the two gates remain
+  // visually distinguishable without changing the values shown in the axis or tooltip.
+  const useAccuracyAxisBreak = maxAccuracyValue >= 85
+  const scaleAccuracy = (value: number | null) => {
+    if (value === null || !useAccuracyAxisBreak) return value
+    return value <= 80 ? value * 0.5 : 40 + (value - 80) * 3
+  }
+  const accuracyChartMax = Math.max(
+    0,
+    ...chartPoints.flatMap(point => [
+      scaleAccuracy(point.accuracyValue),
+      scaleAccuracy(point.accuracyBaseline),
+      scaleAccuracy(point.accuracyThresholdLower),
+      scaleAccuracy(point.accuracyThresholdUpper),
+    ]).filter((value): value is number => value !== null),
+  )
+  const accuracyAxisMax = useAccuracyAxisBreak
+    ? Math.max(100, (Math.ceil(accuracyChartMax / 10) + 1) * 10)
+    : Math.max(25, (Math.ceil(maxAccuracyValue / 25) + 1) * 25)
+  const accuracyAxisTicks = useAccuracyAxisBreak ? [0, 20, 40, 70, 100].filter(value => value <= accuracyAxisMax) : undefined
+  const formatAccuracyTick = (value: number) => {
+    const originalValue = useAccuracyAxisBreak ? (value <= 40 ? value * 2 : 80 + (value - 40) / 3) : value
+    return String(Number(originalValue.toFixed(0)))
+  }
+  const chartData = chartPoints.map(point => ({
+    ...point,
+    accuracyChartValue: scaleAccuracy(point.accuracyValue),
+    accuracyChartBaseline: scaleAccuracy(point.accuracyBaseline),
+    accuracyChartThresholdLower: scaleAccuracy(point.accuracyThresholdLower),
+    accuracyChartThresholdUpper: scaleAccuracy(point.accuracyThresholdUpper),
+  }))
+  const legendPayload = [
+    ...(visibleMetrics.includes('ott') ? [
+      { value: 'OTT Actual', type: 'line' as const, color: '#1677ff' },
+      { value: 'OTT Baseline', type: 'line' as const, color: '#91caff' },
+      { value: 'OTT Gate', type: 'line' as const, color: '#bae0ff' },
+    ] : []),
+    ...(visibleMetrics.includes('accuracy') ? [
+      { value: 'Accuracy Actual', type: 'line' as const, color: '#722ed1' },
+      { value: 'Accuracy Baseline', type: 'line' as const, color: '#d3adf7' },
+      { value: 'Accuracy Gate Lower', type: 'line' as const, color: '#efdbff' },
+      { value: 'Accuracy Gate Upper', type: 'line' as const, color: '#efdbff' },
+    ] : []),
+  ]
+  const formatValue = (value: number, unit: string) => `${Number(value.toFixed(2))}${unit ? ` ${unit}` : ''}`
+  const metricDetails = (title: string, item: CIJobPerformanceMetric | undefined) => {
+    if (!item || item.value === null) return <div style={{ marginTop: 10 }}><Text strong>{title}</Text><div>No valid result</div>{item?.reason && <Text type="secondary">Reason: {item.reason}</Text>}</div>
+    const ratio = item.threshold_ratio
+    const tolerance = item.threshold_tolerance
+    const effectiveThreshold = ratio !== null && ratio !== undefined && item.baseline !== null ? item.baseline * ratio : null
+    const passed = effectiveThreshold !== null ? item.value >= effectiveThreshold
+      : tolerance !== null && tolerance !== undefined && item.baseline !== null ? Math.abs(item.value - item.baseline) <= tolerance
+        : item.conclusion === 'success'
+    return <div style={{ marginTop: 10 }}>
+      <Text strong>{title}</Text>
+      <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr', columnGap: 10, rowGap: 3, marginTop: 4 }}>
+        <span>Actual</span><span>{formatValue(item.value, item.unit)}</span>
+        <span>Baseline</span><span>{item.baseline === null ? 'N/A' : formatValue(item.baseline, item.unit)}</span>
+        {ratio !== null && ratio !== undefined && <><span>Threshold</span><span>{ratio * 100}%{effectiveThreshold !== null && item.baseline !== null ? ` · ${ratio} × ${item.baseline} = ${formatValue(effectiveThreshold, item.unit)}` : ''}</span></>}
+        {tolerance !== null && tolerance !== undefined && <><span>Threshold</span><span>±{tolerance}{item.baseline !== null ? ` · ${formatValue(item.baseline - tolerance, item.unit)} – ${formatValue(item.baseline + tolerance, item.unit)}` : ''}</span></>}
+        <span>Result</span><span style={{ color: passed ? '#389e0d' : '#cf1322' }}>{passed ? 'Passed' : 'Failed'}</span>
+      </div>
+    </div>
+  }
+  const setMetricVisible = (metricType: CIJobPerformanceMetric['metric_type'], checked: boolean) => {
+    setVisibleMetrics(current => checked
+      ? [...new Set([...current, metricType])]
+      : current.filter(value => value !== metricType))
+  }
+
+  if (loading || trends.isLoading) return <div className="job-history-view-enter" style={{ padding: 40, textAlign: 'center' }}><Spin tip="正在读取 Run Pytest 与 Stream logs" /></div>
+  if (trends.isError) return <Alert className="job-history-view-enter" type="error" showIcon message="性能精度数据加载失败" description="请检查 GitHub Token 或稍后重试。" />
+  return <div className="job-history-view-enter" style={{ marginTop: 12 }}>
+    {chartPoints.length === 0 ? <Empty description="最近 30 次运行中未识别到 OTT 或 Accuracy" /> : <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '4px 0 8px' }}>
+        <Text strong style={{ fontSize: 16 }}>性能精度趋势</Text>
+        <Space size={12}>
+          <Checkbox checked={allMetricsVisible} onChange={event => setVisibleMetrics(event.target.checked ? ['ott', 'accuracy'] : [])}>全部</Checkbox>
+          <Checkbox checked={visibleMetrics.includes('ott')} onChange={event => setMetricVisible('ott', event.target.checked)}>OTT</Checkbox>
+          <Checkbox checked={visibleMetrics.includes('accuracy')} onChange={event => setMetricVisible('accuracy', event.target.checked)}>Accuracy</Checkbox>
+        </Space>
+      </div>
+      <div style={{ width: '100%', height: 460, padding: '4px 18px 0 10px', boxSizing: 'border-box' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ top: 24, right: 68, left: 56, bottom: 72 }}>
+            <XAxis dataKey="timestamp" interval={xAxisInterval} angle={-30} textAnchor="end" height={62} tickMargin={12} />
+            <YAxis yAxisId="ott" width={84} label={{ value: 'token/s', angle: -90, position: 'insideLeft', offset: -22 }} />
+            <YAxis yAxisId="accuracy" orientation="right" width={68} domain={[0, accuracyAxisMax]} ticks={accuracyAxisTicks} tickFormatter={formatAccuracyTick} tickCount={6} label={{ value: '%', angle: 90, position: 'insideRight', offset: -18 }} />
+            <Tooltip content={({ active, payload }) => {
+              const point = payload?.[0]?.payload as (typeof chartPoints)[number] | undefined
+              if (!active || !point) return null
+              return <div style={{ width: 400, maxWidth: 'calc(100vw - 32px)', padding: '12px 14px', background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, boxShadow: '0 3px 10px rgba(0,0,0,.12)' }}>
+                <Text strong>{point.fullTimestamp}</Text>
+                {metricDetails('Output Token Throughput', point.ott)}
+                {metricDetails('Accuracy', point.accuracy)}
+              </div>
+            }} />
+            <Legend payload={legendPayload} />
+            {visibleMetrics.includes('ott') && <>
+              <Line yAxisId="ott" type="monotone" dataKey="ottValue" name="OTT Actual" stroke="#1677ff" strokeWidth={2.5} connectNulls dot={{ r: 4 }} activeDot={{ r: 5 }} />
+              <Line yAxisId="ott" type="monotone" dataKey="ottBaseline" name="OTT Baseline" stroke="#91caff" strokeDasharray="7 5" strokeWidth={1.5} connectNulls dot={false} />
+              {ottThreshold !== null && ottBaselineExtent
+                ? <ReferenceLine yAxisId="ott" segment={[{ x: ottBaselineExtent.start, y: ottThreshold }, { x: ottBaselineExtent.end, y: ottThreshold }]} stroke="#bae0ff" strokeDasharray="2 5" strokeWidth={1.25} />
+                : <Line yAxisId="ott" type="monotone" dataKey="ottThreshold" name="OTT Threshold" stroke="#bae0ff" strokeDasharray="2 5" strokeWidth={1.25} connectNulls dot={false} />}
+            </>}
+            {visibleMetrics.includes('accuracy') && <>
+              <Line yAxisId="accuracy" type="monotone" dataKey="accuracyChartValue" name="Accuracy Actual" stroke="#722ed1" strokeWidth={2.5} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 5 }} />
+              <Line yAxisId="accuracy" type="monotone" dataKey="accuracyChartBaseline" name="Accuracy Baseline" stroke="#d3adf7" strokeDasharray="7 5" strokeWidth={1.5} connectNulls dot={false} />
+              {accuracyThresholdLower !== null && accuracyBaselineExtent
+                ? <ReferenceLine yAxisId="accuracy" segment={[{ x: accuracyBaselineExtent.start, y: scaleAccuracy(accuracyThresholdLower)! }, { x: accuracyBaselineExtent.end, y: scaleAccuracy(accuracyThresholdLower)! }]} stroke="#efdbff" strokeDasharray="2 5" strokeWidth={1.25} />
+                : <Line yAxisId="accuracy" type="monotone" dataKey="accuracyChartThresholdLower" name="Accuracy Threshold" stroke="#efdbff" strokeDasharray="2 5" strokeWidth={1.25} connectNulls dot={false} />}
+              {accuracyThresholdUpper !== null && accuracyBaselineExtent
+                ? <ReferenceLine yAxisId="accuracy" segment={[{ x: accuracyBaselineExtent.start, y: scaleAccuracy(accuracyThresholdUpper)! }, { x: accuracyBaselineExtent.end, y: scaleAccuracy(accuracyThresholdUpper)! }]} stroke="#efdbff" strokeDasharray="2 5" strokeWidth={1.25} />
+                : <Line yAxisId="accuracy" type="monotone" dataKey="accuracyChartThresholdUpper" name="Accuracy Threshold Upper" stroke="#efdbff" strokeDasharray="2 5" strokeWidth={1.25} connectNulls dot={false} />}
+            </>}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>}
+    {(trends.data?.unavailable.length || 0) > 0 && <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{trends.data?.unavailable.length} 个 Job 无可用指标（日志过期、不可访问或未包含指标）。</Text>}
+  </div>
+}
+
 export function JobHistoryWorkspace({ job, workflowName }: { job: CIJob; workflowName?: string }) {
   const [startJobId, setStartJobId] = useState<number | null>(null)
   const [endJobId, setEndJobId] = useState<number | null>(null)
   const [summaryJobId, setSummaryJobId] = useState<number | null>(null)
+  const [historyView, setHistoryView] = useState<'overview' | 'performance'>('overview')
   const attemptedVersionRuns = useRef(new Set<number>())
   const timelineViewportRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
@@ -308,10 +520,18 @@ export function JobHistoryWorkspace({ job, workflowName }: { job: CIJob; workflo
       {!isLoading && !isError && !data.some(item => item.job_id === job.job_id) && (
         <Alert type="info" showIcon message="当前 Job 不属于首页 CI 配置定义的正式运行，因此未加入时间线。" style={{ marginTop: 10 }} />
       )}
-      {isLoading ? <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div> : timeline.length === 0 ? (
+      <div style={{ marginTop: 12 }}>
+        <Segmented
+          value={historyView}
+          onChange={value => setHistoryView(value as 'overview' | 'performance')}
+          options={[{ label: '概览', value: 'overview' }, { label: '性能精度', value: 'performance' }]}
+        />
+      </div>
+
+      {historyView === 'overview' && (isLoading ? <div className="job-history-view-enter" style={{ padding: 40, textAlign: 'center' }}><Spin /></div> : timeline.length === 0 ? (
         <Empty description="暂无同名 Job 历史记录" />
       ) : (
-        <div
+        <div className="job-history-view-enter"
           style={{
             marginTop: 12,
             border: '1px solid #d9d9d9',
@@ -367,16 +587,18 @@ export function JobHistoryWorkspace({ job, workflowName }: { job: CIJob; workflo
             </div>
           </div>
         </div>
-      )}
+      ))}
 
-      {canCompare && comparison.isLoading && (
+      {historyView === 'performance' && <PerformanceAccuracyView timeline={timeline} loading={isLoading} />}
+
+      {historyView === 'overview' && canCompare && comparison.isLoading && (
         <div style={{ padding: 24, textAlign: 'center' }}>
           <Spin tip="正在获取 PR 证据链，请稍候…" size="large" />
           <div style={{ marginTop: 34 }}><Text type="secondary">PR 较多时需要从 GitHub 分批获取合入时间和详情，请不要重复点击 Start / End。</Text></div>
         </div>
       )}
-      {canCompare && comparison.isError && <Alert type="error" showIcon message="差异证据加载失败，请检查后端日志。" />}
-      {comparison.data && (
+      {historyView === 'overview' && canCompare && comparison.isError && <Alert type="error" showIcon message="差异证据加载失败，请检查后端日志。" />}
+      {historyView === 'overview' && comparison.data && (
         <div style={{ marginTop: 12, width: '100%', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
           <Button type="primary" icon={<CopyOutlined />} loading={intervalLogSummaries.isLoading} onClick={copyComparisonEvidence} style={{ marginBottom: 8 }}>一键复制全部故障定位证据</Button>
           <div style={{ width: '100%', maxWidth: 620, padding: '6px 2px 14px' }}>

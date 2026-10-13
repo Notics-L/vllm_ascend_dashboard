@@ -3,6 +3,7 @@ GitHub API 客户端
 提供 GitHub Actions 相关 API 的异步访问，处理速率限制和重试
 """
 import asyncio
+import base64
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -464,6 +465,31 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to fetch logs for job {job_id}: {e}")
             return ""
+
+    async def get_repository_file_content(self, path: str, ref: str) -> str:
+        """Read a text file at an immutable Git commit SHA."""
+        result = await self._request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/contents/{path}",
+            params={"ref": ref},
+        )
+        encoded = result.get("content")
+        if not isinstance(encoded, str) or result.get("encoding") != "base64":
+            raise GitHubAPIError(f"Repository file is not Base64 text: {path}@{ref}")
+        return base64.b64decode(encoded).decode("utf-8")
+
+    async def find_repository_paths_by_filename(self, filename: str, ref: str) -> list[str]:
+        """Find candidate paths for a benchmark YAML in one commit tree."""
+        result = await self._request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/git/trees/{ref}",
+            params={"recursive": "1"},
+        )
+        return [
+            entry["path"]
+            for entry in result.get("tree", [])
+            if entry.get("type") == "blob" and entry.get("path", "").endswith(f"/{filename}")
+        ]
 
     async def get_rate_limit_status(self) -> dict[str, Any]:
         """

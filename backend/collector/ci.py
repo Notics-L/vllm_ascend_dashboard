@@ -374,7 +374,6 @@ class CICollector:
 
         for wf_item in workflow_files:
             workflow_file, hardware = wf_item[0], wf_item[1]
-            event_filter = wf_item[2] if len(wf_item) > 2 else "schedule"
             actor_filter = wf_item[3] if len(wf_item) > 3 else None
             start_hour = wf_item[4]
             end_hour = wf_item[5]
@@ -395,7 +394,7 @@ class CICollector:
                     max_runs=max_runs_per_workflow,
                     hardware=hardware,
                     force_full_refresh=force_full_refresh,
-                    event=event_filter,
+                    event=None,
                     actor=actor_filter,
                     stats_start_hour=start_hour,
                     stats_end_hour=end_hour,
@@ -504,7 +503,10 @@ class CICollector:
 
         while True:
             try:
-                # 获取一页数据，只获取 event: schedule 的 runs
+                # GitHub can label schedule-triggered reusable workflows as
+                # workflow_dispatch.  The configured event is therefore not a
+                # reliable API filter; materialization rules below decide which
+                # runs belong on the dashboard.
                 # 使用 created 参数进行时间过滤（无论增量还是全量模式）
                 # 全量模式下也需要限制时间范围，避免获取过多历史数据
                 since_date = since.strftime('%Y-%m-%d')
@@ -512,7 +514,7 @@ class CICollector:
 
                 runs = await self.github.get_workflow_runs(
                     workflow_id_or_name=workflow_file,
-                    event=event or None,  # 使用配置的 event，空=不过滤
+                    event=None,
                     per_page=min(max_runs, 100),
                     page=page,
                     created=created_filter,  # 使用 created 参数过滤
@@ -1196,7 +1198,12 @@ class CICollector:
                     existing.runner_labels = new_runner_labels_str
                     needs_update = True
 
-            # 更新原始数据
+            # 保留 Dashboard 生成的证据。性能精度日志解析结果缓存在此处，
+            # 避免用户每次查看历史趋势都重新下载同一份 GitHub 日志。
+            previous_data = json.loads(existing.data) if existing.data else {}
+            if isinstance(previous_data, dict) and previous_data.get("dashboard_evidence"):
+                job = dict(job)
+                job["dashboard_evidence"] = previous_data["dashboard_evidence"]
             existing.data = json.dumps(job)
             needs_update = True
 

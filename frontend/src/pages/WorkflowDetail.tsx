@@ -16,7 +16,7 @@ import { useJobsByRun, useRuns } from '../hooks/useCI'
 import { useJobOwners } from '../hooks/useJobOwners'
 import { useFailureAnalysisList, useAnalyzeFailedJob } from '../hooks/useFailureAnalysis'
 import { useCurrentUser } from '../hooks/useCurrentUser'
-import { PROBLEM_CATEGORY_MAP, ANALYSIS_STATUS_MAP } from '../services/failureAnalysis'
+import { PROBLEM_CATEGORY_MAP } from '../services/failureAnalysis'
 import { FailureAnalysisDetailModal } from '../components/FailureAnalysisDetailModal'
 import dayjs from 'dayjs'
 import duration from 'dayjs/plugin/duration'
@@ -332,22 +332,6 @@ function WorkflowDetail() {
             <Text ellipsis style={{ maxWidth: 160 }}>{analysis.improvement_measures_summary}</Text>
           </Tooltip>
         )
-      },
-    },
-    {
-      title: '分析状态',
-      key: 'analysis_status',
-      width: 100,
-      render: (_: any, record: any) => {
-        const analysis = analysisMap.get(record.job_id)
-        if (!analysis) {
-          if (record.conclusion === 'failure' || record.conclusion === 'cancelled') {
-            return <Tag color="#64748d">未分析</Tag>
-          }
-          return '-'
-        }
-        const statusInfo = ANALYSIS_STATUS_MAP[analysis.analysis_status] || { color: '#64748d', label: analysis.analysis_status }
-        return <Tag color={statusInfo.color}>{statusInfo.label}</Tag>
       },
     },
     {
