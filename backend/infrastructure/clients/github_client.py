@@ -449,6 +449,10 @@ class GitHubClient:
         try:
             # 日志接口返回的是纯文本，不是 JSON
             response = await self.client.get(url)
+            # Actions log endpoints can return a signed cross-origin URL.  Some
+            # proxy/client combinations expose that initial 302 to this caller.
+            if response.is_redirect and (redirect_url := response.headers.get("location")):
+                response = await self.client.get(redirect_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
         except httpx.HTTPStatusError as e:

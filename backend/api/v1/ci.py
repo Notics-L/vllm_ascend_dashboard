@@ -263,6 +263,12 @@ def _benchmark_log_sections(log_text: str) -> list[tuple[str, list[str]]]:
         for index, line in enumerate(lines)
         if "run pytest" in line.lower() or "stream logs" in line.lower()
     ]
+    # The Actions log download API sometimes omits the web UI step headings
+    # entirely, while retaining the benchmark tables.  In that form there is
+    # no section boundary to inspect, so parse the raw job log as Run Pytest
+    # evidence instead of silently discarding valid OTT/Accuracy output.
+    if not starts:
+        return [("run_pytest", lines)]
     sections: list[tuple[str, list[str]]] = []
     for start, source_step in starts:
         end = len(lines)
@@ -389,8 +395,8 @@ def _parse_benchmark_metrics(log_text: str) -> list[dict[str, Any]]:
     return list(metrics.values())
 
 
-# Version 6 excludes zero-baseline warmup cases when resolving the YAML gate.
-_PERFORMANCE_TRENDS_CACHE_VERSION = 6
+# Version 10 reads benchmark blocks nested under YAML test cases.
+_PERFORMANCE_TRENDS_CACHE_VERSION = 10
 
 
 def _benchmark_config_reference(log_text: str) -> str | None:
@@ -409,12 +415,28 @@ def _apply_benchmark_config(metrics: list[dict[str, Any]], yaml_content: str, co
     except yaml.YAMLError as exc:
         logger.warning("Unable to parse benchmark YAML %s: %s", config_path, exc)
         return
-    benchmarks = document.get("benchmarks", {}) if isinstance(document, dict) else {}
-    if not isinstance(benchmarks, dict):
+    benchmark_groups: list[dict[str, Any]] = []
+
+    def collect_benchmark_groups(value: Any) -> None:
+        if isinstance(value, dict):
+            benchmarks = value.get("benchmarks")
+            if isinstance(benchmarks, dict):
+                benchmark_groups.append(benchmarks)
+            for key, child in value.items():
+                if key != "benchmarks":
+                    collect_benchmark_groups(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_benchmark_groups(child)
+
+    collect_benchmark_groups(document)
+    if not benchmark_groups:
         return
     for metric in metrics:
         candidates = [
-            (name, value) for name, value in benchmarks.items()
+            (name, value)
+            for benchmarks in benchmark_groups
+            for name, value in benchmarks.items()
             if isinstance(value, dict) and value.get("case_type") == (
                 "performance" if metric["metric_type"] == "ott" else "accuracy"
             )
@@ -1350,7 +1372,9 @@ async def get_job_performance_trends(
                 ) as client:
                     log_text = await client.get_job_logs(job.job_id)
             items = _parse_benchmark_metrics(log_text)
-            config_reference = _benchmark_config_reference(log_text)
+            # Successful raw log downloads can omit the matrix/YAML line even
+            # though CIJob.name preserves the filename selected by the matrix.
+            config_reference = _benchmark_config_reference(log_text) or _benchmark_config_reference(job.job_name)
             if items and config_reference and run and run.head_sha:
                 try:
                     async with GitHubClient(
