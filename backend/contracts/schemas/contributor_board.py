@@ -310,6 +310,7 @@ class ContributorOverviewStats(BaseModel):
 class ContributorSyncRequest(BaseModel):
     since_date: date | None = Field(None, description="增量同步起始日期，不传则从 2024-01-01 全量采集")
     full_resync: bool = Field(False, description="是否全量重新评估")
+    repo_name: str | None = Field(None, description="指定仓库名，不传则同步所有仓库")
 
 
 class ContributorSyncResponse(BaseModel):
@@ -319,6 +320,44 @@ class ContributorSyncResponse(BaseModel):
     errors: list[str] = []
     duration_seconds: float = 0
     synced_at: datetime | None = None
+    record_id: int | None = Field(None, description="同步记录 ID")
+
+
+class ContributorSyncRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    repo_name: str | None = None
+    status: str
+    since_date: date | None = None
+    contributors_synced: int = 0
+    commits_classified: int = 0
+    build_plans_created: int = 0
+    errors: list[str] | None = None
+    duration_seconds: float = 0
+    synced_at: datetime | None = None
+    progress_percent: float = 0
+    progress_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+    @property
+    def error_list(self) -> list[str]:
+        if isinstance(self.errors, list):
+            return self.errors
+        if isinstance(self.errors, str):
+            try:
+                import json
+                return json.loads(self.errors)
+            except Exception:
+                return [self.errors]
+        return []
+
+
+class ContributorSyncHistoryResponse(BaseModel):
+    records: list[ContributorSyncRecordResponse] = []
+    total: int = 0
 
 
 # ============ Role Stats ============

@@ -25,6 +25,8 @@ from contracts.schemas.contributor_board import (
     ContributorOverviewStats,
     ContributorRankingResponse,
     ContributorTrendResponse,
+    ContributorSyncHistoryResponse,
+    ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
     ExtendedTrendResponse,
@@ -245,16 +247,56 @@ async def get_contributor_trend(
 # ---- 手动触发采集（管理员可见）----
 
 @router.post("/sync/contributors", response_model=ContributorSyncResponse)
-async def sync_contributors(
+async def trigger_sync(
     request: ContributorSyncRequest,
+    db: DbSession,
     _admin: CurrentAdminUser,
 ):
-    """手动触发贡献者数据采集（管理员可见）"""
+    """手动触发贡献者数据采集（管理员可见）
+
+    异步执行：立即返回 record_id，同步任务在后台执行
+    """
+    from fastapi import HTTPException
+
     service = get_contributor_board_service()
-    return await service.trigger_sync(
-        since_date=request.since_date,
-        full_resync=request.full_resync,
-    )
+    try:
+        return await service.trigger_sync(
+            db=db,
+            since_date=request.since_date,
+            full_resync=request.full_resync,
+            repo_name=request.repo_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/sync/status/{record_id}", response_model=ContributorSyncRecordResponse)
+async def get_sync_status(
+    record_id: int,
+    db: DbSession,
+    _admin: CurrentAdminUser,
+):
+    """获取同步任务状态（管理员可见）"""
+    service = get_contributor_board_service()
+    record = await service.get_sync_record(db, record_id)
+    if record is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Sync record {record_id} not found")
+    return record
+
+
+@router.get("/sync/history", response_model=ContributorSyncHistoryResponse)
+async def get_sync_history(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    repo_name: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """获取同步历史记录（管理员可见）"""
+    service = get_contributor_board_service()
+    return await service.get_sync_history(db, limit=limit, offset=offset, repo_name=repo_name, status=status)
 
 
 # ---- 角色统计（管理员可见）----

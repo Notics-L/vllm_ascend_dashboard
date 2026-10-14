@@ -19,6 +19,8 @@ from contracts.schemas.contributor_board import (
     ContributorRankingItem,
     ContributorRankingResponse,
     ContributorResponse,
+    ContributorSyncHistoryResponse,
+    ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
     ContributorTrendPoint,
@@ -50,11 +52,14 @@ from infrastructure.persistence.models import (
     Contributor,
     ContributorBoardSettings,
     ContributorMetrics,
+    ContributorSyncRecord,
     ErrorRecord,
     ImageBuildPlan,
     QuadrantSnapshot,
 )
-from sqlalchemy import Integer, and_, func, or_, select, true
+from sqlalchemy import Integer, func
+from sqlalchemy import and_, or_, select, true
+from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -967,11 +972,30 @@ class ContributorBoardService:
 
     @staticmethod
     async def trigger_sync(
+        db,
         since_date: date | None = None,
         full_resync: bool = False,
+        repo_name: str | None = None,
     ) -> ContributorSyncResponse:
+        """
+        触发异步同步任务（非阻塞）
+
+        1. 检查是否有正在运行的同类任务（防重复）
+        2. 创建任务记录（pending 状态）
+        3. 立即返回 record_id，后台 asyncio task 执行同步
+        """
         from datetime import UTC, datetime, time
-        from collector.contributor_sync import sync_contributors
+        from infrastructure.tasks.background_task import BackgroundTaskTracker, TaskStatus
+
+        # 确保任务追踪表存在
+        await BackgroundTaskTracker.ensure_table(db)
+
+        # 检查是否有正在运行的同类任务（防重复提交）
+        active = await BackgroundTaskTracker.get_active_task(db, "contributor_sync", repo_name)
+        if active:
+            raise ValueError(
+                f"同步任务已在运行中 (task_id={active['id']})，请稍后再试"
+            )
 
         if full_resync:
             since_dt = None
@@ -980,23 +1004,208 @@ class ContributorBoardService:
         else:
             since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
 
-        try:
-            result = await sync_contributors(since_date=since_dt)
+        # 创建 ContributorSyncRecord (pending 状态)
+        record = ContributorSyncRecord(
+            repo_name=repo_name,
+            status=TaskStatus.PENDING,
+            since_date=since_date,
+            progress_percent=0,
+            progress_message="任务已创建，等待执行",
+        )
+        db.add(record)
+        await db.flush()
+        record_id = record.id
 
-            return ContributorSyncResponse(
-                contributors_synced=result.contributors_synced,
-                commits_classified=result.commits_classified,
-                build_plans_created=result.build_plans_created,
-                errors=result.errors,
-                duration_seconds=result.duration_seconds,
-                synced_at=result.synced_at or datetime.now(UTC),
+        # 同时创建 BackgroundTaskTracker 记录
+        task_params = {
+            "sync_record_id": record_id,
+            "repo_name": repo_name,
+            "since_date": since_date.isoformat() if since_date else None,
+        }
+
+        task_id = await BackgroundTaskTracker.create_and_run(
+            task_type="contributor_sync",
+            task_func=ContributorBoardService._run_contributor_sync,
+            task_params=task_params,
+            repo_name=repo_name,
+            db=db,
+        )
+
+        # 将 task_id 写回 ContributorSyncRecord
+        # (通过 background task 更新)
+
+        return ContributorSyncResponse(
+            record_id=record_id,
+        )
+
+    @staticmethod
+    async def _run_contributor_sync(
+        task_params: dict[str, Any],
+        tracker: Any,  # BackgroundTaskTracker instance
+    ) -> dict[str, Any]:
+        """后台执行的同步任务函数 — 由 BackgroundTaskTracker.create_and_run 调用"""
+        from datetime import UTC, datetime, date as date_type, time
+        from collector.contributor_sync import sync_contributors
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from sqlalchemy import update as sa_update
+        import json as _json
+
+        sync_record_id = task_params["sync_record_id"]
+        repo_name = task_params.get("repo_name")
+        since_date_str = task_params.get("since_date")
+
+        since_dt: datetime | None = None
+        if since_date_str:
+            since_dt = datetime.fromisoformat(since_date_str).replace(hour=0, minute=0, second=0, tzinfo=UTC)
+        else:
+            since_dt = datetime(2024, 1, 1, tzinfo=UTC)
+
+        # 更新 ContributorSyncRecord 为 running
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                sa_update(ContributorSyncRecord)
+                .where(ContributorSyncRecord.id == sync_record_id)
+                .values(
+                    status="running",
+                    progress_percent=0,
+                    progress_message="正在初始化同步...",
+                    started_at=func.now(),
+                )
             )
+            await db.commit()
+
+        async def progress_callback(pct: int, msg: str):
+            await tracker.update_progress(pct, msg)
+            # 同时更新 ContributorSyncRecord
+            try:
+                async with AsyncSessionLocal() as update_db:
+                    await update_db.execute(
+                        sa_update(ContributorSyncRecord)
+                        .where(ContributorSyncRecord.id == sync_record_id)
+                        .values(progress_percent=pct, progress_message=msg)
+                    )
+                    await update_db.commit()
+            except Exception:
+                pass
+
+        try:
+            result = await sync_contributors(
+                since_date=since_dt,
+                repo_name=repo_name,
+                progress_callback=progress_callback,
+            )
+
+            # 最终状态
+            errors_json = result.errors if isinstance(result.errors, list) else []
+            has_errors = len(errors_json) > 0
+            has_results = (result.contributors_synced > 0 or result.commits_classified > 0)
+
+            if has_errors and has_results:
+                final_status = "partial"
+                await tracker.partial(
+                    error_message="; ".join(errors_json[:5]),
+                    result_metadata={
+                        "contributors_synced": result.contributors_synced,
+                        "commits_classified": result.commits_classified,
+                        "build_plans_created": result.build_plans_created,
+                    },
+                )
+            elif has_errors:
+                final_status = "failed"
+                await tracker.fail("; ".join(errors_json))
+            else:
+                final_status = "completed"
+                await tracker.complete(result_metadata={
+                    "contributors_synced": result.contributors_synced,
+                    "commits_classified": result.commits_classified,
+                    "build_plans_created": result.build_plans_created,
+                })
+
+            # 更新 ContributorSyncRecord 最终结果
+            final_msg = f"同步 {final_status}: {result.contributors_synced} 贡献者, {result.commits_classified} 提交"
+            async with AsyncSessionLocal() as update_db:
+                await update_db.execute(
+                    sa_update(ContributorSyncRecord)
+                    .where(ContributorSyncRecord.id == sync_record_id)
+                    .values(
+                        status=final_status,
+                        contributors_synced=result.contributors_synced,
+                        commits_classified=result.commits_classified,
+                        build_plans_created=result.build_plans_created,
+                        errors=errors_json,
+                        duration_seconds=result.duration_seconds,
+                        synced_at=result.synced_at or datetime.now(UTC),
+                        progress_percent=100,
+                        progress_message=final_msg,
+                        completed_at=func.now(),
+                    )
+                )
+                await update_db.commit()
+
+            return {
+                "contributors_synced": result.contributors_synced,
+                "commits_classified": result.commits_classified,
+                "build_plans_created": result.build_plans_created,
+            }
+
         except Exception as e:
-            logger.error("Contributor sync failed: %s", e, exc_info=True)
-            return ContributorSyncResponse(
-                errors=[str(e)],
-                synced_at=datetime.now(UTC),
-            )
+            logger.error("Contributor sync task failed: %s", e, exc_info=True)
+            await tracker.fail(str(e))
+
+            # 更新 ContributorSyncRecord 为失败
+            async with AsyncSessionLocal() as update_db:
+                await update_db.execute(
+                    sa_update(ContributorSyncRecord)
+                    .where(ContributorSyncRecord.id == sync_record_id)
+                    .values(
+                        status="failed",
+                        errors=[str(e)],
+                        progress_percent=0,
+                        progress_message=f"同步失败: {e}",
+                        completed_at=func.now(),
+                    )
+                )
+                await update_db.commit()
+
+            raise
+
+    @staticmethod
+    async def get_sync_record(db, record_id: int) -> ContributorSyncRecordResponse | None:
+        stmt = select(ContributorSyncRecord).where(ContributorSyncRecord.id == record_id)
+        result = await db.execute(stmt)
+        record = result.scalar_one_or_none()
+        if not record:
+            return None
+        return ContributorSyncRecordResponse.model_validate(record)
+
+    @staticmethod
+    async def get_sync_history(
+        db,
+        limit: int = 20,
+        offset: int = 0,
+        repo_name: str | None = None,
+        status: str | None = None,
+    ) -> ContributorSyncHistoryResponse:
+        stmt = select(ContributorSyncRecord)
+        count_stmt = select(func.count(ContributorSyncRecord.id))
+
+        if repo_name:
+            stmt = stmt.where(ContributorSyncRecord.repo_name == repo_name)
+            count_stmt = count_stmt.where(ContributorSyncRecord.repo_name == repo_name)
+        if status:
+            stmt = stmt.where(ContributorSyncRecord.status == status)
+            count_stmt = count_stmt.where(ContributorSyncRecord.status == status)
+
+        total = int((await db.execute(count_stmt)).scalar() or 0)
+
+        stmt = stmt.order_by(ContributorSyncRecord.created_at.desc()).limit(limit).offset(offset)
+        result = await db.execute(stmt)
+        records = result.scalars().all()
+
+        return ContributorSyncHistoryResponse(
+            records=[ContributorSyncRecordResponse.model_validate(r) for r in records],
+            total=total,
+        )
 
 
 _service_instance: ContributorBoardService | None = None

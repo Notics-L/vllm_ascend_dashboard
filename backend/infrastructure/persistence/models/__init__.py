@@ -1131,3 +1131,24 @@ class QuadrantSnapshot(Base):
     __table_args__ = (
         UniqueConstraint('contributor_login', 'snapshot_date', name='uq_quadrant_snapshot_date'),
     )
+
+
+class ContributorSyncRecord(Base):
+    """收集器同步记录表"""
+    __tablename__ = "contributor_sync_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_name = Column(String(200), nullable=True, index=True)
+    status = Column(String(20), nullable=False, index=True)
+    since_date = Column(Date)
+    contributors_synced = Column(Integer, default=0)
+    commits_classified = Column(Integer, default=0)
+    build_plans_created = Column(Integer, default=0)
+    errors = Column(JSON)
+    duration_seconds = Column(Float, default=0)
+    synced_at = Column(TIMESTAMP)
+    progress_percent = Column(Float, default=0)
+    progress_message = Column(String(500))
+    started_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))

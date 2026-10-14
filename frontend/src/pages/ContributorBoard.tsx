@@ -9,12 +9,15 @@ import {
   DatePicker,
   Descriptions,
   Divider,
+  Dropdown,
   Empty,
   Form,
   Input,
   InputNumber,
+  List,
   message,
   Modal,
+  Progress,
   Radio,
   Row,
   Select,
@@ -25,10 +28,15 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
+  ClockCircleOutlined,
   CodeOutlined,
+  CloudUploadOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   DownloadOutlined,
   FlagOutlined,
   FilterOutlined,
@@ -89,6 +97,9 @@ import {
   updateScoringWeights,
   updateRoleThresholds,
   syncContributors,
+  type SyncRecord,
+  getSyncStatus,
+  getSyncHistory,
 } from '../services/contributorBoard'
 
 const { Title, Text } = Typography
@@ -1084,7 +1095,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [rankings, setRankings] = useState<RankingItem[]>([])
   const [rankingLoading, setRankingLoading] = useState(false)
   const [rankingTotal, setRankingTotal] = useState(0)
-  const [syncLoading, setSyncLoading] = useState(false)
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
@@ -1138,19 +1148,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     loadStats()
     return () => { cancelled = true }
   }, [selectedRepo])
-
-  const handleSync = async () => {
-    setSyncLoading(true)
-    try {
-      await syncContributors(undefined, false)
-      message.success('同步已触发，请在后台日志中查看进度')
-      await fetchRanking(pagination.current, pagination.pageSize)
-    } catch {
-      message.error('同步触发失败')
-    } finally {
-      setSyncLoading(false)
-    }
-  }
 
   const handleExportCSV = () => {
     const headers = ['排名', '用户名', '工号', '分数', '贡献分数', '合并PR', '未合并PR', 'Commits', '代码增加', '代码删除', 'Review', 'Approval', '四象限', '角色']
@@ -1347,7 +1344,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => { setRoleType('developer'); setPagination(p => ({ ...p, current: 1 })) }}>开发者排行</Button>
             <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>检视者排行</Button>
             <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => { setRoleType('maintainer'); setPagination(p => ({ ...p, current: 1 })) }}>Maintainer 排行</Button>
-            <Button icon={<ReloadOutlined />} loading={syncLoading} onClick={handleSync}>同步数据</Button>
+            <Button icon={<ReloadOutlined />} onClick={() => { fetchRanking(pagination.current, pagination.pageSize) }}>刷新数据</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
           </Space>
         </Col>
@@ -1865,12 +1862,180 @@ function ContributorDetailPage() {
 }
 
 /* ------------------------------------------------------------------ */
+/*                        同步记录历史 Tab                              */
+/* ------------------------------------------------------------------ */
+
+function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
+  const [records, setRecords] = useState<SyncRecord[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
+  const [filterStatus, setFilterStatus] = useState<string | null>(null)
+
+  const loadHistory = async () => {
+    setLoading(true)
+    try {
+      const offset = (pagination.current - 1) * pagination.pageSize
+      const result = await getSyncHistory({
+        limit: pagination.pageSize,
+        offset,
+        repo_name: selectedRepo || null,
+        status: filterStatus,
+      })
+      setRecords(result.records)
+      setTotal(result.total)
+    } catch { /* ignore */ } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadHistory()
+  }, [selectedRepo, filterStatus, pagination.current, pagination.pageSize])
+
+  const statusConfig: Record<string, { color: string; label: string; icon: JSX.Element | null }> = {
+    pending: { color: 'default', label: '等待中', icon: <ClockCircleOutlined /> },
+    running: { color: 'processing', label: '执行中', icon: <ClockCircleOutlined /> },
+    completed: { color: 'success', label: '成功', icon: <CheckCircleOutlined /> },
+    failed: { color: 'error', label: '失败', icon: <CloseCircleOutlined /> },
+    partial: { color: 'warning', label: '部分成功', icon: <FlagOutlined /> },
+  }
+
+  const columns = [
+    {
+      title: 'ID',
+      dataIndex: 'id',
+      key: 'id',
+      width: 60,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (status: string) => {
+        const cfg = statusConfig[status] || { color: 'default', label: status, icon: null }
+        return <Tag color={cfg.color}>{cfg.icon} {cfg.label}</Tag>
+      },
+    },
+    {
+      title: '仓库',
+      dataIndex: 'repo_name',
+      key: 'repo_name',
+      width: 200,
+      render: (v: string | null) => v || '全部仓库',
+    },
+    {
+      title: '进度',
+      key: 'progress',
+      width: 180,
+      render: (_: unknown, record: SyncRecord) => (
+        <div>
+          <Progress percent={Math.round(record.progress_percent)} size="small" status={record.status === 'failed' ? 'exception' : record.status === 'completed' ? 'success' : record.status === 'partial' ? 'normal' : 'active'} />
+          {record.progress_message && <div style={{ fontSize: 11, color: '#999' }}>{record.progress_message}</div>}
+        </div>
+      ),
+    },
+    {
+      title: '贡献者',
+      dataIndex: 'contributors_synced',
+      key: 'contributors_synced',
+      width: 90,
+    },
+    {
+      title: '提交数',
+      dataIndex: 'commits_classified',
+      key: 'commits_classed',
+      width: 90,
+    },
+    {
+      title: '构建计划',
+      dataIndex: 'build_plans_created',
+      key: 'build_plans_created',
+      width: 90,
+    },
+    {
+      title: '耗时',
+      key: 'duration',
+      width: 80,
+      render: (_: unknown, r: SyncRecord) => `${(r.duration_seconds / 60).toFixed(1)}min`,
+    },
+    {
+      title: '错误',
+      key: 'errors',
+      width: 200,
+      render: (_: unknown, r: SyncRecord) => {
+        const el = typeof r.errors === 'string' ? JSON.parse(r.errors || '[]') : (r.errors || [])
+        if (el.length === 0) return <span style={{ color: '#d9d9d9' }}>-</span>
+        return (
+          <Tooltip title={el.join('\n')}>
+            <Tag color="error">{el.length} errors</Tag>
+          </Tooltip>
+        )
+      },
+    },
+    {
+      title: '时间',
+      key: 'created_at',
+      width: 170,
+      render: (_: unknown, r: SyncRecord) => dayjs(r.created_at).format('MM-DD HH:mm'),
+    },
+  ]
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
+        <Button onClick={loadHistory} icon={<ReloadOutlined />}>刷新</Button>
+        <Select
+          allowClear
+          placeholder="状态过滤"
+          style={{ width: 140 }}
+          value={filterStatus}
+          onChange={(v) => { setFilterStatus(v); setPagination(p => ({ ...p, current: 1 })) }}
+          options={[
+            { label: '等待中', value: 'pending' },
+            { label: '执行中', value: 'running' },
+            { label: '成功', value: 'completed' },
+            { label: '失败', value: 'failed' },
+            { label: '部分成功', value: 'partial' },
+          ]}
+        />
+        <Text type="secondary">共 {total} 条记录</Text>
+      </div>
+      <Table
+        columns={columns}
+        dataSource={records}
+        loading={loading}
+        rowKey="id"
+        pagination={{
+          ...pagination,
+          total,
+          showSizeChanger: true,
+          showTotal: () => `共 ${total} 条`,
+          onChange: (page, size) => setPagination({ current: page, pageSize: size }),
+        }}
+        size="small"
+      />
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*                           主页面组件                                */
 /* ------------------------------------------------------------------ */
+
+let _pollTimer: ReturnType<typeof setInterval> | null = null
 
 function ContributorBoard() {
   const [repos, setRepos] = useState<string[]>([])
   const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
+  const [syncLoading, setSyncLoading] = useState(false)
+  const [syncModalOpen, setSyncModalOpen] = useState(false)
+  const [syncModalRepo, setSyncModalRepo] = useState<string | undefined>(undefined)
+  const [currentSyncRecord, setCurrentSyncRecord] = useState<SyncRecord | null>(null)
+  const [syncProgress, setSyncProgress] = useState(0)
+  const [syncProgressMsg, setSyncProgressMsg] = useState('')
+  const tabRef = useRef<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync_history' | 'settings'>('classification')
 
   // 监听 SettingsTab 发出的配置更新事件
   const [settingsRefreshTrigger, setSettingsRefreshTrigger] = useState(0)
@@ -1891,6 +2056,64 @@ function ContributorBoard() {
     } catch { /* ignore */ }
   }
 
+  const startPollSync = (recordId: number) => {
+    if (_pollTimer) clearInterval(_pollTimer)
+    _pollTimer = setInterval(async () => {
+      try {
+        const status = await getSyncStatus(recordId)
+        setCurrentSyncRecord(status)
+        setSyncProgress(status.progress_percent)
+        setSyncProgressMsg(status.progress_message || '')
+        if (status.status === 'completed' || status.status === 'failed') {
+          if (_pollTimer) clearInterval(_pollTimer)
+          _pollTimer = null
+          message.success(status.status === 'completed' ? '同步完成' : '同步失败')
+          setSyncModalOpen(false)
+          setSyncLoading(false)
+          window.dispatchEvent(new Event('settings-updated'))
+        }
+      } catch { /* polling error, keep going */ }
+    }, 2000)
+  }
+
+  const handleOpenSyncModal = (repoName?: string) => {
+    setSyncModalRepo(repoName)
+    setSyncModalOpen(true)
+    setSyncProgress(0)
+    setSyncProgressMsg('')
+    setCurrentSyncRecord(null)
+  }
+
+  const handleSync = async () => {
+    setSyncLoading(true)
+    try {
+      const result = await syncContributors({
+        fullResync: false,
+        repoName: syncModalRepo || undefined,
+      })
+      if (result.record_id) {
+        startPollSync(result.record_id)
+        message.success('同步已触发，后台执行中...')
+      } else {
+        message.warning('同步触发失败，未返回任务 ID')
+        setSyncLoading(false)
+      }
+    } catch (err: unknown) {
+      const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '同步触发失败'
+      message.error(msg)
+      setSyncLoading(false)
+    }
+  }
+
+  const handleCloseSyncModal = () => {
+    setSyncModalOpen(false)
+    if (currentSyncRecord?.status === 'running' && _pollTimer) {
+      // Don't clear timer - keep polling in background
+    } else if (_pollTimer) {
+      clearInterval(_pollTimer)
+      _pollTimer = null
+    }
+  }
 
   const tabItems = [
     {
@@ -1914,11 +2137,18 @@ function ContributorBoard() {
       children: <RankingTab loading={false} selectedRepo={selectedRepo} />,
     },
     {
+      key: 'sync_history',
+      label: <><CloudUploadOutlined /> 同步记录</>,
+      children: <SyncHistoryTab selectedRepo={selectedRepo} />,
+    },
+    {
       key: 'settings',
       label: <><ToolOutlined /> 分析设置</>,
       children: <SettingsTab />,
     },
   ]
+
+  const showSyncButtons = repos.length > 0
 
   return (
     <div className="stripe-project-page">
@@ -1932,8 +2162,8 @@ function ContributorBoard() {
         </Text>
       </div>
 
-      {repos.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
+      {showSyncButtons && (
+        <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
           <Select
             allowClear
             placeholder="选择仓库（影响所有 Tab）"
@@ -1943,10 +2173,120 @@ function ContributorBoard() {
             options={repos.map(r => ({ label: r, value: r }))}
             suffixIcon={<SearchOutlined />}
           />
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  label: '同步全部仓库',
+                  key: '__all__',
+                  icon: <CloudUploadOutlined />,
+                  disabled: syncLoading,
+                },
+                ...repos.map(r => ({
+                  label: `同步 ${r}`,
+                  key: r,
+                  icon: <ReloadOutlined />,
+                  disabled: syncLoading,
+                })),
+              ],
+              onClick: ({ key }) => {
+                handleOpenSyncModal(key === '__all__' ? undefined : key)
+              },
+            }}
+            placement="bottomLeft"
+            trigger={['click']}
+          >
+            <Button
+              type="primary"
+              icon={<CloudUploadOutlined />}
+              loading={syncLoading}
+            >
+              同步数据
+              <span style={{ fontSize: 10 }}>▼</span>
+            </Button>
+          </Dropdown>
         </div>
       )}
 
-      <Tabs defaultActiveKey="classification" items={tabItems} destroyInactiveTabPane />
+      <Tabs
+        defaultActiveKey="classification"
+        items={tabItems}
+        destroyInactiveTabPane
+        onChange={(key) => { tabRef.current = key as typeof tabRef.current }}
+      />
+
+      <Modal
+        title="同步进度"
+        open={syncModalOpen}
+        onCancel={handleCloseSyncModal}
+        footer={[
+          <Button key="close" onClick={handleCloseSyncModal}>
+            关闭
+          </Button>,
+          !syncLoading && (currentSyncRecord?.status === 'completed' || currentSyncRecord?.status === 'failed' || currentSyncRecord?.status === 'partial' || !currentSyncRecord) && (
+            <Button key="sync" type="primary" icon={<CloudUploadOutlined />} loading={syncLoading} onClick={handleSync}>
+              同步
+            </Button>
+          ),
+        ]}
+        maskClosable={false}
+      >
+        <div style={{ padding: '12px 0' }}>
+          <Descriptions column={1} size="small" bordered>
+            <Descriptions.Item label="目标仓库">
+              {syncModalRepo || '全部仓库'}
+            </Descriptions.Item>
+            {currentSyncRecord && (
+              <>
+                <Descriptions.Item label="状态">
+                  {currentSyncRecord.status === 'pending' && <Tag color="default"><ClockCircleOutlined /> 等待中</Tag>}
+                  {currentSyncRecord.status === 'running' && <Tag color="processing"><ClockCircleOutlined /> 执行中</Tag>}
+                  {currentSyncRecord.status === 'completed' && <Tag color="success"><CheckCircleOutlined /> 成功</Tag>}
+                  {currentSyncRecord.status === 'failed' && <Tag color="error"><CloseCircleOutlined /> 失败</Tag>}
+                  {currentSyncRecord.status === 'partial' && <Tag color="warning"><FlagOutlined /> 部分成功</Tag>}
+                </Descriptions.Item>
+                <Descriptions.Item label="贡献者">
+                  {currentSyncRecord.contributors_synced}
+                </Descriptions.Item>
+                <Descriptions.Item label="提交数">
+                  {currentSyncRecord.commits_classified}
+                </Descriptions.Item>
+                <Descriptions.Item label="构建计划">
+                  {currentSyncRecord.build_plans_created}
+                </Descriptions.Item>
+                <Descriptions.Item label="耗时">
+                  {(currentSyncRecord.duration_seconds / 60).toFixed(1)} min
+                </Descriptions.Item>
+              </>
+            )}
+          </Descriptions>
+          <div style={{ marginTop: 16 }}>
+            <Progress
+              percent={Math.round(syncProgress)}
+              status={
+                currentSyncRecord?.status === 'failed' ? 'exception'
+                : currentSyncRecord?.status === 'completed' ? 'success'
+                : currentSyncRecord?.status === 'partial' ? 'normal'
+                : 'active'
+              }
+            />
+            {syncProgressMsg && (
+              <Text type="secondary" style={{ marginTop: 4, display: 'block' }}>
+                {syncProgressMsg}
+              </Text>
+            )}
+          </div>
+          {currentSyncRecord?.status === 'failed' && currentSyncRecord.errors && currentSyncRecord.errors.length > 0 && (
+            <Alert
+              style={{ marginTop: 12 }}
+              message="同步错误"
+              description={(Array.isArray(currentSyncRecord.errors) ? currentSyncRecord.errors : []).join('\n')}
+              type="error"
+              showIcon
+            />
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }

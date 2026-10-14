@@ -307,17 +307,67 @@ export const getContributorTrend = async (
   return response.data
 }
 
+export interface SyncRecord {
+  id: number
+  repo_name: string | null
+  status: string
+  since_date: string | null
+  contributors_synced: number
+  commits_classified: number
+  build_plans_created: number
+  errors: string[]
+  duration_seconds: number
+  synced_at: string | null
+  progress_percent: number
+  progress_message: string | null
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
 /**
  * 触发同步贡献者数据
  */
 export const syncContributors = async (
-  sinceDate?: string,
-  fullResync: boolean = false
+  params?: {
+    sinceDate?: string
+    fullResync?: boolean
+    repoName?: string
+  }
 ) => {
-  const response = await api.post('/contributor-board/sync/contributors', {
-    since_date: sinceDate,
-    full_resync: fullResync,
-  })
+  const body: Record<string, unknown> = {
+    since_date: params?.sinceDate,
+    full_resync: params?.fullResync ?? false,
+  }
+  if (params?.repoName) body.repo_name = params.repoName
+  const response = await api.post('/contributor-board/sync/contributors', body)
+  return response.data
+}
+
+/**
+ * 获取同步任务状态
+ */
+export const getSyncStatus = async (recordId: number) => {
+  const response = await api.get<SyncRecord>(`/contributor-board/sync/status/${recordId}`)
+  return response.data
+}
+
+/**
+ * 获取同步历史记录
+ */
+export const getSyncHistory = async (params?: {
+  repo_name?: string | null
+  status?: string | null
+  limit?: number
+  offset?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    limit: params?.limit ?? 20,
+    offset: params?.offset ?? 0,
+  }
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  if (params?.status) queryParams.status = params.status
+  const response = await api.get<{ records: SyncRecord[]; total: number }>('/contributor-board/sync/history', { params: queryParams })
   return response.data
 }
 

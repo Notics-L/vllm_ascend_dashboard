@@ -67,11 +67,17 @@ class ContributorSyncCollector:
     6. 聚合每个 contributor 的指标到 ContributorMetrics
     """
 
-    def __init__(self, github_client: GitHubClient, db_session: AsyncSession):
+    def __init__(
+        self,
+        github_client: GitHubClient,
+        db_session: AsyncSession,
+        progress_callback=None,
+    ):
         self.github = github_client
         self.db = db_session
         self.owner = github_client.owner
         self.repo = github_client.repo
+        self.progress_callback = progress_callback
 
     # ── 入口方法 ──────────────────────────────────────────────────
 
@@ -96,13 +102,22 @@ class ContributorSyncCollector:
             prs = await self._fetch_prs(since)
             logger.info("Fetched %d PRs for contributor sync", len(prs))
 
+            if self.progress_callback:
+                await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
+
             # 每个贡献者在当前采集周期内的临时指标聚合
             contributor_aggregates: dict[str, dict[str, Any]] = {}
 
-            for pr in prs:
+            total_prs = len(prs)
+            for idx, pr in enumerate(prs, 1):
                 pr_number = pr.get("number")
                 if pr_number is None:
                     continue
+
+                if idx % 10 == 0 or idx == total_prs:
+                    pct = min(95, int(idx / total_prs * 90) + 5)
+                    if self.progress_callback:
+                        await self.progress_callback(pct, f"Processing PRs: {idx}/{total_prs}")
 
                 try:
                     await self._process_pr(pr, pr_number, result, contributor_aggregates)
@@ -847,11 +862,17 @@ def _resolve_repos() -> list[tuple[str, str]]:
 
 # ── 模块级入口函数 ──────────────────────────────────────────────
 
-async def sync_contributors(since_date: datetime | None = None) -> SyncResult:
+async def sync_contributors(
+    since_date: datetime | None = None,
+    repo_name: str | None = None,
+    progress_callback=None,
+) -> SyncResult:
     """执行贡献者数据同步的主入口函数（支持多仓库）
 
     Args:
-        since_date: 增量同步的起始时间，默认为 7 天前
+        since_date: 增量同步的起始时间，默认为 2024-01-01
+        repo_name: 指定仓库名（owner/repo），不传则同步所有仓库
+        progress_callback: 异步回调 (percent: int, message: str) -> None
 
     Returns:
         SyncResult: 多仓库合并后的同步结果统计
@@ -861,18 +882,35 @@ async def sync_contributors(since_date: datetime | None = None) -> SyncResult:
         logger.warning("GITHUB_TOKEN is not configured, skipping contributor sync")
         return SyncResult(errors=["GITHUB_TOKEN not configured"])
 
-    repos = _resolve_repos()
-    logger.info("Contributor sync target repos: %s", repos)
+    all_repos = _resolve_repos()
+
+    if repo_name:
+        target_repos = [(repo_name.split("/", 1)[0], repo_name.split("/", 1)[1])] if "/" in repo_name else []
+        if not target_repos:
+            return SyncResult(errors=[f"Invalid repo_name format: {repo_name}"])
+    else:
+        target_repos = all_repos
+
+    logger.info("Contributor sync target repos: %s", target_repos)
 
     combined = SyncResult()
+    total_repos = len(target_repos)
 
-    for owner, repo in repos:
+    for repo_idx, (owner, repo) in enumerate(target_repos, 1):
         repo_key = f"{owner}/{repo}"
+        repo_base_pct = (repo_idx - 1) / total_repos * 100 if total_repos > 1 else 0
+        repo_pct_range = 100 / total_repos if total_repos > 1 else 100
+
         logger.info("=== Starting sync for repo: %s ===", repo_key)
         try:
             async with GitHubClient(token=token, owner=owner, repo=repo) as github_client:
                 async with AsyncSessionLocal() as db:
-                    collector = ContributorSyncCollector(github_client, db)
+                    async def repo_progress(pct: int, msg: str):
+                        if progress_callback:
+                            global_pct = min(95, int(repo_base_pct + (pct / 100) * repo_pct_range))
+                            await progress_callback(global_pct, f"[{repo_key}] {msg}")
+
+                    collector = ContributorSyncCollector(github_client, db, progress_callback=repo_progress)
                     result = await collector.collect(since=since_date)
 
             combined.contributors_synced += result.contributors_synced
@@ -882,6 +920,9 @@ async def sync_contributors(since_date: datetime | None = None) -> SyncResult:
         except Exception as e:
             logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
             combined.errors.append(f"Repo {repo_key}: {e}")
+
+    if progress_callback:
+        await progress_callback(98, "Finalizing...")
 
     if combined.synced_at is None:
         combined.synced_at = datetime.now(UTC)
