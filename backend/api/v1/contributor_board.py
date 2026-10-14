@@ -32,6 +32,11 @@ from contracts.schemas.contributor_board import (
     PolicyResultResponse,
     QuadrantDataResponse,
     RoleStats,
+    ContributorBoardSetting,
+    ContributorBoardSettingsResponse,
+    UpdateQuadrantConfigRequest,
+    UpdateScoringWeightsRequest,
+    UpdateRoleThresholdsRequest,
 )
 from contributor_board.service import get_contributor_board_service
 
@@ -184,12 +189,13 @@ async def get_quadrant_data(
     db: DbSession,
     _admin: CurrentAdminUser,
     repo_name: str | None = Query(None),
-    period_start: date | None = Query(None),
-    period_end: date | None = Query(None),
+    y_axis_type: str | None = Query(None, description="Y轴指标(不传则读取设置)"),
 ):
     """获取四象限数据（管理员可见）"""
     service = get_contributor_board_service()
-    return await service.get_quadrant_data(db, repo_name=repo_name, period_start=period_start, period_end=period_end)
+    return await service.get_quadrant_data(
+        db, repo_name=repo_name, y_axis_type=y_axis_type,
+    )
 
 
 # ---- 排行榜（管理员可见）----
@@ -200,18 +206,16 @@ async def get_ranking(
     _admin: CurrentAdminUser,
     role_type: str = Query("developer", description="角色类型: developer/reviewer/maintainer"),
     repo_name: str | None = Query(None, description="仓库名过滤"),
-    period_start: date | None = Query(None, description="统计时间起始"),
-    period_end: date | None = Query(None, description="统计时间结束"),
     sort_by: str | None = Query(None, description="排序字段"),
     sort_order: str = Query("desc", description="排序方向: asc/desc"),
-    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0, description="分页偏移"),
+    limit: int = Query(20, ge=1, le=200, description="分页大小"),
 ):
-    """获取排行榜（管理员可见）"""
+    """获取排行榜（全量统计，管理员可见）"""
     service = get_contributor_board_service()
     return await service.get_ranking(
         db, role_type=role_type, repo_name=repo_name,
-        period_start=period_start, period_end=period_end,
-        sort_by=sort_by, sort_order=sort_order, limit=limit,
+        sort_by=sort_by, sort_order=sort_order, offset=offset, limit=limit,
     )
 
 
@@ -331,3 +335,33 @@ async def get_extended_trend(
     return await service.get_extended_trend(
         db, login=login, period_start=period_start, period_end=period_end
     )
+
+
+# ---- 设置管理（管理员可见）----
+
+@router.get("/settings", response_model=ContributorBoardSettingsResponse)
+async def get_settings(db: DbSession, _admin: CurrentAdminUser):
+    """获取贡献者分析设置"""
+    service = get_contributor_board_service()
+    return await service.get_settings(db)
+
+
+@router.put("/settings/quadrant", response_model=ContributorBoardSetting)
+async def update_quadrant_config(db: DbSession, _admin: CurrentAdminUser, request: UpdateQuadrantConfigRequest):
+    """更新四象限Y轴配置"""
+    service = get_contributor_board_service()
+    return await service.update_quadrant_config(db, request)
+
+
+@router.put("/settings/scoring_weights", response_model=ContributorBoardSetting)
+async def update_scoring_weights(db: DbSession, _admin: CurrentAdminUser, request: UpdateScoringWeightsRequest):
+    """更新分数计算权重"""
+    service = get_contributor_board_service()
+    return await service.update_scoring_weights(db, request)
+
+
+@router.put("/settings/role_thresholds", response_model=ContributorBoardSetting)
+async def update_role_thresholds(db: DbSession, _admin: CurrentAdminUser, request: UpdateRoleThresholdsRequest):
+    """更新角色阈值"""
+    service = get_contributor_board_service()
+    return await service.update_role_thresholds(db, request)

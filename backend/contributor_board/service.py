@@ -4,14 +4,16 @@
 import logging
 from datetime import date
 from typing import Any
+from urllib.parse import quote
 
-from sqlalchemy import Integer, and_, asc, desc, func, or_, select
+from sqlalchemy import Integer, and_, asc, desc, func, or_, select, text
 
 from contributor_board.build_optimizer import BuildPlan, evaluate_build_plan
 from contributor_board.classifier import ClassificationResult, classify_commit
 from contributor_board.quadrant_engine import (
     QuadrantPoint,
     calculate_quadrants,
+    determine_quadrant,
 )
 from contributor_board import role_analytics
 from contributor_board import policy_engine
@@ -20,6 +22,8 @@ from contracts.schemas.contributor_board import (
     BuildPlanListResponse,
     BuildPlanResponse,
     ClassificationSummary,
+    ContributorBoardSetting,
+    ContributorBoardSettingsResponse,
     ContributorDetailResponse,
     ContributorListFilter,
     ContributorListResponse,
@@ -27,20 +31,27 @@ from contracts.schemas.contributor_board import (
     ContributorRankingItem,
     ContributorRankingResponse,
     ContributorResponse,
-    ContributorTrendPoint,
-    ContributorTrendResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
+    ContributorTrendPoint,
+    ContributorTrendResponse,
     ExtendedTrendResponse,
     ModuleHotspotResponse,
     PolicyItemResponse,
     PolicyResultResponse,
+    QuadrantConfig,
     QuadrantDataResponse,
     RoleStats,
+    RoleThresholdsConfig,
+    ScoringWeightsConfig,
+    UpdateQuadrantConfigRequest,
+    UpdateRoleThresholdsRequest,
+    UpdateScoringWeightsRequest,
 )
 from infrastructure.persistence.models import (
     CommitClassification,
     Contributor,
+    ContributorBoardSettings,
     ContributorMetrics,
     ErrorRecord,
     ImageBuildPlan,
@@ -315,6 +326,9 @@ class ContributorBoardService:
         )
         last_synced = last_sync_result.scalar()
 
+        classification_summary = await ContributorBoardService.get_classification_summary_from_db(db)
+        build_stats = await ContributorBoardService.get_build_optimization_stats_from_db(db)
+
         return ContributorOverviewStats(
             total_contributors=total_contributors,
             community_contributors=community_contributors,
@@ -426,94 +440,116 @@ class ContributorBoardService:
 
     # ---- 四象限数据 ----
     @staticmethod
-    async def get_quadrant_data(db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> QuadrantDataResponse:
-        metrics_stmt = select(ContributorMetrics)
+    async def get_quadrant_data(
+        db,
+        repo_name: str | None = None,
+        y_axis_type: str | None = None,
+    ) -> QuadrantDataResponse:
+        # 从设置中读取 Y 轴类型，API 传入优先级高于设置
+        if not y_axis_type:
+            y_axis_type = await ContributorBoardService._get_quadrant_y_axis(db)
 
         conditions = []
         if repo_name:
             conditions.append(ContributorMetrics.repo_name == repo_name)
-        if period_start and period_end:
-            conditions.append(
-                and_(
-                    ContributorMetrics.period_start >= period_start,
-                    ContributorMetrics.period_end <= period_end,
-                )
+
+        # 按 contributor 聚合（取最新周期数据或总和），避免同一人出现多次
+        agg_stmt = (
+            select(
+                Contributor.login,
+                Contributor.avatar_url,
+                func.coalesce(func.sum(ContributorMetrics.contribution_score), 0).label("contribution_score"),
+                func.coalesce(func.sum(ContributorMetrics.error_score), 0).label("error_score"),
+                func.coalesce(func.sum(ContributorMetrics.review_count), 0).label("review_count"),
+                func.coalesce(func.sum(ContributorMetrics.merged_pr_count), 0).label("merged_pr_count"),
+                func.coalesce(func.sum(ContributorMetrics.code_additions), 0).label("code_additions"),
+                func.coalesce(func.max(ContributorMetrics.quadrant), "").label("role_label"),
             )
+            .join(ContributorMetrics, Contributor.id == ContributorMetrics.contributor_id)
+        )
 
         if conditions:
-            metrics_stmt = metrics_stmt.where(and_(*conditions))
+            agg_stmt = agg_stmt.where(and_(*conditions))
 
-        metrics_stmt = metrics_stmt.order_by(desc(ContributorMetrics.updated_at))
-        result = await db.execute(metrics_stmt)
-        metrics_list = result.scalars().all()
+        agg_stmt = agg_stmt.group_by(Contributor.login, Contributor.avatar_url)
+        result = await db.execute(agg_stmt)
+        rows = result.all()
 
         contributors_metrics: list[dict[str, Any]] = []
-        for m in metrics_list:
+        for r in rows:
             contributors_metrics.append({
-                "login": m.contributor_login,
-                "avatar_url": None,
-                "contribution_score": float(m.contribution_score or 0),
-                "error_score": float(m.error_score or 0),
-                "merged_pr_count": int(m.merged_pr_count or 0),
+                "login": r[0],
+                "avatar_url": r[1],
+                "contribution_score": float(r[2]),
+                "error_score": float(r[3]),
+                "review_count": int(r[4]),
+                "merged_pr_count": int(r[5]),
+                "code_additions": int(r[6]),
+                "role_label": r[7],
                 "is_community": False,
             })
 
-        points, quad_x, quad_y = calculate_quadrants(contributors_metrics)
+        # 去重：同一 login 取 contribution_score 最高的
+        deduped: dict[str, dict[str, Any]] = {}
+        for m in contributors_metrics:
+            login = m["login"]
+            if login not in deduped or m["contribution_score"] > deduped[login]["contribution_score"]:
+                deduped[login] = m
+        contributors_metrics = list(deduped.values())
+
+        # 只保留有贡献的记录
+        contributors_metrics = [m for m in contributors_metrics if m["contribution_score"] > 0]
+
+        y_axis_map = {
+            "error_score": "error_score",
+            "review_count": "review_count",
+            "merged_pr_count": "merged_pr_count",
+            "code_additions": "code_additions",
+        }
+        y_key = y_axis_map.get(y_axis_type, "error_score")
+
+        points, quad_x, quad_y = calculate_quadrants(contributors_metrics, y_axis_type=y_key)
 
         quadrant_counts: dict[str, int] = {}
         for p in points:
             quadrant_counts[p.quadrant] = quadrant_counts.get(p.quadrant, 0) + 1
 
+        # 构建 points 响应，保留原始字段名兼容前端
+        resp_points = []
+        for p in points:
+            m = deduped.get(p.login, {})
+            resp_points.append({
+                "login": p.login,
+                "avatar_url": p.avatar_url,
+                "contribution_score": p.x_value,
+                "error_score": p.y_value if y_key == "error_score" else m.get("error_score", 0),
+                "y_axis_type": y_key,
+                "y_value": p.y_value,
+                "quadrant": p.quadrant,
+                "merged_pr_count": p.merged_pr_count,
+                "is_community": p.is_community,
+                "role_label": m.get("role_label", ""),
+            })
+
         return QuadrantDataResponse(
-            points=[
-                {
-                    "login": p.login,
-                    "avatar_url": p.avatar_url,
-                    "contribution_score": p.contribution_score,
-                    "error_score": p.error_score,
-                    "quadrant": p.quadrant,
-                    "merged_pr_count": p.merged_pr_count,
-                    "is_community": p.is_community,
-                }
-                for p in points
-            ],
+            points=resp_points,
             quad_x=quad_x,
             quad_y=quad_y,
+            y_axis_type=y_key,
             repo_name=repo_name,
-            period_start=period_start,
-            period_end=period_end,
-            total_count=len(points),
+            period_start=None,
+            period_end=None,
+            total_count=len(resp_points),
             quadrant_counts=quadrant_counts,
         )
 
     # ---- 排行榜 ----
+
     @staticmethod
-    async def get_ranking(
-        db,
-        role_type: str = "developer",
-        repo_name: str | None = None,
-        period_start: date | None = None,
-        period_end: date | None = None,
-        sort_by: str | None = None,
-        sort_order: str = "desc",
-        limit: int = 10,
-    ) -> ContributorRankingResponse:
-        score_column = ContributorMetrics.contribution_score
-        if role_type == "reviewer":
-            score_column = ContributorMetrics.review_count
-        elif role_type == "maintainer":
-            score_column = ContributorMetrics.merge_count
-
-        # Aggregated sort columns
-        agg_columns: dict[str, Any] = {
-            "score": func.sum(ContributorMetrics.contribution_score),
-            "merged_pr_count": func.sum(ContributorMetrics.merged_pr_count),
-            "pending_pr_count": func.sum(ContributorMetrics.pending_pr_count),
-            "code_additions": func.sum(ContributorMetrics.code_additions),
-            "code_deletions": func.sum(ContributorMetrics.code_deletions),
-            "review_count": func.sum(ContributorMetrics.review_count),
-        }
-
+    async def _build_aggregated_metrics(
+        db, repo_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        """聚合所有贡献者指标（无时间过滤，全量统计）"""
         stmt = (
             select(
                 Contributor.login,
@@ -526,69 +562,219 @@ class ContributorBoardService:
                 func.sum(ContributorMetrics.code_deletions).label('code_deletions'),
                 func.sum(ContributorMetrics.review_count).label('review_count'),
                 func.sum(ContributorMetrics.approval_count).label('approval_count'),
-                func.max(ContributorMetrics.quadrant).label('quadrant'),
+                func.sum(ContributorMetrics.error_score).label('error_score'),
+                func.sum(ContributorMetrics.commit_count).label('commit_count'),
+                func.max(ContributorMetrics.quadrant).label('role_label'),
             )
             .join(ContributorMetrics, Contributor.id == ContributorMetrics.contributor_id)
         )
-
-        conditions = []
         if repo_name:
-            conditions.append(ContributorMetrics.repo_name == repo_name)
-        if period_start:
-            conditions.append(ContributorMetrics.period_start >= period_start)
-        if period_end:
-            conditions.append(ContributorMetrics.period_end <= period_end)
-
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-
-        stmt = stmt.group_by(
-            Contributor.login,
-            Contributor.avatar_url,
-            Contributor.employee_id,
-        )
-
-        order_col: Any
-        if sort_by and sort_by in agg_columns:
-            order_col = agg_columns[sort_by]
-        elif role_type == "reviewer":
-            order_col = agg_columns["review_count"]
-        elif role_type == "maintainer":
-            order_col = agg_columns["merged_pr_count"]
-        else:
-            order_col = agg_columns["score"]
-
-        order_func = asc if sort_order == "asc" else desc
-        stmt = stmt.order_by(order_func(order_col)).limit(limit)
+            stmt = stmt.where(ContributorMetrics.repo_name == repo_name)
+        stmt = stmt.group_by(Contributor.login, Contributor.avatar_url, Contributor.employee_id)
 
         result = await db.execute(stmt)
         rows = result.all()
 
+        return [
+            {
+                "login": r[0], "avatar_url": r[1], "employee_id": r[2],
+                "contribution_score": float(r[3] or 0),
+                "merged_pr_count": int(r[4] or 0),
+                "pending_pr_count": int(r[5] or 0),
+                "code_additions": int(r[6] or 0),
+                "code_deletions": int(r[7] or 0),
+                "review_count": int(r[8] or 0),
+                "approval_count": int(r[9] or 0),
+                "error_score": float(r[10] or 0),
+                "commit_count": int(r[11] or 0),
+                "role_label": r[12],
+                "is_community": False,
+            }
+            for r in rows
+        ]
+
+    @staticmethod
+    async def _get_quadrant_y_axis(db) -> str:
+        """从设置中读取当前四象限 Y 轴类型"""
+        result = await db.execute(
+            select(ContributorBoardSettings.setting_value).where(
+                ContributorBoardSettings.setting_key == "quadrant_y_axis"
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row and isinstance(row, dict):
+            return row.get("y_axis_type", "review_count")
+        return "review_count"
+
+    @staticmethod
+    async def _compute_quadrants_for_metrics(
+        metrics: list[dict[str, Any]], db
+    ) -> dict[str, str]:
+        """基于设置中的 Y 轴类型计算动态四象限，返回 login → quadrant 映射"""
+        y_axis_type = await ContributorBoardService._get_quadrant_y_axis(db)
+        axis_map = {
+            "error_score": "error_score",
+            "review_count": "review_count",
+            "merged_pr_count": "merged_pr_count",
+            "code_additions": "code_additions",
+        }
+        y_key = axis_map.get(y_axis_type, "review_count")
+        points, _, _ = calculate_quadrants(metrics, y_axis_type=y_key)
+        return {p.login: p.quadrant for p in points}
+
+    @staticmethod
+    async def get_ranking(
+        db,
+        role_type: str = "developer",
+        repo_name: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "desc",
+        offset: int = 0,
+        limit: int = 20,
+    ) -> ContributorRankingResponse:
+        agg_columns: dict[str, Any] = {
+            "score": "contribution_score",
+            "merged_pr_count": "merged_pr_count",
+            "pending_pr_count": "pending_pr_count",
+            "commit_count": "commit_count",
+            "code_additions": "code_additions",
+            "code_deletions": "code_deletions",
+            "review_count": "review_count",
+            "approval_count": "approval_count",
+            "error_score": "error_score",
+            "login": "login",
+        }
+
+        # 获取全量聚合数据
+        all_metrics = await ContributorBoardService._build_aggregated_metrics(db, repo_name=repo_name)
+
+        # 计算动态四象限（配置驱动）
+        quadrant_map = await ContributorBoardService._compute_quadrants_for_metrics(all_metrics, db)
+
+        # 按角色类型排序
+        if role_type == "reviewer":
+            default_sort = "review_count"
+        elif role_type == "maintainer":
+            default_sort = "merged_pr_count"
+        else:
+            default_sort = "score"
+
+        sort_key = (sort_by or default_sort)
+        sort_field = agg_columns.get(sort_key, default_sort)
+        reverse = sort_order == "desc"
+
+        sorted_metrics = sorted(all_metrics, key=lambda m: m.get(sort_field, 0), reverse=reverse)
+
+        # 应用分页
+        paginated = sorted_metrics[offset:offset + limit]
+        total = len(sorted_metrics)
+
         rankings: list[ContributorRankingItem] = [
             ContributorRankingItem(
-                login=r[0],
-                avatar_url=r[1],
-                employee_id=r[2],
-                score=float(r[3] or 0),
-                rank=i + 1,
-                merged_pr_count=int(r[4] or 0),
-                pending_pr_count=int(r[5] or 0),
-                code_additions=int(r[6] or 0),
-                code_deletions=int(r[7] or 0),
-                review_count=int(r[8] or 0),
-                approval_count=int(r[9] or 0),
-                contribution_score=float(r[3] or 0),
-                quadrant=r[10],
+                login=m["login"],
+                avatar_url=m["avatar_url"],
+                employee_id=m["employee_id"],
+                score=m["contribution_score"],
+                rank=i + 1 + offset,
+                merged_pr_count=m["merged_pr_count"],
+                pending_pr_count=m["pending_pr_count"],
+                code_additions=m["code_additions"],
+                code_deletions=m["code_deletions"],
+                review_count=m["review_count"],
+                approval_count=m["approval_count"],
+                contribution_score=m["contribution_score"],
+                error_score=m["error_score"],
+                commit_count=m.get("commit_count", 0),
+                dynamic_quadrant=quadrant_map.get(m["login"]),
+                role_label=m["role_label"],
             )
-            for i, r in enumerate(rows)
+            for i, m in enumerate(paginated)
         ]
 
         return ContributorRankingResponse(
             role_type=role_type,
             rankings=rankings,
+            total=total,
             repo_name=repo_name,
-            period_start=period_start,
-            period_end=period_end,
+        )
+
+    # ---- 设置管理 ----
+
+    @staticmethod
+    async def get_settings(db) -> ContributorBoardSettingsResponse:
+        result = await db.execute(
+            select(ContributorBoardSettings).where(
+                ContributorBoardSettings.setting_key.in_([
+                    "quadrant_y_axis", "scoring_weights", "role_thresholds"
+                ])
+            )
+        )
+        settings = result.scalars().all()
+        setting_map = {s.setting_key: s.setting_value for s in settings}
+
+        y_axis = setting_map.get("quadrant_y_axis", {"y_axis_type": "review_count"})
+        weights = setting_map.get("scoring_weights", {
+            "merged_pr_weight": 10.0, "code_line_weight": 0.5,
+            "review_weight": 3.0, "approval_weight": 5.0, "core_module_weight": 8.0
+        })
+        thresholds = setting_map.get("role_thresholds", {
+            "star_threshold": 30, "active_threshold": 15, "max_error_score": 2
+        })
+
+        return ContributorBoardSettingsResponse(
+            quadrant_config=QuadrantConfig(**y_axis),
+            scoring_weights=ScoringWeightsConfig(**weights),
+            role_thresholds=RoleThresholdsConfig(**thresholds),
+        )
+
+    @staticmethod
+    async def update_setting(
+        db, key: str, value: dict, description: str | None = None
+    ) -> ContributorBoardSetting:
+        result = await db.execute(
+            select(ContributorBoardSettings).where(ContributorBoardSettings.setting_key == key)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.setting_value = value
+            if description is not None:
+                existing.description = description
+        else:
+            existing = ContributorBoardSettings(
+                setting_key=key, setting_value=value, description=description
+            )
+            db.add(existing)
+        await db.flush()
+        await db.refresh(existing)
+        return ContributorBoardSetting(
+            setting_key=existing.setting_key,
+            setting_value=existing.setting_value,
+            description=existing.description,
+        )
+
+    @staticmethod
+    async def update_quadrant_config(
+        db, request: UpdateQuadrantConfigRequest
+    ) -> ContributorBoardSetting:
+        return await ContributorBoardService.update_setting(
+            db, "quadrant_y_axis", {"y_axis_type": request.y_axis_type},
+            "四象限Y轴指标类型"
+        )
+
+    @staticmethod
+    async def update_scoring_weights(
+        db, request: UpdateScoringWeightsRequest
+    ) -> ContributorBoardSetting:
+        return await ContributorBoardService.update_setting(
+            db, "scoring_weights", request.model_dump(), "贡献分数计算权重"
+        )
+
+    @staticmethod
+    async def update_role_thresholds(
+        db, request: UpdateRoleThresholdsRequest
+    ) -> ContributorBoardSetting:
+        return await ContributorBoardService.update_setting(
+            db, "role_thresholds", request.model_dump(), "静态角色标签阈值"
         )
 
     # ---- 趋势数据 ----
@@ -747,14 +933,16 @@ class ContributorBoardService:
     @staticmethod
     async def trigger_sync(
         since_date: date | None = None,
+        full_resync: bool = False,
     ) -> ContributorSyncResponse:
-        from datetime import UTC, datetime, timedelta
+        from datetime import UTC, datetime, timedelta, time
         from collector.contributor_sync import sync_contributors
 
-        if since_date is None:
+        if full_resync:
+            since_dt = None
+        elif since_date is None:
             since_dt = datetime.now(UTC) - timedelta(days=7)
         else:
-            from datetime import time
             since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
 
         try:

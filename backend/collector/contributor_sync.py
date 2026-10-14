@@ -81,7 +81,7 @@ class ContributorSyncCollector:
         result = SyncResult()
 
         if since is None:
-            since = datetime.now(UTC) - timedelta(days=7)
+            since = datetime.now(UTC) - timedelta(days=30)
 
         logger.info(
             "Starting contributor sync: %s/%s since=%s",
@@ -117,6 +117,10 @@ class ContributorSyncCollector:
                         "Unexpected error processing PR #%s: %s", pr_number, e, exc_info=True
                     )
                     result.errors.append(f"Unexpected error PR #{pr_number}: {e}")
+                    try:
+                        await self.db.rollback()
+                    except Exception:
+                        pass
                     continue
 
             # 聚合写入 ContributorMetrics
@@ -209,6 +213,7 @@ class ContributorSyncCollector:
             "merge_count": 0,
             "core_module_count": 0,
             "closed_pr_count": 0,
+            "commit_count": 0,
             "error_score": 0.0,
         })
 
@@ -231,19 +236,55 @@ class ContributorSyncCollector:
         else:
             agg["closed_pr_count"] += 1
 
-        # 聚合 review 指标
+        # 聚合 review 指标 — 采集所有 reviewer（不只是 PR 作者自己）
         for review in reviews:
             review_user = (review.get("user") or {}).get("login", "")
-            if review_user == login:
-                agg["review_count"] += 1
-                if review.get("state") == "APPROVED":
-                    agg["approval_count"] += 1
+            if not review_user:
+                continue
+            # 为 reviewer 创建/获取聚合桶
+            reviewer_agg = contributor_aggregates.setdefault(review_user, {
+                "contributor_id": None,
+                "merged_pr_count": 0,
+                "pending_pr_count": 0,
+                "code_additions": 0,
+                "code_deletions": 0,
+                "review_count": 0,
+                "approval_count": 0,
+                "merge_count": 0,
+                "core_module_count": 0,
+                "closed_pr_count": 0,
+                "commit_count": 0,
+                "error_score": 0.0,
+                "_is_reviewer_only": True,
+            })
+            reviewer_agg["review_count"] += 1
+            if review.get("state") == "APPROVED":
+                reviewer_agg["approval_count"] += 1
 
         # 对 commits 进行分类
         for commit in commits:
             commit_sha = commit.get("sha", "")
             if not commit_sha:
                 continue
+
+            commit_author = (commit.get("author") or {}).get("login", "")
+            if commit_author:
+                author_agg = contributor_aggregates.setdefault(commit_author, {
+                    "contributor_id": None,
+                    "merged_pr_count": 0,
+                    "pending_pr_count": 0,
+                    "code_additions": 0,
+                    "code_deletions": 0,
+                    "review_count": 0,
+                    "approval_count": 0,
+                    "merge_count": 0,
+                    "core_module_count": 0,
+                    "closed_pr_count": 0,
+                    "commit_count": 0,
+                    "error_score": 0.0,
+                    "_is_commit_author_only": True,
+                })
+                author_agg["commit_count"] += 1
 
             commit_info = commit.get("commit", {})
             commit_message = commit_info.get("message", "")
@@ -310,10 +351,10 @@ class ContributorSyncCollector:
         login: str,
     ) -> Contributor | None:
         github_id = user_info.get("id")
-        if github_id is None:
-            return None
-
-        stmt = select(Contributor).where(Contributor.github_id == github_id)
+        if github_id is not None:
+            stmt = select(Contributor).where(Contributor.github_id == github_id)
+        else:
+            stmt = select(Contributor).where(Contributor.login == login)
         result = await self.db.execute(stmt)
         existing = result.scalar_one_or_none()
 
@@ -344,26 +385,55 @@ class ContributorSyncCollector:
         else:
             is_community = not bool(employee_id)
             company = user_info.get("company", "") or ""
-            new_contributor = Contributor(
-                github_id=github_id,
-                login=login,
-                avatar_url=avatar_url,
-                email=email,
-                name=name,
-                is_community=is_community,
-                role_types=[],
-                company=company,
-                employee_id=employee_id,
-            )
-            self.db.add(new_contributor)
-            logger.debug("Created Contributor %s (id=%s, emp=%s)", login, github_id, employee_id)
-            return new_contributor
+            try:
+                actual_github_id = github_id if github_id and github_id != 0 else hash(login) % (2**32)
+                new_contributor = Contributor(
+                    github_id=actual_github_id,
+                    login=login,
+                    avatar_url=avatar_url,
+                    email=email,
+                    name=name,
+                    is_community=is_community,
+                    role_types=[],
+                    company=company,
+                    employee_id=employee_id,
+                )
+                self.db.add(new_contributor)
+                await self.db.flush()
+                logger.debug("Created Contributor %s (id=%s, emp=%s)", login, github_id, employee_id)
+                return new_contributor
+            except Exception as e:
+                if "Duplicate entry" in str(e) or "1062" in str(e):
+                    await self.db.rollback()
+                    lookup = select(Contributor).where(Contributor.login == login)
+                    result = await self.db.execute(lookup)
+                    existing = result.scalar_one_or_none()
+                    if existing:
+                        existing.login = login
+                        existing.avatar_url = avatar_url or existing.avatar_url
+                        existing.email = email or existing.email
+                        existing.name = name or existing.name
+                        if employee_id:
+                            existing.employee_id = employee_id
+                        existing.updated_at = datetime.now(UTC)
+                        logger.debug("Recovered duplicate Contributor %s (id=%s)", login, github_id)
+                        return existing
+                    raise
+                raise
 
     async def _update_contribution_dates(
         self,
         contributor: Contributor,
         updated_at: datetime,
     ) -> None:
+        first = contributor.first_contribution_at
+        if first and first.tzinfo is None:
+            first = first.replace(tzinfo=UTC)
+        contributor.first_contribution_at = first
+        last = contributor.last_contribution_at
+        if last and last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        contributor.last_contribution_at = last
         if contributor.first_contribution_at is None or updated_at < contributor.first_contribution_at:
             contributor.first_contribution_at = updated_at
         if contributor.last_contribution_at is None or updated_at > contributor.last_contribution_at:
@@ -380,34 +450,41 @@ class ContributorSyncCollector:
         pr_number: int,
         files_changed_count: int,
     ) -> None:
-        stmt = select(CommitClassification).where(CommitClassification.commit_sha == commit_sha)
-        result = await self.db.execute(stmt)
-        existing = result.scalar_one_or_none()
+        try:
+            stmt = select(CommitClassification).where(CommitClassification.commit_sha == commit_sha)
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
 
-        if existing:
-            existing.commit_message = commit_message
-            existing.commit_type = classification.commit_type.value
-            existing.confidence = classification.confidence
-            existing.modules_touched = classification.modules_touched
-            existing.files_changed_count = files_changed_count
-            existing.is_chip_specific = classification.is_chip_specific
-            existing.chip_target = classification.chip_target
-            existing.contributor_login = contributor_login
-            existing.pr_number = pr_number
-        else:
-            new_entry = CommitClassification(
-                commit_sha=commit_sha,
-                commit_message=commit_message,
-                commit_type=classification.commit_type.value,
-                confidence=classification.confidence,
-                modules_touched=classification.modules_touched,
-                files_changed_count=files_changed_count,
-                is_chip_specific=classification.is_chip_specific,
-                chip_target=classification.chip_target,
-                contributor_login=contributor_login,
-                pr_number=pr_number,
-            )
-            self.db.add(new_entry)
+            if existing:
+                existing.commit_message = commit_message
+                existing.commit_type = classification.commit_type.value
+                existing.confidence = classification.confidence
+                existing.modules_touched = classification.modules_touched
+                existing.files_changed_count = files_changed_count
+                existing.is_chip_specific = classification.is_chip_specific
+                existing.chip_target = classification.chip_target
+                existing.contributor_login = contributor_login
+                existing.pr_number = pr_number
+            else:
+                new_entry = CommitClassification(
+                    commit_sha=commit_sha,
+                    commit_message=commit_message,
+                    commit_type=classification.commit_type.value,
+                    confidence=classification.confidence,
+                    modules_touched=classification.modules_touched,
+                    files_changed_count=files_changed_count,
+                    is_chip_specific=classification.is_chip_specific,
+                    chip_target=classification.chip_target,
+                    contributor_login=contributor_login,
+                    pr_number=pr_number,
+                )
+                self.db.add(new_entry)
+        except Exception as e:
+            logger.warning("Failed to upsert commit classification for %s: %s", commit_sha, e)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
 
     # ── 私有方法：Error Record / Revert ───────────────────────────
 
@@ -469,6 +546,32 @@ class ContributorSyncCollector:
         period_end = now.replace(hour=0, minute=0, second=0, microsecond=0).date()
 
         for login, agg in contributor_aggregates.items():
+            # 为纯 reviewer / commit author 补齐 contributor_id（通过 GitHub login 查找或创建）
+            is_reviewer_only = agg.pop("_is_reviewer_only", False)
+            is_commit_only = agg.pop("_is_commit_author_only", False)
+            if agg["contributor_id"] is None and (is_reviewer_only or is_commit_only):
+                lookup = select(Contributor).where(Contributor.login == login)
+                db_result = await self.db.execute(lookup)
+                existing_contrib = db_result.scalar_one_or_none()
+                if existing_contrib:
+                    agg["contributor_id"] = existing_contrib.id
+                else:
+                    new_c = Contributor(
+                        github_id=hash(login) % (2**32),
+                        login=login,
+                        avatar_url=None,
+                        email=None,
+                        name=None,
+                        is_community=True,
+                        role_types=[],
+                        company=None,
+                        employee_id=None,
+                    )
+                    self.db.add(new_c)
+                    await self.db.flush()
+                    agg["contributor_id"] = new_c.id
+                    logger.debug("Created Contributor for reviewer/author %s", login)
+
             score = self._calculate_contribution_score(agg)
             quadrant = self._calculate_quadrant(score, agg["error_score"])
 
@@ -495,6 +598,7 @@ class ContributorSyncCollector:
                 existing.merge_count += agg["merge_count"]
                 existing.core_module_count += agg["core_module_count"]
                 existing.closed_pr_count += agg["closed_pr_count"]
+                existing.commit_count += agg.get("commit_count", 0)
                 existing.error_score += agg["error_score"]
                 if score > existing.contribution_score:
                     existing.contribution_score = score
@@ -516,6 +620,7 @@ class ContributorSyncCollector:
                     merge_count=agg["merge_count"],
                     core_module_count=agg["core_module_count"],
                     closed_pr_count=agg["closed_pr_count"],
+                    commit_count=agg.get("commit_count", 0),
                     contribution_score=score,
                     error_score=agg["error_score"],
                     quadrant=quadrant,

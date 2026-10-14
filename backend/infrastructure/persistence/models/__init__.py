@@ -1035,6 +1035,7 @@ class ContributorMetrics(Base):
     merge_count = Column(Integer, default=0)
     core_module_count = Column(Integer, default=0)
     closed_pr_count = Column(Integer, default=0)
+    commit_count = Column(Integer, default=0)
     contribution_score = Column(Float, default=0)
     error_score = Column(Float, default=0)
     quadrant = Column(String(20))
@@ -1044,6 +1045,18 @@ class ContributorMetrics(Base):
     __table_args__ = (
         UniqueConstraint('contributor_login', 'period_start', 'period_end', name='uq_contributor_metrics_period'),
     )
+
+
+class ContributorBoardSettings(Base):
+    """贡献者看板设置表"""
+    __tablename__ = "contributor_board_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    setting_key = Column(String(100), nullable=False, unique=True, index=True)
+    setting_value = Column(JSON, nullable=False)
+    description = Column(String(500), nullable=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
 class CommitClassification(Base):

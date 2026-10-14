@@ -12,11 +12,13 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   message,
   Modal,
   Radio,
   Row,
   Select,
+  Slider,
   Space,
   Spin,
   Statistic,
@@ -28,12 +30,16 @@ import {
 import {
   CodeOutlined,
   DownloadOutlined,
+  FlagOutlined,
   FilterOutlined,
   GithubOutlined,
   ReloadOutlined,
   RocketOutlined,
   SearchOutlined,
+  SettingOutlined,
   SortAscendingOutlined,
+  StarOutlined,
+  ToolOutlined,
   TrophyOutlined,
 } from '@ant-design/icons'
 import {
@@ -77,6 +83,11 @@ import {
   type QuadrantData,
   type RankingItem,
   type RoleStats,
+  getContributorBoardSettings,
+  type ContributorBoardSettings as SettingsType,
+  updateQuadrantConfig,
+  updateScoringWeights,
+  updateRoleThresholds,
   syncContributors,
 } from '../services/contributorBoard'
 
@@ -142,6 +153,20 @@ const quadrantColors: Record<string, string> = {
   IMPROVE: '#faad14',
   ENCOURAGE: '#1890ff',
   REPLACE: '#ff4d4f',
+}
+
+const quadrantRoleLabels: Record<string, string> = {
+  star: '明星',
+  active: '活跃',
+  observer: '观察',
+  at_risk: '流失风险',
+}
+
+const quadrantRoleColors: Record<string, string> = {
+  star: 'gold',
+  active: 'blue',
+  observer: 'default',
+  at_risk: 'red',
 }
 
 /* ------------------------------------------------------------------ */
@@ -562,17 +587,80 @@ type ScatterDataPoint = {
   quadrant: string
 }
 
-function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: boolean }) {
+const axisOptions = [
+  { label: '出错评分', value: 'error_score' },
+  { label: '检视次数', value: 'review_count' },
+  { label: 'PR合并数', value: 'merged_pr_count' },
+  { label: '代码行数', value: 'code_additions' },
+]
+
+const axisLabels: Record<string, string> = {
+  error_score: '出错评分',
+  review_count: '检视次数',
+  merged_pr_count: 'PR合并数',
+  code_additions: '代码行数',
+}
+
+function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
   const navigate = useNavigate()
   const chartRef = useRef<HTMLDivElement>(null)
   const [searchLogin, setSearchLogin] = useState('')
+  const [quadrantData, setQuadrantData] = useState<QuadrantData | null>(null)
+  const [quadrantLoading, setQuadrantLoading] = useState(true)
+  const [yAxisType, setYAxisType] = useState('review_count')
+
+  // 从设置加载初始 Y 轴配置
+  useEffect(() => {
+    let cancelled = false
+    const loadSettings = async () => {
+      try {
+        const data = await getContributorBoardSettings()
+        if (!cancelled) {
+          setYAxisType(data.quadrant_config.y_axis_type)
+        }
+      } catch { /* ignore */ }
+    }
+    loadSettings()
+    return () => { cancelled = true }
+  }, [])
+
+  // 当 refreshKey 变化时，重新从 settings 读取 Y 轴
+  useEffect(() => {
+    let cancelled = false
+    const reloadAxis = async () => {
+      try {
+        const data = await getContributorBoardSettings()
+        if (!cancelled) {
+          setYAxisType(data.quadrant_config.y_axis_type)
+        }
+      } catch { /* ignore */ }
+    }
+    if (refreshKey && refreshKey > 0) {
+      reloadAxis()
+    }
+  }, [refreshKey])
+
+  const loadQuadrant = useCallback(async (axis: string) => {
+    setQuadrantLoading(true)
+    try {
+      const data = await getQuadrantData({ y_axis_type: axis })
+      await new Promise(r => setTimeout(r, 400))
+      setQuadrantData(data)
+    } catch { /* silently fail */ } finally {
+      setQuadrantLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadQuadrant(yAxisType)
+  }, [yAxisType, loadQuadrant])
 
   const scatterData: ScatterDataPoint[] = (() => {
     const deduped = new Map<string, ScatterDataPoint>()
-    ;(data?.points ?? []).forEach(p => {
+    ;(quadrantData?.points ?? []).forEach(p => {
       const pt: ScatterDataPoint = {
         x: p.contribution_score,
-        y: p.error_score,
+        y: p.y_value,
         z: p.merged_pr_count,
         login: p.login,
         quadrant: p.quadrant,
@@ -744,7 +832,7 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
           <Divider style={{ margin: '8px 0' }} />
           <Text>贡献分数: {p.x.toFixed(1)}</Text>
           <br />
-          <Text>出错分数: {p.y.toFixed(1)}</Text>
+          <Text>{axisLabels[yAxisType] || 'Y轴'}: {p.y.toFixed(1)}</Text>
           <br />
           <Text>合并 PR: {p.z}</Text>
           <br />
@@ -758,12 +846,12 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
   }
 
   return (
-    <Spin spinning={loading}>
+    <Spin spinning={quadrantLoading}>
       <Row gutter={[16, 16]}>
         {['INCENTIVE', 'IMPROVE', 'ENCOURAGE', 'REPLACE'].map(q => (
           <Col span={6} key={q}>
             <Card size="small">
-              <Statistic title={quadrantLabels[q]} value={data?.quadrant_counts[q] ?? 0} valueStyle={{ color: quadrantColors[q] }} />
+              <Statistic title={quadrantLabels[q]} value={quadrantData?.quadrant_counts[q] ?? 0} valueStyle={{ color: quadrantColors[q] }} />
             </Card>
           </Col>
         ))}
@@ -772,7 +860,14 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
           <Card
             title="四象限散点图"
             extra={
-              <Space size="small">
+              <Space size="small" wrap>
+                <Select
+                  size="small"
+                  value={yAxisType}
+                  onChange={(v) => setYAxisType(v)}
+                  options={axisOptions}
+                  style={{ width: 110 }}
+                />
                 <Input
                   placeholder="输入用户名模糊高亮"
                   value={searchLogin}
@@ -816,14 +911,14 @@ function QuadrantTab({ data, loading }: { data: QuadrantData | null; loading: bo
                     <ScatterChart>
                       <CartesianGrid />
                       <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} />
-                      <YAxis type="number" dataKey="y" name="出错分数" unit="分" domain={yDomain} allowDataOverflow={false} />
+                      <YAxis type="number" dataKey="y" name={axisLabels[yAxisType] || 'Y轴评分'} unit="次" domain={yDomain} allowDataOverflow={false} />
                       <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
                       <ChartsTooltip content={<CustomTooltip />} cursor={!brushing ? { stroke: '#999' } : undefined} />
 
-                      {data?.quad_x != null && (
+                      {quadrantData?.quad_x != null && (
                         <>
-                          <ReferenceLine x={data.quad_x} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
-                          <ReferenceLine y={data.quad_y} stroke="#999" strokeDasharray="4 4" label={{ value: '中位数', position: 'insideTopRight', fill: '#999' }} />
+                           <ReferenceLine x={quadrantData.quad_x} stroke="#999" strokeDasharray="4 4" label={{ value: `X=${quadrantData.quad_x.toFixed(0)}`, position: 'insideTopRight', fill: '#999' }} />
+                           <ReferenceLine y={quadrantData.quad_y} stroke="#999" strokeDasharray="4 4" label={{ value: `Y=${quadrantData.quad_y.toFixed(0)}`, position: 'insideTopRight', fill: '#999' }} />
                         </>
                       )}
 
@@ -912,6 +1007,7 @@ const sortableColumns: { key: string; label: string }[] = [
   { key: 'score', label: '分数' },
   { key: 'merged_pr_count', label: '合并 PR' },
   { key: 'pending_pr_count', label: '未合并 PR' },
+  { key: 'commit_count', label: 'Commits' },
   { key: 'code_additions', label: '代码增加' },
   { key: 'code_deletions', label: '代码删除' },
   { key: 'review_count', label: 'Review 数' },
@@ -924,10 +1020,10 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [roleType, setRoleType] = useState('developer')
   const [rankings, setRankings] = useState<RankingItem[]>([])
   const [rankingLoading, setRankingLoading] = useState(false)
+  const [rankingTotal, setRankingTotal] = useState(0)
   const [syncLoading, setSyncLoading] = useState(false)
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
-  const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
 
   const [searchText, setSearchText] = useState('')
@@ -943,18 +1039,18 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       const sortDir = sortRules.length > 0 ? sortRules[0].order : 'desc'
       const data = await getRanking(roleType, size, {
         repo_name: selectedRepo || null,
-        period_start: dateRange?.[0]?.format('YYYY-MM-DD') || null,
-        period_end: dateRange?.[1]?.format('YYYY-MM-DD') || null,
         sort_by: sortKey,
         sort_order: sortDir,
+        offset: (page - 1) * size,
       })
       // 最小 loading 延迟 300ms，避免接口返回太快导致闪烁
       await new Promise(r => setTimeout(r, 300))
       setRankings(data.rankings)
+      setRankingTotal(data.total)
     } finally {
       setRankingLoading(false)
     }
-  }, [roleType, selectedRepo, dateRange, sortRules])
+  }, [roleType, selectedRepo, sortRules])
 
   useEffect(() => {
     fetchRanking(pagination.current, pagination.pageSize)
@@ -968,8 +1064,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           getRoleStats({ repo_name: selectedRepo || undefined }),
           getModuleHotspot({
             repo_name: selectedRepo || null,
-            period_start: dateRange?.[0]?.format('YYYY-MM-DD') || null,
-            period_end: dateRange?.[1]?.format('YYYY-MM-DD') || null,
           }),
         ])
         if (!cancelled) {
@@ -980,7 +1074,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     }
     loadStats()
     return () => { cancelled = true }
-  }, [selectedRepo, dateRange])
+  }, [selectedRepo])
 
   const handleSync = async () => {
     setSyncLoading(true)
@@ -996,11 +1090,12 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   }
 
   const handleExportCSV = () => {
-    const headers = ['排名', '用户名', '工号', '分数', '贡献分数', '合并PR', '未合并PR', '代码增加', '代码删除', 'Review', 'Approval', '象限']
+    const headers = ['排名', '用户名', '工号', '分数', '贡献分数', '合并PR', '未合并PR', 'Commits', '代码增加', '代码删除', 'Review', 'Approval', '四象限', '角色']
     const rows = displayData.map((r, idx) => [
       idx + 1, r.login, r.employee_id || '', r.score.toFixed(1),
       r.contribution_score.toFixed(1), r.merged_pr_count, r.pending_pr_count,
-      r.code_additions, r.code_deletions, r.review_count, r.approval_count, r.quadrant || '',
+      r.commit_count || 0, r.code_additions, r.code_deletions, r.review_count, r.approval_count,
+      r.dynamic_quadrant || '', r.role_label || '',
     ])
     const csvContent = ['\uFEFF', headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n')
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
@@ -1044,7 +1139,8 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       data = data.filter(r =>
         r.login.toLowerCase().includes(lower) ||
         (r.employee_id && r.employee_id.toLowerCase().includes(lower)) ||
-        (r.quadrant && r.quadrant.toLowerCase().includes(lower)),
+        (r.dynamic_quadrant && r.dynamic_quadrant.toLowerCase().includes(lower)) ||
+        (r.role_label && r.role_label.toLowerCase().includes(lower)),
       )
     }
     return applySort(data, sortRules)
@@ -1123,6 +1219,13 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       render: (val: number) => val > 0 ? <Tag color="orange">{val}</Tag> : '-',
     },
     {
+      title: 'Commits',
+      dataIndex: 'commit_count',
+      key: 'commit_count',
+      width: 90,
+      render: (val: number) => val > 0 ? <Tag color="geekblue">{val}</Tag> : '-',
+    },
+    {
       title: '代码增加',
       dataIndex: 'code_additions',
       key: 'code_additions',
@@ -1149,11 +1252,18 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       width: 110,
     },
     {
-      title: '象限',
-      dataIndex: 'quadrant',
-      key: 'quadrant',
-      width: 100,
-      render: (quadrant: string | null) => quadrant ? <Tag color={quadrantColors[quadrant]}>{quadrantLabels[quadrant] || quadrant}</Tag> : '-',
+      title: '四象限',
+      dataIndex: 'dynamic_quadrant',
+      key: 'dynamic_quadrant',
+      width: 90,
+      render: (q: string | null) => q ? <Tag color={quadrantColors[q]}>{quadrantLabels[q] || q}</Tag> : '-',
+    },
+    {
+      title: '角色',
+      dataIndex: 'role_label',
+      key: 'role_label',
+      width: 80,
+      render: (r: string | null) => r ? <Tag color={quadrantRoleColors[r]}>{quadrantRoleLabels[r] || r}</Tag> : '-',
     },
   ]
 
@@ -1174,12 +1284,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => { setRoleType('developer'); setPagination(p => ({ ...p, current: 1 })) }}>开发者排行</Button>
             <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>检视者排行</Button>
             <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => { setRoleType('maintainer'); setPagination(p => ({ ...p, current: 1 })) }}>Maintainer 排行</Button>
-            <span style={{ borderLeft: '1px solid #d9d9d9', margin: '0 4px' }} />
-            <DatePicker.RangePicker
-              value={dateRange}
-              onChange={(dates) => { setDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null); setPagination(p => ({ ...p, current: 1 })) }}
-              placeholder={['起始日期', '结束日期']}
-            />
             <Button icon={<ReloadOutlined />} loading={syncLoading} onClick={handleSync}>同步数据</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
           </Space>
@@ -1226,7 +1330,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       </Row>
 
       <Card
-        title={`排行榜 - ${roleTypeLabel}${selectedRepo ? ` (${selectedRepo})` : ''}${dateRange ? ` (${dateRange[0]?.format('MM/DD')}-${dateRange[1]?.format('MM/DD')})` : ''}`}
+        title={`排行榜 - ${roleTypeLabel}${selectedRepo ? ` (${selectedRepo})` : ''}`}
         extra={
           <Space>
             <Input.Search
@@ -1258,6 +1362,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           pagination={{
             current: pagination.current,
             pageSize: pagination.pageSize,
+            total: rankingTotal,
             pageSizeOptions: [10, 20, 50],
             showSizeChanger: true,
             showTotal: (total) => `共 ${total} 条`,
@@ -1307,6 +1412,189 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           </div>
         )}
       </Modal>
+    </Spin>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*                            设置 Tab                                */
+/* ------------------------------------------------------------------ */
+
+function SettingsTab() {
+  const [form] = Form.useForm()
+  const [settings, setSettings] = useState<SettingsType | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      try {
+        const data = await getContributorBoardSettings()
+        if (!cancelled) {
+          setSettings(data)
+          form.setFieldValue('y_axis_type', data.quadrant_config.y_axis_type)
+          form.setFieldValue('merged_pr_weight', data.scoring_weights.merged_pr_weight)
+          form.setFieldValue('code_line_weight', data.scoring_weights.code_line_weight)
+          form.setFieldValue('review_weight', data.scoring_weights.review_weight)
+          form.setFieldValue('approval_weight', data.scoring_weights.approval_weight)
+          form.setFieldValue('core_module_weight', data.scoring_weights.core_module_weight)
+          form.setFieldValue('star_threshold', data.role_thresholds.star_threshold)
+          form.setFieldValue('active_threshold', data.role_thresholds.active_threshold)
+          form.setFieldValue('max_error_score', data.role_thresholds.max_error_score)
+        }
+      } catch { /* ignore */ } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [form])
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields()
+      setSaving(true)
+      await Promise.all([
+        updateQuadrantConfig(values.y_axis_type),
+        updateScoringWeights({
+          merged_pr_weight: values.merged_pr_weight,
+          code_line_weight: values.code_line_weight,
+          review_weight: values.review_weight,
+          approval_weight: values.approval_weight,
+          core_module_weight: values.core_module_weight,
+        }),
+        updateRoleThresholds({
+          star_threshold: values.star_threshold,
+          active_threshold: values.active_threshold,
+          max_error_score: values.max_error_score,
+        }),
+      ])
+      message.success('设置已保存，四象限和排行榜将使用新配置重新计算')
+      // 通知四象限 Tab 刷新 Y 轴配置
+      window.dispatchEvent(new CustomEvent('settings-updated'))
+      // 重新加载
+      const data = await getContributorBoardSettings()
+      setSettings(data)
+    } catch (err) {
+      message.error('保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const cardStyle = {
+    background: '#fff',
+    borderRadius: 12,
+    boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+    border: '1px solid #f0f0f0',
+  }
+
+  const sliderFormItemStyle = {
+    marginBottom: '14px',
+  }
+
+  return (
+    <Spin spinning={loading}>
+      {/* 顶部操作栏 */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 20,
+      }}>
+        <div>
+          <Title level={4} style={{ margin: 0 }}>
+            <SettingOutlined style={{ marginRight: 8, color: '#5b46f5' }} />
+            贡献者分析设置
+          </Title>
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            以下配置将同时影响「四象限看板」和「排行榜中的象限标识」。修改后保存，系统将使用新配置重新计算。
+          </Text>
+        </div>
+        <Button type="primary" loading={saving} onClick={handleSave}>
+          保存设置
+        </Button>
+      </div>
+
+      {/* 三卡片水平排列 */}
+      <Row gutter={[20, 0]}>
+        {/* 卡片 1: Y 轴配置 */}
+        <Col xs={24} md={8}>
+          <Card title={<><FlagOutlined style={{ marginRight: 6, color: '#1890ff' }} />Y 轴指标</>}
+            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
+            <Form form={form}>
+              <Form.Item name="y_axis_type">
+                <Radio.Group buttonStyle="solid" size="middle">
+                  <Radio.Button value="review_count">检视次数</Radio.Button>
+                  <Radio.Button value="error_score">出错评分</Radio.Button>
+                  <Radio.Button value="merged_pr_count">PR合并数</Radio.Button>
+                  <Radio.Button value="code_additions">代码行数</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+
+        {/* 卡片 2: 权重配置 */}
+        <Col xs={24} md={8}>
+          <Card title={<><TrophyOutlined style={{ marginRight: 6, color: '#fa8c16' }} />贡献分数权重</>}
+            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
+            <Form form={form}>
+              <Form.Item label="PR 合并权重" name="merged_pr_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={20} step={1}
+                  marks={{ 0: '0', 10: '10', 20: '20' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+              <Form.Item label="代码行权重" name="code_line_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={5} step={0.1}
+                  marks={{ 0: '0', 2.5: '2.5', 5: '5' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
+              </Form.Item>
+              <Form.Item label="Review 权重" name="review_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={10} step={0.5}
+                  marks={{ 0: '0', 5: '5', 10: '10' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
+              </Form.Item>
+              <Form.Item label="Approval 权重" name="approval_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={10} step={0.5}
+                  marks={{ 0: '0', 5: '5', 10: '10' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
+              </Form.Item>
+              <Form.Item label="核心模块权重" name="core_module_weight" style={{ marginBottom: 0 }}>
+                <Slider min={0} max={15} step={1}
+                  marks={{ 0: '0', 8: '8', 15: '15' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+
+        {/* 卡片 3: 阈值配置 */}
+        <Col xs={24} md={8}>
+          <Card title={<><StarOutlined style={{ marginRight: 6, color: '#faad14' }} />角色标签阈值</>}
+            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
+            <Form form={form}>
+              <Form.Item label="明星分数阈值" name="star_threshold" style={sliderFormItemStyle}>
+                <Slider min={0} max={100} step={5}
+                  marks={{ 0: '0', 50: '50', 100: '100' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+              <Form.Item label="活跃分数阈值" name="active_threshold" style={sliderFormItemStyle}>
+                <Slider min={0} max={50} step={5}
+                  marks={{ 0: '0', 25: '25', 50: '50' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+              <Form.Item label="最大容错分数" name="max_error_score" style={{ marginBottom: 0 }}>
+                <Slider min={0} max={10} step={0.5}
+                  marks={{ 0: '0', 5: '5', 10: '10' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+      </Row>
     </Spin>
   )
 }
@@ -1521,15 +1809,19 @@ function ContributorBoard() {
   const [classificationData, setClassificationData] = useState<ClassificationSummary | null>(null)
   const [classificationLoading, setClassificationLoading] = useState(false)
 
-  const [quadrantData, setQuadrantData] = useState<QuadrantData | null>(null)
-  const [quadrantLoading, setQuadrantLoading] = useState(false)
-
   const [repos, setRepos] = useState<string[]>([])
   const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
 
+  // 监听 SettingsTab 发出的配置更新事件
+  const [settingsRefreshTrigger, setSettingsRefreshTrigger] = useState(0)
+  useEffect(() => {
+    const handler = () => setSettingsRefreshTrigger(t => t + 1)
+    window.addEventListener('settings-updated', handler)
+    return () => window.removeEventListener('settings-updated', handler)
+  }, [])
+
   useEffect(() => {
     loadClassification()
-    loadQuadrantData()
     loadRepos()
   }, [])
 
@@ -1554,18 +1846,6 @@ function ContributorBoard() {
     }
   }
 
-  const loadQuadrantData = async () => {
-    setQuadrantLoading(true)
-    try {
-      const data = await getQuadrantData()
-      await new Promise(r => setTimeout(r, 400))
-      setQuadrantData(data)
-    } catch {
-      // silently fail - quadrant data may require admin role
-    } finally {
-      setQuadrantLoading(false)
-    }
-  }
 
   const tabItems = [
     {
@@ -1581,12 +1861,17 @@ function ContributorBoard() {
     {
       key: 'quadrant',
       label: <><GithubOutlined /> 四象限看板</>,
-      children: <QuadrantTab data={quadrantData} loading={quadrantLoading} />,
+      children: <QuadrantTab refreshKey={settingsRefreshTrigger} />,
     },
     {
       key: 'ranking',
       label: <><TrophyOutlined /> 排行榜</>,
-      children: <RankingTab loading={quadrantLoading} selectedRepo={selectedRepo} />,
+      children: <RankingTab loading={false} selectedRepo={selectedRepo} />,
+    },
+    {
+      key: 'settings',
+      label: <><ToolOutlined /> 分析设置</>,
+      children: <SettingsTab />,
     },
   ]
 

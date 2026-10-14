@@ -142,7 +142,10 @@ export interface QuadrantPoint {
   avatar_url: string | null
   contribution_score: number
   error_score: number
+  y_value: number
+  y_axis_type: string
   quadrant: 'INCENTIVE' | 'IMPROVE' | 'ENCOURAGE' | 'REPLACE'
+  role_label: string
   merged_pr_count: number
   is_community: boolean
   color: string
@@ -152,6 +155,7 @@ export interface QuadrantData {
   points: QuadrantPoint[]
   quad_x: number
   quad_y: number
+  y_axis_type: string
   repo_name: string | null
   period_start: string | null
   period_end: string | null
@@ -195,16 +199,18 @@ export interface RankingItem {
   review_count: number
   approval_count: number
   contribution_score: number
-  quadrant: string | null
+  error_score: number
+  commit_count: number
+  dynamic_quadrant: string | null
+  role_label: string | null
   employee_id: string | null
 }
 
 export interface ContributorRanking {
   role_type: string
   rankings: RankingItem[]
+  total: number
   repo_name: string | null
-  period_start: string | null
-  period_end: string | null
 }
 
 export interface TrendPoint {
@@ -228,7 +234,7 @@ export interface ContributorTrend {
  * 获取四象限数据
  */
 export const getQuadrantData = async (
-  params?: { repo_name?: string | null; period_start?: string | null; period_end?: string | null }
+  params?: { repo_name?: string | null; y_axis_type?: string }
 ) => {
   const response = await api.get<QuadrantData>('/contributor-board/quadrant', { params })
   return response.data
@@ -266,17 +272,16 @@ export const getContributorDetail = async (login: string) => {
  */
 export const getRanking = async (
   roleType: string = 'developer',
-  limit: number = 10,
+  limit: number = 20,
   params?: {
     repo_name?: string | null
-    period_start?: string | null
-    period_end?: string | null
     sort_by?: string | null
     sort_order?: string
+    offset?: number
   }
 ) => {
   const response = await api.get<ContributorRanking>('/contributor-board/ranking', {
-    params: { role_type: roleType, limit, ...params },
+    params: { role_type: roleType, limit, offset: params?.offset ?? 0, ...params },
   })
   return response.data
 }
@@ -435,5 +440,51 @@ export const getExtendedTrend = async (
   const response = await api.get<ExtendedTrend>(
     `/contributor-board/contributors/${login}/trend/extended`, { params }
   )
+  return response.data
+}
+
+// ==================== 设置 ====================
+
+export interface QuaddrantYAxisConfig {
+  y_axis_type: string
+}
+
+export interface ScoringWeightsConfig {
+  merged_pr_weight: number
+  code_line_weight: number
+  review_weight: number
+  approval_weight: number
+  core_module_weight: number
+}
+
+export interface RoleThresholdsConfig {
+  star_threshold: number
+  active_threshold: number
+  max_error_score: number
+}
+
+export interface ContributorBoardSettings {
+  quadrant_config: QuaddrantYAxisConfig
+  scoring_weights: ScoringWeightsConfig
+  role_thresholds: RoleThresholdsConfig
+}
+
+export const getContributorBoardSettings = async () => {
+  const response = await api.get<ContributorBoardSettings>('/contributor-board/settings')
+  return response.data
+}
+
+export const updateQuadrantConfig = async (y_axis_type: string) => {
+  const response = await api.put('/contributor-board/settings/quadrant', { y_axis_type })
+  return response.data
+}
+
+export const updateScoringWeights = async (weights: ScoringWeightsConfig) => {
+  const response = await api.put('/contributor-board/settings/scoring_weights', weights)
+  return response.data
+}
+
+export const updateRoleThresholds = async (thresholds: RoleThresholdsConfig) => {
+  const response = await api.put('/contributor-board/settings/role_thresholds', thresholds)
   return response.data
 }

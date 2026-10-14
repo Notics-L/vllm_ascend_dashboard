@@ -73,8 +73,11 @@ class QuadrantPoint(BaseModel):
     login: str = Field(description="用户名")
     avatar_url: str | None = None
     contribution_score: float = Field(description="贡献分数")
-    error_score: float = Field(description="出错分数")
+    error_score: float = Field(default=0, description="出错分数（原始值）")
+    y_value: float = Field(default=0, description="当前Y轴指标值")
+    y_axis_type: str = Field(default="error_score", description="当前Y轴类型")
     quadrant: str = Field(description="象限: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE")
+    role_label: str = Field(default="", description="角色标签: star/active/observer/at_risk")
     merged_pr_count: int = Field(default=0, description="合并 PR 数")
     is_community: bool = Field(default=True, description="是否社区贡献者")
 
@@ -93,8 +96,9 @@ class QuadrantPoint(BaseModel):
 
 class QuadrantDataResponse(BaseModel):
     points: list[QuadrantPoint] = []
-    quad_x: float = Field(description="X 轴线（中位数）")
-    quad_y: float = Field(description="Y 轴线（中位数）")
+    quad_x: float = Field(description="X 轴分割阈值")
+    quad_y: float = Field(description="Y 轴分割阈值")
+    y_axis_type: str = Field(default="error_score", description="当前 Y 轴指标类型")
     repo_name: str | None = Field(None, description="当前筛选的仓库")
     period_start: date | None = None
     period_end: date | None = None
@@ -189,16 +193,70 @@ class ContributorRankingItem(BaseModel):
     review_count: int = 0
     approval_count: int = 0
     contribution_score: float = 0
-    quadrant: str | None = None
+    error_score: float = Field(default=0, description="出错分数")
+    commit_count: int = Field(default=0, description="代码提交次数")
+    dynamic_quadrant: str | None = Field(None, description="动态四象限: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE")
+    role_label: str | None = Field(None, description="角色标签: star/active/observer/at_risk")
     employee_id: str | None = Field(None, description="工号")
 
 
 class ContributorRankingResponse(BaseModel):
     role_type: str = Field(description="角色类型")
     rankings: list[ContributorRankingItem] = []
+    total: int = Field(default=0, description="总记录数")
     repo_name: str | None = Field(None, description="当前筛选的仓库")
     period_start: date | None = None
     period_end: date | None = None
+
+
+# ============ Settings Schemas ============
+
+class ContributorBoardSetting(BaseModel):
+    setting_key: str
+    setting_value: dict
+    description: str | None = None
+
+
+class QuadrantConfig(BaseModel):
+    y_axis_type: str = Field(default="review_count", description="Y轴指标: error_score/review_count/merged_pr_count/code_additions")
+
+
+class ScoringWeightsConfig(BaseModel):
+    merged_pr_weight: float = Field(default=10.0, ge=0, description="PR合并权重")
+    code_line_weight: float = Field(default=0.5, ge=0, description="代码行权重")
+    review_weight: float = Field(default=3.0, ge=0, description="Review权重")
+    approval_weight: float = Field(default=5.0, ge=0, description="Approval权重")
+    core_module_weight: float = Field(default=8.0, ge=0, description="核心模块权重")
+
+
+class RoleThresholdsConfig(BaseModel):
+    star_threshold: float = Field(default=30, ge=0, description="Star(明星)分数阈值")
+    active_threshold: float = Field(default=15, ge=0, description="Active(活跃)分数阈值")
+    max_error_score: float = Field(default=2, ge=0, description="最大容错分数")
+
+
+class ContributorBoardSettingsResponse(BaseModel):
+    quadrant_config: QuadrantConfig
+    scoring_weights: ScoringWeightsConfig
+    role_thresholds: RoleThresholdsConfig
+
+
+class UpdateQuadrantConfigRequest(BaseModel):
+    y_axis_type: str = Field(description="Y轴指标: error_score/review_count/merged_pr_count/code_additions")
+
+
+class UpdateScoringWeightsRequest(BaseModel):
+    merged_pr_weight: float = Field(ge=0)
+    code_line_weight: float = Field(ge=0)
+    review_weight: float = Field(ge=0)
+    approval_weight: float = Field(ge=0)
+    core_module_weight: float = Field(ge=0)
+
+
+class UpdateRoleThresholdsRequest(BaseModel):
+    star_threshold: float = Field(ge=0)
+    active_threshold: float = Field(ge=0)
+    max_error_score: float = Field(ge=0)
 
 
 # ============ Trend Schemas ============
