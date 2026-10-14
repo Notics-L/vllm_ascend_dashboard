@@ -14,7 +14,6 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   message,
   Modal,
   Progress,
@@ -1865,12 +1864,13 @@ function ContributorDetailPage() {
 /*                        同步记录历史 Tab                              */
 /* ------------------------------------------------------------------ */
 
-function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
+function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRetry?: (repoName?: string) => void }) {
   const [records, setRecords] = useState<SyncRecord[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [filterStatus, setFilterStatus] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<SyncRecord | null>(null)
 
   const loadHistory = async () => {
     setLoading(true)
@@ -1961,24 +1961,27 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
       render: (_: unknown, r: SyncRecord) => `${(r.duration_seconds / 60).toFixed(1)}min`,
     },
     {
-      title: '错误',
-      key: 'errors',
-      width: 200,
-      render: (_: unknown, r: SyncRecord) => {
-        const el = typeof r.errors === 'string' ? JSON.parse(r.errors || '[]') : (r.errors || [])
-        if (el.length === 0) return <span style={{ color: '#d9d9d9' }}>-</span>
-        return (
-          <Tooltip title={el.join('\n')}>
-            <Tag color="error">{el.length} errors</Tag>
-          </Tooltip>
-        )
-      },
-    },
-    {
       title: '时间',
       key: 'created_at',
       width: 170,
       render: (_: unknown, r: SyncRecord) => dayjs(r.created_at).format('MM-DD HH:mm'),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 200,
+      fixed: 'right' as const,
+      render: (_: unknown, r: SyncRecord) => {
+        const errors = typeof r.errors === 'string' ? (r.errors ? JSON.parse(r.errors) : []) : (r.errors || [])
+        return (
+          <Space size="small">
+            <a onClick={() => setDetailRecord(r)}>详情</a>
+            {(r.status === 'failed' || r.status === 'partial') && onRetry && (
+              <a onClick={() => onRetry(r.repo_name || undefined)}>重试</a>
+            )}
+          </Space>
+        )
+      },
     },
   ]
 
@@ -2016,6 +2019,83 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
         }}
         size="small"
       />
+
+      <Modal
+        title={<><CloudUploadOutlined /> 同步记录详情</>}
+        open={!!detailRecord}
+        onCancel={() => setDetailRecord(null)}
+        footer={[
+          <Button key="close" onClick={() => setDetailRecord(null)}>关闭</Button>,
+          detailRecord && (detailRecord.status === 'failed' || detailRecord.status === 'partial') && onRetry ? (
+            <Button key="retry" type="primary" danger onClick={() => { setDetailRecord(null); onRetry(detailRecord.repo_name || undefined) }}>重新同步</Button>
+          ) : null,
+        ]}
+        width={640}
+      >
+        {detailRecord && (
+          <div>
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="状态">
+                {(() => {
+                  const cfg = statusConfig[detailRecord.status] || { color: 'default', label: detailRecord.status, icon: null }
+                  return <Tag color={cfg.color}>{cfg.icon} {cfg.label}</Tag>
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label="仓库">
+                {detailRecord.repo_name || '全部仓库'}
+              </Descriptions.Item>
+              <Descriptions.Item label="创建时间">
+                {dayjs(detailRecord.created_at).format('YYYY-MM-DD HH:mm:ss')}
+              </Descriptions.Item>
+              <Descriptions.Item label="开始时间">
+                {detailRecord.started_at ? dayjs(detailRecord.started_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="完成时间">
+                {detailRecord.completed_at ? dayjs(detailRecord.completed_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="耗时">
+                {detailRecord.duration_seconds > 0 ? `${(detailRecord.duration_seconds / 60).toFixed(1)} min` : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="进度">
+                <Progress percent={Math.round(detailRecord.progress_percent)} size="small"
+                  status={detailRecord.status === 'failed' ? 'exception' : detailRecord.status === 'completed' ? 'success' : detailRecord.status === 'partial' ? 'normal' : 'active'} />
+              </Descriptions.Item>
+              <Descriptions.Item label="进度信息">
+                {detailRecord.progress_message || '无'}
+              </Descriptions.Item>
+              <Descriptions.Item label="贡献者数">
+                {detailRecord.contributors_synced}
+              </Descriptions.Item>
+              <Descriptions.Item label="提交数">
+                {detailRecord.commits_classified}
+              </Descriptions.Item>
+              <Descriptions.Item label="构建计划数">
+                {detailRecord.build_plans_created}
+              </Descriptions.Item>
+              <Descriptions.Item label="增量起始日期">
+                {detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '全量'}
+              </Descriptions.Item>
+            </Descriptions>
+
+            {(() => {
+              const errors = typeof detailRecord.errors === 'string' ? (detailRecord.errors ? JSON.parse(detailRecord.errors) : []) : (detailRecord.errors || [])
+              if (errors.length > 0) {
+                return (
+                  <div style={{ marginTop: 16 }}>
+                    <Text strong>错误信息 ({errors.length})：</Text>
+                    <div style={{ marginTop: 8 }}>
+                      {errors.map((err: string, i: number) => (
+                        <Alert key={i} message={err} type="error" showIcon style={{ marginBottom: 4 }} closable />
+                      ))}
+                    </div>
+                  </div>
+                )
+              }
+              return null
+            })()}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -2139,7 +2219,7 @@ function ContributorBoard() {
     {
       key: 'sync_history',
       label: <><CloudUploadOutlined /> 同步记录</>,
-      children: <SyncHistoryTab selectedRepo={selectedRepo} />,
+      children: <SyncHistoryTab selectedRepo={selectedRepo} onRetry={(repoName) => { handleOpenSyncModal(repoName) }} />,
     },
     {
       key: 'settings',

@@ -885,9 +885,14 @@ async def sync_contributors(
     all_repos = _resolve_repos()
 
     if repo_name:
-        target_repos = [(repo_name.split("/", 1)[0], repo_name.split("/", 1)[1])] if "/" in repo_name else []
-        if not target_repos:
-            return SyncResult(errors=[f"Invalid repo_name format: {repo_name}"])
+        if "/" in repo_name:
+            target_repos = [(repo_name.split("/", 1)[0], repo_name.split("/", 1)[1])]
+        else:
+            # Allow repo_name without owner prefix — match against configured repos
+            matched = [(o, r) for o, r in all_repos if r == repo_name]
+            if not matched:
+                return SyncResult(errors=[f"Repo not found in configured repos: {repo_name}"])
+            target_repos = matched
     else:
         target_repos = all_repos
 
