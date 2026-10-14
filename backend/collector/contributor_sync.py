@@ -1,4 +1,4 @@
-"""
+﻿"""
 贡献者数据采集模块
 
 从 GitHub 拉取 PR/Commit/Review 数据，执行分类分析，并增量写入数据库。
@@ -163,6 +163,664 @@ class ContributorSyncCollector:
         except Exception as e:
             logger.error("Failed to fetch PRs since %s: %s", since.isoformat(), e)
             return []
+
+    # ── 私有方法：处理单个 PR ─────────────────────────────────────
+
+    async def _process_pr(
+        self,
+        pr: dict[str, Any],
+        pr_number: int,
+        result: SyncResult,
+        contributor_aggregates: dict[str, dict[str, Any]],
+    ) -> None:
+        """处理单个 PR，更新 contributor 并 classify commits."""
+        user_info = pr.get("user") or {}
+        github_id = user_info.get("id")
+        login = user_info.get("login", "")
+        if not login:
+            return
+
+        # 拉取 reviews / commits / files
+        reviews: list[dict[str, Any]] = []
+        commits: list[dict[str, Any]] = []
+
+        try:
+            reviews = await self.github.get_pr_reviews(self.owner, self.repo, pr_number)
+        except GitHubRateLimitError:
+            raise
+        except Exception as e:
+            logger.warning("Failed to fetch reviews for PR #%s: %s", pr_number, e)
+
+        try:
+            commits = await self.github.get_pr_commits(self.owner, self.repo, pr_number)
+        except GitHubRateLimitError:
+            raise
+        except Exception as e:
+            logger.warning("Failed to fetch commits for PR #%s: %s", pr_number, e)
+
+        # 更新 Contributor 记录
+        db_contributor = await self._upsert_contributor(user_info, commits, login)
+        if db_contributor is None:
+            return
+
+        # 初始化/获取该贡献者聚合桶
+        agg = contributor_aggregates.setdefault(login, {
+            "contributor_id": db_contributor.id,
+            "merged_pr_count": 0,
+            "pending_pr_count": 0,
+            "code_additions": 0,
+            "code_deletions": 0,
+            "review_count": 0,
+            "approval_count": 0,
+            "merge_count": 0,
+            "core_module_count": 0,
+            "closed_pr_count": 0,
+            "commit_count": 0,
+            "error_score": 0.0,
+        })
+
+        # 更新贡献时间窗口
+        updated_at = self._parse_datetime(pr.get("updated_at"))
+        if updated_at:
+            await self._update_contribution_dates(db_contributor, updated_at)
+
+        # 判定 PR 状态
+        is_merged = bool(pr.get("merged") or pr.get("merged_at"))
+        pr_state = pr.get("state", "closed")
+
+        if is_merged:
+            agg["merged_pr_count"] += 1
+            # 从 PR summary 获取 add / delete
+            agg["code_additions"] += pr.get("additions") or 0
+            agg["code_deletions"] += pr.get("deletions") or 0
+        elif pr_state == "open":
+            agg["pending_pr_count"] += 1
+        else:
+            agg["closed_pr_count"] += 1
+
+        # 聚合 review 指标 — 采集所有 reviewer（不只是 PR 作者自己）
+        for review in reviews:
+            review_user = (review.get("user") or {}).get("login", "")
+            if not review_user:
+                continue
+            # 为 reviewer 创建/获取聚合桶
+            reviewer_agg = contributor_aggregates.setdefault(review_user, {
+                "contributor_id": None,
+                "merged_pr_count": 0,
+                "pending_pr_count": 0,
+                "code_additions": 0,
+                "code_deletions": 0,
+                "review_count": 0,
+                "approval_count": 0,
+                "merge_count": 0,
+                "core_module_count": 0,
+                "closed_pr_count": 0,
+                "commit_count": 0,
+                "error_score": 0.0,
+                "_is_reviewer_only": True,
+            })
+            reviewer_agg["review_count"] += 1
+            if review.get("state") == "APPROVED":
+                reviewer_agg["approval_count"] += 1
+
+        # 收集 PR 级别的构建计划信息
+        pr_commit_shas: list[str] = []
+        pr_commit_types: list[str] = []
+        pr_all_files: list[str] = []
+
+        # 对 commits 进行分类
+        for commit in commits:
+            commit_sha = commit.get("sha", "")
+            if not commit_sha:
+                continue
+
+            commit_author = (commit.get("author") or {}).get("login", "")
+            if commit_author:
+                author_agg = contributor_aggregates.setdefault(commit_author, {
+                    "contributor_id": None,
+                    "merged_pr_count": 0,
+                    "pending_pr_count": 0,
+                    "code_additions": 0,
+                    "code_deletions": 0,
+                    "review_count": 0,
+                    "approval_count": 0,
+                    "merge_count": 0,
+                    "core_module_count": 0,
+                    "closed_pr_count": 0,
+                    "commit_count": 0,
+                    "error_score": 0.0,
+                    "_is_commit_author_only": True,
+                })
+                author_agg["commit_count"] += 1
+
+            commit_info = commit.get("commit", {})
+            commit_message = commit_info.get("message", "")
+            files_changed = self._get_files_from_commit(commit)
+
+            classification_result = classify_commit(commit_message, files_changed)
+            await self._upsert_commit_classification(
+                commit_sha,
+                commit_message,
+                classification_result,
+                login,
+                pr_number,
+                len(files_changed) if files_changed else 0,
+            )
+            result.commits_classified += 1
+
+            # 核心模块计数
+            if classification_result.is_core_module:
+                agg["core_module_count"] += 1
+
+            # Revert 检测
+            if classification_result.commit_type.value == "Revert":
+                original_message = _REVERT_MESSAGE_RE.search(commit_message)
+                description = original_message.group(1) if original_message else ""
+                await self._record_revert_error(login, pr_number, commit_sha, description, result)
+                agg["error_score"] += 1.0
+
+            # 收集构建计划数据
+            pr_commit_shas.append(commit_sha)
+            pr_commit_types.append(classification_result.commit_type.value)
+            if files_changed:
+                pr_all_files.extend(files_changed)
+
+        # 为 PR 创建构建计划记录
+        try:
+            await self._create_build_plan_from_pr(
+                pr, pr_number, pr_commit_shas, pr_commit_types,
+                list(set(pr_all_files)), login,
+            )
+            result.build_plans_created += 1
+        except Exception as e:
+            logger.warning("Failed to create build plan for PR #%s: %s", pr_number, e)
+
+        # 周期 commit 提交
+        if result.commits_classified % _COMMIT_BATCH_SIZE == 0:
+            await self.db.commit()
+            logger.debug(
+                "Committed contributor sync batch: %d commits classified",
+                result.commits_classified,
+            )
+
+    # ── 私有方法：Contributor ─────────────────────────────────────
+
+    @staticmethod
+    def _extract_employee_id(user_info: dict[str, Any], email: str) -> str | None:
+        """从 GitHub 用户信息中提取内部工号。
+
+        优先从 email 匹配，其次从 bio 匹配，最后从 login/name 匹配。
+        """
+        search_targets = [
+            email,
+            user_info.get("email", ""),
+            user_info.get("bio", ""),
+            user_info.get("company", ""),
+            user_info.get("name", ""),
+            user_info.get("login", ""),
+        ]
+        for text in search_targets:
+            if not text:
+                continue
+            matches = _EMPLOYEE_ID_RE.findall(text)
+            if matches:
+                return matches[0]
+        return None
+
+    async def _upsert_contributor(
+        self,
+        user_info: dict[str, Any],
+        commits: list[dict[str, Any]],
+        login: str,
+    ) -> Contributor | None:
+        github_id = user_info.get("id")
+        if github_id is not None:
+            stmt = select(Contributor).where(Contributor.github_id == github_id)
+        else:
+            stmt = select(Contributor).where(Contributor.login == login)
+        result = await self.db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        name = user_info.get("name", "")
+        avatar_url = user_info.get("avatar_url", "")
+        email = ""
+        commit_items = commits if isinstance(commits, list) else []
+        if commit_items:
+            for c in commit_items:
+                commit_author_login = (c.get("author") or {}).get("login", "")
+                if not commit_author_login or commit_author_login == login:
+                    email = (c.get("commit", {}).get("author", {}).get("email", "")) or email
+                    if email:
+                        break
+
+        employee_id = self._extract_employee_id(user_info, email)
+
+        if existing:
+            existing.login = login
+            existing.avatar_url = avatar_url or existing.avatar_url
+            existing.email = email or existing.email
+            existing.name = name or existing.name
+            if employee_id:
+                existing.employee_id = employee_id
+            existing.updated_at = datetime.now(UTC)
+            logger.debug("Updated Contributor %s (id=%s)", login, github_id)
+            return existing
+        else:
+            is_community = not bool(employee_id)
+            company = user_info.get("company", "") or ""
+            try:
+                actual_github_id = github_id if github_id and github_id != 0 else hash(login) % (2**32)
+                new_contributor = Contributor(
+                    github_id=actual_github_id,
+                    login=login,
+                    avatar_url=avatar_url,
+                    email=email,
+                    name=name,
+                    is_community=is_community,
+                    role_types=[],
+                    company=company,
+                    employee_id=employee_id,
+                )
+                self.db.add(new_contributor)
+                await self.db.flush()
+                logger.debug("Created Contributor %s (id=%s, emp=%s)", login, github_id, employee_id)
+                return new_contributor
+            except Exception as e:
+                if "Duplicate entry" in str(e) or "1062" in str(e):
+                    await self.db.rollback()
+                    lookup = select(Contributor).where(Contributor.login == login)
+                    result = await self.db.execute(lookup)
+                    existing = result.scalar_one_or_none()
+                    if existing:
+                        existing.login = login
+                        existing.avatar_url = avatar_url or existing.avatar_url
+                        existing.email = email or existing.email
+                        existing.name = name or existing.name
+                        if employee_id:
+                            existing.employee_id = employee_id
+                        existing.updated_at = datetime.now(UTC)
+                        logger.debug("Recovered duplicate Contributor %s (id=%s)", login, github_id)
+                        return existing
+                    raise
+                raise
+
+    async def _update_contribution_dates(
+        self,
+        contributor: Contributor,
+        updated_at: datetime,
+    ) -> None:
+        first = contributor.first_contribution_at
+        if first and first.tzinfo is None:
+            first = first.replace(tzinfo=UTC)
+        contributor.first_contribution_at = first
+        last = contributor.last_contribution_at
+        if last and last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        contributor.last_contribution_at = last
+        if contributor.first_contribution_at is None or updated_at < contributor.first_contribution_at:
+            contributor.first_contribution_at = updated_at
+        if contributor.last_contribution_at is None or updated_at > contributor.last_contribution_at:
+            contributor.last_contribution_at = updated_at
+
+    # ── 私有方法：Commit Classification ───────────────────────────
+
+    async def _upsert_commit_classification(
+        self,
+        commit_sha: str,
+        commit_message: str,
+        classification: ClassificationResult,
+        contributor_login: str,
+        pr_number: int,
+        files_changed_count: int,
+    ) -> None:
+        try:
+            stmt = select(CommitClassification).where(CommitClassification.commit_sha == commit_sha)
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                existing.commit_message = commit_message
+                existing.commit_type = classification.commit_type.value
+                existing.confidence = classification.confidence
+                existing.modules_touched = classification.modules_touched
+                existing.files_changed_count = files_changed_count
+                existing.is_chip_specific = classification.is_chip_specific
+                existing.chip_target = classification.chip_target
+                existing.contributor_login = contributor_login
+                existing.pr_number = pr_number
+                existing.repo_name = f"{self.owner}/{self.repo}"
+            else:
+                new_entry = CommitClassification(
+                    commit_sha=commit_sha,
+                    commit_message=commit_message,
+                    commit_type=classification.commit_type.value,
+                    confidence=classification.confidence,
+                    modules_touched=classification.modules_touched,
+                    files_changed_count=files_changed_count,
+                    is_chip_specific=classification.is_chip_specific,
+                    chip_target=classification.chip_target,
+                    contributor_login=contributor_login,
+                    pr_number=pr_number,
+                    repo_name=f"{self.owner}/{self.repo}",
+                )
+                self.db.add(new_entry)
+        except Exception as e:
+            logger.warning("Failed to upsert commit classification for %s: %s", commit_sha, e)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+
+    # ── 私有方法：Error Record / Revert ───────────────────────────
+
+    async def _record_revert_error(
+        self,
+        contributor_login: str,
+        pr_number: int,
+        commit_sha: str,
+        description: str,
+        result: SyncResult,
+    ) -> None:
+        """记录 revert 错误到 ErrorRecord 表。"""
+        stmt = select(ErrorRecord).where(
+            and_(
+                ErrorRecord.contributor_login == contributor_login,
+                ErrorRecord.error_type == "revert",
+                ErrorRecord.related_pr_number == pr_number,
+            )
+        )
+        db_result = await self.db.execute(stmt)
+        existing = db_result.scalar_one_or_none()
+
+        if existing:
+            existing.revert_count += 1
+            existing.weight_score += 5.0
+            if description:
+                existing.description = f"{existing.description or ''}\n- {description}"
+        else:
+            new_error = ErrorRecord(
+                contributor_login=contributor_login,
+                error_type="revert",
+                related_pr_number=pr_number,
+                related_commit_sha=commit_sha,
+                revert_count=1,
+                bugfix_linked_count=0,
+                ci_failure_count=0,
+                nightly_failure_count=0,
+                weight_score=5.0,
+                description=description,
+            )
+            self.db.add(new_error)
+            logger.info(
+                "Recorded revert error: login=%s pr=%s sha=%s",
+                contributor_login,
+                pr_number,
+                commit_sha[:8],
+            )
+
+    # ── 私有方法：Build Plan ─────────────────────────────────────
+
+    @staticmethod
+    def _derive_build_plan(commit_types: list[str], files_changed: list[str], additions: int, deletions: int) -> tuple[str, float, str]:
+        """根据 commit 分类和变更信息推导构建计划。
+
+        Returns:
+            (build_type, estimated_saving_percent, reasoning)
+        """
+        has_doc = "Doc" in commit_types
+        has_test = "Test" in commit_types
+        has_misc = "Misc" in commit_types
+        has_ci = "CI" in commit_types
+        has_revert = "Revert" in commit_types
+        has_perf = "Performance" in commit_types
+        has_feature = "Feature" in commit_types
+
+        modules_lower = [f.lower() for f in files_changed]
+        touches_chip = any(p in m for p in ("910", "310", "a2", "a3", "a5", "npu", "cann", "ascend") for m in modules_lower)
+
+        if all(t in ("Doc", "Test", "Misc") for t in commit_types):
+            return "skip", 100.0, f"Commit 类型为 {', '.join(sorted(set(commit_types)))}，无需构建"
+        if has_revert:
+            core = any(km in m for km in ("attention", "kernel", "moe", "mrv2", "eplb") for m in modules_lower)
+            if core or touches_chip:
+                return "full_build", 0.0, "Revert 涉及核心/NPU 模块，需要全量重建"
+            else:
+                return "conservative", 40.0, "Revert 非核心模块，保守构建"
+        if has_ci and not (has_feature or has_perf):
+            return "nightly_only", 70.0, "CI 配置变更，仅需夜间构建验证"
+        if has_perf or (has_feature and touches_chip):
+            return "full_build", 0.0, "性能优化/新特性涉及 NPU 模块，需要全量构建"
+        total_lines = additions + deletions
+        if has_feature and total_lines > 500:
+            return "full_build", 0.0, "新特性变更量大，需要全量构建"
+        if len(files_changed) <= 5:
+            return "minimal_build", 60.0, f"仅变更 {len(files_changed)} 个文件，可最小化构建"
+        return "smart_check", 50.0, f"Commit 类型 {', '.join(sorted(set(commit_types)))}，智能检查构建"
+
+    async def _create_build_plan_from_pr(
+        self,
+        pr: dict[str, Any],
+        pr_number: int,
+        commit_shas: list[str],
+        commit_types: list[str],
+        files_changed: list[str],
+        contributor_login: str,
+    ) -> None:
+        """为 PR 创建 ImageBuildPlan 记录，created_at 取自 PR 创建时间。"""
+        pr_created = self._parse_datetime(pr.get("created_at"))
+        additions = pr.get("additions") or 0
+        deletions = pr.get("deletions") or 0
+
+        build_type, saving_pct, reasoning = self._derive_build_plan(
+            commit_types, files_changed, additions, deletions
+        )
+
+        unique_commit_type = commit_types[0] if commit_types else "Misc"
+
+        stmt = select(ImageBuildPlan).where(ImageBuildPlan.pr_number == pr_number)
+        result = await self.db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.commit_sha = commit_shas[0] if commit_shas else ""
+            existing.commit_type = unique_commit_type
+            existing.build_type = build_type
+            existing.estimated_saving_percent = saving_pct
+            existing.created_at = pr_created
+            existing.actual_execution = False
+            existing.repo_name = f"{self.owner}/{self.repo}"
+        else:
+            self.db.add(ImageBuildPlan(
+                pr_number=pr_number,
+                commit_sha=commit_shas[0] if commit_shas else "",
+                commit_type=unique_commit_type,
+                build_type=build_type,
+                chips=[],
+                os_list=["ubuntu22.04"],
+                cache_strategy="smart_cache",
+                estimated_saving_percent=saving_pct,
+                actual_execution=False,
+                repo_name=f"{self.owner}/{self.repo}",
+                created_at=pr_created,
+            ))
+
+    # ── 私有方法：Aggregate Metrics ──────────────────────────────
+
+    async def _upsert_metrics(
+        self,
+        contributor_aggregates: dict[str, dict[str, Any]],
+        since: datetime,
+        result: SyncResult,
+    ) -> None:
+        now = datetime.now(UTC)
+        period_start = since.replace(hour=0, minute=0, second=0, microsecond=0).date()
+        period_end = now.replace(hour=0, minute=0, second=0, microsecond=0).date()
+
+        for login, agg in contributor_aggregates.items():
+            # 为纯 reviewer / commit author 补齐 contributor_id（通过 GitHub login 查找或创建）
+            is_reviewer_only = agg.pop("_is_reviewer_only", False)
+            is_commit_only = agg.pop("_is_commit_author_only", False)
+            if agg["contributor_id"] is None and (is_reviewer_only or is_commit_only):
+                lookup = select(Contributor).where(Contributor.login == login)
+                db_result = await self.db.execute(lookup)
+                existing_contrib = db_result.scalar_one_or_none()
+                if existing_contrib:
+                    agg["contributor_id"] = existing_contrib.id
+                else:
+                    new_c = Contributor(
+                        github_id=hash(login) % (2**32),
+                        login=login,
+                        avatar_url=None,
+                        email=None,
+                        name=None,
+                        is_community=True,
+                        role_types=[],
+                        company=None,
+                        employee_id=None,
+                    )
+                    self.db.add(new_c)
+                    await self.db.flush()
+                    agg["contributor_id"] = new_c.id
+                    logger.debug("Created Contributor for reviewer/author %s", login)
+
+            score = self._calculate_contribution_score(agg)
+            quadrant = self._calculate_quadrant(score, agg["error_score"])
+
+            stmt = select(ContributorMetrics).where(
+                and_(
+                    ContributorMetrics.contributor_login == login,
+                    ContributorMetrics.period_start == period_start,
+                    ContributorMetrics.period_end == period_end,
+                )
+            )
+            db_result = await self.db.execute(stmt)
+            existing = db_result.scalar_one_or_none()
+
+            repo_full_name = f"{self.owner}/{self.repo}"
+            if existing:
+                if not existing.repo_name:
+                    existing.repo_name = repo_full_name
+                existing.merged_pr_count += agg["merged_pr_count"]
+                existing.pending_pr_count += agg["pending_pr_count"]
+                existing.code_additions += agg["code_additions"]
+                existing.code_deletions += agg["code_deletions"]
+                existing.review_count += agg["review_count"]
+                existing.approval_count += agg["approval_count"]
+                existing.merge_count += agg["merge_count"]
+                existing.core_module_count += agg["core_module_count"]
+                existing.closed_pr_count += agg["closed_pr_count"]
+                existing.commit_count += agg.get("commit_count", 0)
+                existing.error_score += agg["error_score"]
+                if score > existing.contribution_score:
+                    existing.contribution_score = score
+                existing.quadrant = quadrant
+                existing.updated_at = now
+            else:
+                new_metrics = ContributorMetrics(
+                    contributor_id=agg["contributor_id"],
+                    contributor_login=login,
+                    repo_name=repo_full_name,
+                    period_start=period_start,
+                    period_end=period_end,
+                    merged_pr_count=agg["merged_pr_count"],
+                    pending_pr_count=agg["pending_pr_count"],
+                    code_additions=agg["code_additions"],
+                    code_deletions=agg["code_deletions"],
+                    review_count=agg["review_count"],
+                    approval_count=agg["approval_count"],
+                    merge_count=agg["merge_count"],
+                    core_module_count=agg["core_module_count"],
+                    closed_pr_count=agg["closed_pr_count"],
+                    commit_count=agg.get("commit_count", 0),
+                    contribution_score=score,
+                    error_score=agg["error_score"],
+                    quadrant=quadrant,
+                )
+                self.db.add(new_metrics)
+
+        # 自动推断并更新角色类型
+        for login, agg in contributor_aggregates.items():
+            roles = detect_roles(
+                merged_pr_count=agg["merged_pr_count"],
+                review_count=agg["review_count"],
+                approval_count=agg["approval_count"],
+                merge_count=agg["merge_count"],
+                code_additions=agg["code_additions"],
+            )
+
+            stmt = select(Contributor).where(Contributor.login == login)
+            db_result = await self.db.execute(stmt)
+            contributor = db_result.scalar_one_or_none()
+            if contributor:
+                old_roles = contributor.role_types or []
+                if old_roles != roles:
+                    contributor.role_types = roles
+                    logger.debug("Updated roles for %s: %s -> %s", login, old_roles, roles)
+
+        # 最终提交
+        try:
+            await self.db.commit()
+            result.contributors_synced = len(contributor_aggregates)
+            logger.info(
+                "Upserted metrics for %d contributors (period=%s~%s)",
+                len(contributor_aggregates),
+                period_start.isoformat(),
+                period_end.isoformat(),
+            )
+        except Exception as e:
+            logger.error("Failed to commit contributor metrics: %s", e)
+            await self.db.rollback()
+            result.errors.append(f"Failed to commit metrics: {e}")
+
+    @staticmethod
+    def _calculate_contribution_score(agg: dict[str, Any]) -> float:
+        """计算贡献分数"""
+        score = 0.0
+        score += agg["merged_pr_count"] * 10.0
+        score += agg["code_additions"] * 0.5
+        score += agg["review_count"] * 3.0
+        score += agg["approval_count"] * 5.0
+        score += agg["core_module_count"] * 8.0
+        return round(score, 2)
+
+    @staticmethod
+    def _calculate_quadrant(contribution_score: float, error_score: float) -> str:
+        """计算贡献者位于哪个象限"""
+        if contribution_score >= 30 and error_score <= 2:
+            return "star"
+        elif contribution_score >= 15 and error_score <= 2:
+            return "active"
+        elif contribution_score < 15 and error_score <= 2:
+            return "observer"
+        else:
+            return "at_risk"
+
+    # ── 工具方法 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_datetime(dt_string: str | None) -> datetime | None:
+        if not dt_string:
+            return None
+        try:
+            dt_string = dt_string.replace("Z", "+00:00")
+            return datetime.fromisoformat(dt_string)
+        except (ValueError, TypeError) as e:
+            logger.warning("Failed to parse datetime '%s': %s", dt_string, e)
+            return None
+
+    @staticmethod
+    def _get_files_from_commit(commit: dict[str, Any]) -> list[str]:
+        """从 GitHub commit 对象中提取变更文件路径列表。
+
+        GitHub /pulls/{n}/commits 接口返回的 commit 对象中，
+        files 字段通常不存在。这里返回空列表，由分类器降级到 message-based 分类。
+        若将来需要文件级分类，可通过 /repos/{o}/{r}/commits/{sha} 单独拉取。
+        """
+        commit_data = commit.get("commit", {})
+        files: list[dict[str, Any]] | None = commit_data.get("files")
+        if isinstance(files, list):
+            return [f.get("filename", "") for f in files if f.get("filename")]
+        return []
 
 
 def _resolve_repos() -> list[tuple[str, str]]:
