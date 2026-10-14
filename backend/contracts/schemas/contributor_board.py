@@ -243,6 +243,7 @@ class ContributorBoardSettingsResponse(BaseModel):
 
 class UpdateQuadrantConfigRequest(BaseModel):
     y_axis_type: str = Field(description="Y轴指标: error_score/review_count/merged_pr_count/code_additions")
+    repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 
 class UpdateScoringWeightsRequest(BaseModel):
@@ -251,12 +252,14 @@ class UpdateScoringWeightsRequest(BaseModel):
     review_weight: float = Field(ge=0)
     approval_weight: float = Field(ge=0)
     core_module_weight: float = Field(ge=0)
+    repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 
 class UpdateRoleThresholdsRequest(BaseModel):
     star_threshold: float = Field(ge=0)
     active_threshold: float = Field(ge=0)
     max_error_score: float = Field(ge=0)
+    repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 
 # ============ Trend Schemas ============

@@ -48,16 +48,18 @@ router = APIRouter()
 @router.get("/commits/classifications")
 async def get_classification_stats(
     db: DbSession,
+    repo_name: str | None = Query(None),
 ):
     """获取提交分类统计"""
     service = get_contributor_board_service()
-    summary = await service.get_classification_summary_from_db(db)
+    summary = await service.get_classification_summary_from_db(db, repo_name=repo_name)
     return summary
 
 
 @router.get("/builds/plans", response_model=BuildPlanListResponse)
 async def get_build_plans(
     db: DbSession,
+    repo_name: str | None = Query(None),
     build_type: str | None = Query(None),
     commit_type: str | None = Query(None),
     created_after: date | None = Query(None),
@@ -69,6 +71,7 @@ async def get_build_plans(
     service = get_contributor_board_service()
     return await service.get_build_plans_from_db(
         db,
+        repo_name=repo_name,
         build_type=build_type,
         commit_type=commit_type,
         created_after=created_after,
@@ -79,19 +82,23 @@ async def get_build_plans(
 
 
 @router.get("/builds/filter_options")
-async def get_build_filter_options(db: DbSession):
+async def get_build_filter_options(
+    db: DbSession,
+    repo_name: str | None = Query(None),
+):
     """获取构建计划筛选选项（去重后的 commit_type 和 build_type 列表）"""
     service = get_contributor_board_service()
-    return await service.get_build_plan_filter_options(db)
+    return await service.get_build_plan_filter_options(db, repo_name=repo_name)
 
 
 @router.get("/builds/stats", response_model=BuildOptimizationStats)
 async def get_build_optimization_stats(
     db: DbSession,
+    repo_name: str | None = Query(None),
 ):
     """获取构建优化统计"""
     service = get_contributor_board_service()
-    return await service.get_build_optimization_stats_from_db(db)
+    return await service.get_build_optimization_stats_from_db(db, repo_name=repo_name)
 
 
 @router.post("/builds/evaluate", response_model=BuildPlanResponse)
@@ -340,28 +347,28 @@ async def get_extended_trend(
 # ---- 设置管理（管理员可见）----
 
 @router.get("/settings", response_model=ContributorBoardSettingsResponse)
-async def get_settings(db: DbSession, _admin: CurrentAdminUser):
+async def get_settings(db: DbSession):
     """获取贡献者分析设置"""
     service = get_contributor_board_service()
     return await service.get_settings(db)
 
 
 @router.put("/settings/quadrant", response_model=ContributorBoardSetting)
-async def update_quadrant_config(db: DbSession, _admin: CurrentAdminUser, request: UpdateQuadrantConfigRequest):
+async def update_quadrant_config(db: DbSession, request: UpdateQuadrantConfigRequest):
     """更新四象限Y轴配置"""
     service = get_contributor_board_service()
     return await service.update_quadrant_config(db, request)
 
 
 @router.put("/settings/scoring_weights", response_model=ContributorBoardSetting)
-async def update_scoring_weights(db: DbSession, _admin: CurrentAdminUser, request: UpdateScoringWeightsRequest):
+async def update_scoring_weights(db: DbSession, request: UpdateScoringWeightsRequest):
     """更新分数计算权重"""
     service = get_contributor_board_service()
     return await service.update_scoring_weights(db, request)
 
 
 @router.put("/settings/role_thresholds", response_model=ContributorBoardSetting)
-async def update_role_thresholds(db: DbSession, _admin: CurrentAdminUser, request: UpdateRoleThresholdsRequest):
+async def update_role_thresholds(db: DbSession, request: UpdateRoleThresholdsRequest):
     """更新角色阈值"""
     service = get_contributor_board_service()
     return await service.update_role_thresholds(db, request)

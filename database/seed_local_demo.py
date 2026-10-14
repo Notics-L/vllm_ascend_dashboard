@@ -304,6 +304,7 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
                     chip_target=random.choice(["910B", "910C", "310P", "A5"]) if is_chip else None,
                     contributor_login=login,
                     pr_number=random.randint(1, 500),
+                    repo_name='vllm-ascend',
                     created_at=datetime.combine(
                         m["period_start"] + timedelta(days=random.randint(0, 28)),
                         datetime.min.time(),
@@ -349,6 +350,7 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
                 cache_strategy=random.choice(["layer_cache", "full_rebuild", "smart_cache"]),
                 estimated_saving_percent=round(random.uniform(0, 80), 1),
                 actual_execution=random.random() < 0.7,
+                repo_name='vllm-ascend',
                 created_at=now - timedelta(days=random.randint(1, 180)),
             ))
             bp_count += 1

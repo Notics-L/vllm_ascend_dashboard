@@ -281,6 +281,7 @@ async def seed(db, clear: bool = False):
                     chip_target=chip,
                     contributor_login=login,
                     pr_number=random.randint(1, 500),
+                    repo_name='vllm-ascend',
                     created_at=datetime.combine(m["period_start"] + timedelta(days=random.randint(0, 28)), datetime.min.time(), tzinfo=UTC),
                 )
                 db.add(cc)
@@ -332,6 +333,7 @@ async def seed(db, clear: bool = False):
                 cache_strategy=random.choice(["layer_cache", "full_rebuild", "smart_cache"]),
                 estimated_saving_percent=round(random.uniform(0, 80), 1),
                 actual_execution=random.random() < 0.7,
+                repo_name='vllm-ascend',
                 created_at=datetime.now(UTC) - timedelta(days=random.randint(1, 180)),
             )
             db.add(bp)

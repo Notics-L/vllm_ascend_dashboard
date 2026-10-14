@@ -16,8 +16,10 @@ export interface ClassificationSummary {
 /**
  * 获取提交分类统计摘要
  */
-export const getClassificationSummary = async () => {
-  const response = await api.get<ClassificationSummary>('/contributor-board/commits/classifications')
+export const getClassificationSummary = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<ClassificationSummary>('/contributor-board/commits/classifications', { params: queryParams })
   return response.data
 }
 
@@ -35,8 +37,10 @@ export interface BuildOptimizationStats {
 /**
  * 获取构建优化统计
  */
-export const getBuildOptimizationStats = async () => {
-  const response = await api.get<BuildOptimizationStats>('/contributor-board/builds/stats')
+export const getBuildOptimizationStats = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<BuildOptimizationStats>('/contributor-board/builds/stats', { params: queryParams })
   return response.data
 }
 
@@ -61,6 +65,7 @@ export interface BuildPlan {
  * 获取构建计划列表
  */
 export const getBuildPlans = async (params?: {
+  repo_name?: string | null
   build_type?: string | null
   commit_type?: string | null
   created_after?: string | null
@@ -72,6 +77,7 @@ export const getBuildPlans = async (params?: {
     limit: params?.limit ?? 20,
     offset: params?.offset ?? 0,
   }
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
   if (params?.build_type) queryParams.build_type = params.build_type
   if (params?.commit_type) queryParams.commit_type = params.commit_type
   if (params?.created_after) queryParams.created_after = params.created_after
@@ -80,8 +86,10 @@ export const getBuildPlans = async (params?: {
   return response.data
 }
 
-export const getBuildFilterOptions = async () => {
-  const response = await api.get<{ commit_types: string[]; build_types: string[] }>('/contributor-board/builds/filter_options')
+export const getBuildFilterOptions = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<{ commit_types: string[]; build_types: string[] }>('/contributor-board/builds/filter_options', { params: queryParams })
   return response.data
 }
 

@@ -4,19 +4,7 @@
 import logging
 from datetime import date
 from typing import Any
-from urllib.parse import quote
 
-from sqlalchemy import Integer, and_, asc, desc, func, or_, select, text
-
-from contributor_board.build_optimizer import BuildPlan, evaluate_build_plan
-from contributor_board.classifier import ClassificationResult, classify_commit
-from contributor_board.quadrant_engine import (
-    QuadrantPoint,
-    calculate_quadrants,
-    determine_quadrant,
-)
-from contributor_board import role_analytics
-from contributor_board import policy_engine
 from contracts.schemas.contributor_board import (
     BuildOptimizationStats,
     BuildPlanListResponse,
@@ -48,6 +36,15 @@ from contracts.schemas.contributor_board import (
     UpdateRoleThresholdsRequest,
     UpdateScoringWeightsRequest,
 )
+from contributor_board import policy_engine
+from contributor_board import role_analytics
+from contributor_board.build_optimizer import BuildPlan, evaluate_build_plan
+from contributor_board.classifier import ClassificationResult, classify_commit
+from contributor_board.quadrant_engine import (
+    QuadrantPoint,
+    calculate_quadrants,
+    determine_quadrant,
+)
 from infrastructure.persistence.models import (
     CommitClassification,
     Contributor,
@@ -57,6 +54,7 @@ from infrastructure.persistence.models import (
     ImageBuildPlan,
     QuadrantSnapshot,
 )
+from sqlalchemy import Integer, and_, func, or_, select, true
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +105,17 @@ class ContributorBoardService:
 
     # ---- 数据库统计查询 ----
     @staticmethod
-    async def get_classification_summary_from_db(db) -> ClassificationSummary:
+    async def get_classification_summary_from_db(
+        db,
+        repo_name: str | None = None,
+    ) -> ClassificationSummary:
+        base_where = []
+        if repo_name:
+            base_where.append(CommitClassification.repo_name == repo_name)
+
         total_result = await db.execute(
             select(func.count(CommitClassification.id))
+            .where(and_(*base_where) if base_where else true())
         )
         total = int(total_result.scalar() or 0)
 
@@ -117,7 +123,8 @@ class ContributorBoardService:
             select(
                 CommitClassification.commit_type,
                 func.count(CommitClassification.id),
-            ).group_by(CommitClassification.commit_type)
+            ).where(and_(*base_where) if base_where else true())
+            .group_by(CommitClassification.commit_type)
         )
         type_tuples = type_dist_result.all()
         type_distribution: dict[str, int] = {k: int(v) for k, v in type_tuples}
@@ -129,14 +136,16 @@ class ContributorBoardService:
 
         chip_result = await db.execute(
             select(func.sum(CommitClassification.is_chip_specific.cast(Integer)))
+            .where(and_(*base_where) if base_where else true())
         )
         chip_specific_count = int(chip_result.scalar() or 0)
 
         module_hotspot: dict[str, int] = {}
-        hotspot_result = await db.execute(
+        hotspot_stmt = (
             select(CommitClassification.modules_touched)
-            .where(CommitClassification.modules_touched.isnot(None))
+            .where(and_(CommitClassification.modules_touched.isnot(None), *base_where) if base_where else CommitClassification.modules_touched.isnot(None))
         )
+        hotspot_result = await db.execute(hotspot_stmt)
         for row in hotspot_result.scalars():
             if isinstance(row, list):
                 for mod in row:
@@ -151,31 +160,38 @@ class ContributorBoardService:
         )
 
     @staticmethod
-    async def get_build_optimization_stats_from_db(db) -> BuildOptimizationStats:
+    async def get_build_optimization_stats_from_db(
+        db,
+        repo_name: str | None = None,
+    ) -> BuildOptimizationStats:
+        base_where: list = []
+        if repo_name:
+            base_where.append(ImageBuildPlan.repo_name == repo_name)
+
         total_result = await db.execute(
-            select(func.count(ImageBuildPlan.id))
+            select(func.count(ImageBuildPlan.id)).where(and_(*base_where) if base_where else true())
         )
         total_evals = int(total_result.scalar() or 0)
 
         skipped_result = await db.execute(
-            select(func.sum(ImageBuildPlan.build_type == "skip").cast(Integer))
+            select(func.sum(ImageBuildPlan.build_type == "skip").cast(Integer)).where(and_(*base_where) if base_where else true())
         )
         skipped = int(skipped_result.scalar() or 0)
 
         reduced_result = await db.execute(
             select(func.sum(
                 ImageBuildPlan.build_type.in_(["minimal_build", "nightly_only", "smart_check"])
-            ).cast(Integer))
+            ).cast(Integer)).where(and_(*base_where) if base_where else true())
         )
         reduced = int(reduced_result.scalar() or 0)
 
         full_result = await db.execute(
-            select(func.sum(ImageBuildPlan.build_type == "full_build").cast(Integer))
+            select(func.sum(ImageBuildPlan.build_type == "full_build").cast(Integer)).where(and_(*base_where) if base_where else true())
         )
         full_builds = int(full_result.scalar() or 0)
 
         avg_saving_result = await db.execute(
-            select(func.avg(ImageBuildPlan.estimated_saving_percent))
+            select(func.avg(ImageBuildPlan.estimated_saving_percent)).where(and_(*base_where) if base_where else true())
         )
         avg_saving = round(float(avg_saving_result.scalar() or 0), 2)
 
@@ -183,7 +199,7 @@ class ContributorBoardService:
             select(
                 ImageBuildPlan.build_type,
                 func.count(ImageBuildPlan.id),
-            ).group_by(ImageBuildPlan.build_type)
+            ).where(and_(*base_where) if base_where else true()).group_by(ImageBuildPlan.build_type)
         )
         by_type: dict[str, int] = {k: int(v) for k, v in by_type_result.all()}
 
@@ -206,10 +222,14 @@ class ContributorBoardService:
         created_before: date | None = None,
         limit: int = 20,
         offset: int = 0,
+        repo_name: str | None = None,
     ) -> BuildPlanListResponse:
         stmt = select(ImageBuildPlan)
         count_stmt = select(func.count(ImageBuildPlan.id))
 
+        if repo_name:
+            stmt = stmt.where(ImageBuildPlan.repo_name == repo_name)
+            count_stmt = count_stmt.where(ImageBuildPlan.repo_name == repo_name)
         if build_type:
             stmt = stmt.where(ImageBuildPlan.build_type == build_type)
             count_stmt = count_stmt.where(ImageBuildPlan.build_type == build_type)
@@ -253,17 +273,32 @@ class ContributorBoardService:
         )
 
     @staticmethod
-    async def get_build_plan_filter_options(db) -> dict:
+    async def get_build_plan_filter_options(
+        db,
+        repo_name: str | None = None,
+    ) -> dict:
+        base_where = [
+            ImageBuildPlan.commit_type.isnot(None),
+            ImageBuildPlan.commit_type != ""
+        ]
+        if repo_name:
+            base_where.append(ImageBuildPlan.repo_name == repo_name)
+
         commit_types_result = await db.execute(
             select(ImageBuildPlan.commit_type)
-            .where(ImageBuildPlan.commit_type.isnot(None), ImageBuildPlan.commit_type != "")
+            .where(and_(*base_where))
             .distinct()
             .order_by(ImageBuildPlan.commit_type)
         )
         commit_types = [row[0] for row in commit_types_result.all()]
 
+        build_where = []
+        if repo_name:
+            build_where.append(ImageBuildPlan.repo_name == repo_name)
+
         build_types_result = await db.execute(
             select(ImageBuildPlan.build_type)
+            .where(and_(*build_where) if build_where else true())
             .distinct()
             .order_by(ImageBuildPlan.build_type)
         )

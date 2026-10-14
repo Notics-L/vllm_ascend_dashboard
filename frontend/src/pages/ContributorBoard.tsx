@@ -264,7 +264,33 @@ function ModuleHotspotGrid({ modules, maxCount }: { modules: Array<{ name: strin
   )
 }
 
-function ClassificationTab({ data, loading }: { data: ClassificationSummary | null; loading: boolean }) {
+function ClassificationTab({ selectedRepo }: { selectedRepo?: string }) {
+  const [data, setData] = useState<ClassificationSummary | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      try {
+        const result = await getClassificationSummary({ repo_name: selectedRepo || null })
+        if (!cancelled) {
+          await new Promise(r => setTimeout(r, 400))
+          setData(result)
+        }
+      } catch (error: unknown) {
+        if (!cancelled) {
+          const err = error as { response?: { data?: { detail?: string } }; message?: string }
+          message.error('加载分类统计失败：' + (err.response?.data?.detail || err.message || '未知错误'))
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load().then()
+    return () => { cancelled = true }
+  }, [selectedRepo])
+
   const pieData = data?.type_distribution
     ? Object.entries(data.type_distribution).map(([name, value]) => ({ name, value }))
     : []
@@ -338,7 +364,7 @@ function ClassificationTab({ data, loading }: { data: ClassificationSummary | nu
 /*                            构建 Tab 内容                            */
 /* ------------------------------------------------------------------ */
 
-function BuildsTab() {
+function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
   const [buildStats, setBuildStats] = useState<BuildOptimizationStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
 
@@ -350,7 +376,7 @@ function BuildsTab() {
   const [filterCommitType, setFilterCommitType] = useState<string | undefined>(undefined)
   const [filterBuildType, setFilterBuildType] = useState<string | undefined>(undefined)
   const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
-  const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
+    const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
   // 加载统计数据
   useEffect(() => {
     let cancelled = false
@@ -358,8 +384,8 @@ function BuildsTab() {
       setStatsLoading(true)
       try {
         const [statsData, optionsData] = await Promise.all([
-          getBuildOptimizationStats(),
-          getBuildFilterOptions(),
+          getBuildOptimizationStats({ repo_name: selectedRepo || null }),
+          getBuildFilterOptions({ repo_name: selectedRepo || null }),
         ])
         if (!cancelled) {
           await new Promise(r => setTimeout(r, 400))
@@ -375,13 +401,14 @@ function BuildsTab() {
     }
     load().then()
     return () => { cancelled = true }
-  }, [])
+  }, [selectedRepo])
 
   // 加载构建计划列表
   const fetchPlans = useCallback(async (page: number, size: number) => {
     setPlansLoading(true)
     try {
       const data = await getBuildPlans({
+        repo_name: selectedRepo || null,
         commit_type: filterCommitType || null,
         build_type: filterBuildType || null,
         created_after: filterDateRange?.[0]?.format('YYYY-MM-DD') || null,
@@ -395,7 +422,7 @@ function BuildsTab() {
     } catch { /* ignore */ } finally {
       setPlansLoading(false)
     }
-  }, [filterCommitType, filterBuildType, filterDateRange])
+  }, [selectedRepo, filterCommitType, filterBuildType, filterDateRange])
 
   useEffect(() => {
     fetchPlans(pagination.current, pagination.pageSize).then()
@@ -673,21 +700,29 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
     return Array.from(deduped.values())
   })()
 
-  // 散点图缩放 — 鼠标滚轮缩放 + 拖拽平移
-  const [zoomDomain, setZoomDomain] = useState<{ x: [number, number] | null; y: [number, number] | null }>({ x: null, y: null })
-
+  // 散点图缩放 — 滚轮/拖拽始终基于真实数据范围，避免坐标偏移
+  const [zoomViewport, setZoomViewport] = useState<{ xPercent: [number, number]; yPercent: [number, number] } | null>(null)
   const [isPanning, setIsPanning] = useState(false)
-  const panStartRef = useRef<{ x: number; y: number } | null>(null)
-  const panDomainRef = useRef<{ x: [number, number]; y: [number, number] }>({ x: [0, 1], y: [0, 1] })
+  const panStartRef = useRef<{ xPercent: [number, number]; yPercent: [number, number]; mx: number; my: number } | null>(null)
 
-  // 计算数据范围
-  const xMax = Math.max(...scatterData.map(p => p.x), 1)
-  const yMaxRaw = Math.max(...scatterData.map(p => p.y), 1)
-  const yMax = Math.max(12, Math.ceil((yMaxRaw + 1) * 1.2))
-  const xDomain: [number, number] = zoomDomain.x || [0, xMax]
-  const yDomain: [number, number] = zoomDomain.y || [0, yMax]
+  // 基础数据范围（永不包含负值）
+  const dataXMin = 0
+  const dataXMax = Math.max(...scatterData.map(p => p.x), 1)
+  const dataYMin = 0
+  const dataYMax = Math.max(12, Math.ceil((Math.max(...scatterData.map(p => p.y), 1) + 1) * 1.2))
 
-  const hasZoom = zoomDomain.x !== null || zoomDomain.y !== null
+  // 将 viewport 百分比映射为实际的 data domain
+  const viewport = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
+  const xDomain: [number, number] = [
+    dataXMin + (dataXMax - dataXMin) * viewport.xPercent[0],
+    dataXMin + (dataXMax - dataXMin) * viewport.xPercent[1],
+  ]
+  const yDomain: [number, number] = [
+    dataYMin + (dataYMax - dataYMin) * viewport.yPercent[0],
+    dataYMin + (dataYMax - dataYMin) * viewport.yPercent[1],
+  ]
+
+  const hasZoom = zoomViewport !== null
 
   const isHighlightedPoint = useCallback((login: string) => {
     if (!searchLogin.trim()) return false
@@ -711,10 +746,10 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
   }
 
   const handleResetZoom = useCallback(() => {
-    setZoomDomain({ x: null, y: null })
+    setZoomViewport(null)
   }, [])
 
-  // 鼠标滚轮缩放 — 以光标为中心缩放
+  // 基于百分比 viewport 的滚轮缩放
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
     const chartEl = chartRef.current
@@ -724,7 +759,6 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
 
-    // 图表边距（与 recharts 默认大致一致）
     const margin = { left: 60, right: 20, top: 10, bottom: 40 }
     const plotLeft = margin.left
     const plotTop = margin.top
@@ -733,46 +767,60 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
 
     if (mouseX < plotLeft || mouseX > plotLeft + plotW || mouseY < plotTop || mouseY > plotTop + plotH) return
 
-    const curXDomain = zoomDomain.x || [0, xMax]
-    const curYDomain = zoomDomain.y || [0, yMax]
-
-    // 光标在 plot 区域中的相对位置 (0-1)
+    const cur = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
+    // 光标在当前 viewport 中的百分比位置 (0-1)
     const ratioX = (mouseX - plotLeft) / plotW
-    const ratioY = 1 - (mouseY - plotTop) / plotH // Y 轴反转
+    const ratioY = 1 - (mouseY - plotTop) / plotH
 
-    // 缩放因子：滚轮向上放大 (deltaY < 0)，向下缩小
-    const zoomFactor = e.deltaY > 0 ? 1.15 : 1 / 1.15
+    const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2
+    const xp = cur.xPercent
+    const yp = cur.yPercent
 
-    // 计算缩放后的 domain
-    const xRange = curXDomain[1] - curXDomain[0]
-    const yRange = curYDomain[1] - curYDomain[0]
-    const mouseXVal = curXDomain[0] + xRange * ratioX
-    const mouseYVal = curYDomain[0] + yRange * ratioY
+    const xCenter = xp[0] + (xp[1] - xp[0]) * ratioX
+    const yCenter = yp[0] + (yp[1] - yp[0]) * ratioY
+    const xSpread = (xp[1] - xp[0]) * zoomFactor
+    const ySpread = (yp[1] - yp[0]) * zoomFactor
 
-    const newXRange = Math.max(xRange * zoomFactor, 1)
-    const newYRange = Math.max(yRange * zoomFactor, 1)
+    // 限制：不能完全超出 [0, 1]，最大放大到 view 的 5%
+    let newX0 = xCenter - xSpread * ratioX
+    let newX1 = xCenter + xSpread * (1 - ratioX)
+    let newY0 = yCenter - ySpread * ratioY
+    let newY1 = yCenter + ySpread * (1 - ratioY)
 
-    const newMinX = mouseXVal - newXRange * ratioX
-    const newMaxX = mouseXVal + newXRange * (1 - ratioX)
-    const newMinY = mouseYVal - newYRange * ratioY
-    const newMaxY = mouseYVal + newYRange * (1 - ratioY)
+    // 钳位到 [0, 1]
+    if (newX0 < 0) { newX1 -= newX0; newX0 = 0 }
+    if (newX1 > 1) { newX0 -= (newX1 - 1); newX1 = 1; newX0 = Math.max(0, newX0) }
+    if (newY0 < 0) { newY1 -= newY0; newY0 = 0 }
+    if (newY1 > 1) { newY0 -= (newY1 - 1); newY1 = 1; newY0 = Math.max(0, newY0) }
 
-    setZoomDomain({
-      x: [newMinX, newMaxX],
-      y: [newMinY, newMaxY],
-    })
-  }, [zoomDomain, scatterData, xMax, yMax])
+    // 最小窗口大小 — 防止过度缩小无法恢复
+    if (newX1 - newX0 < 0.02) {
+      const mid = (newX0 + newX1) / 2
+      newX0 = Math.max(0, mid - 0.01)
+      newX1 = Math.min(1, mid + 0.01)
+    }
+    if (newY1 - newY0 < 0.02) {
+      const mid = (newY0 + newY1) / 2
+      newY0 = Math.max(0, mid - 0.01)
+      newY1 = Math.min(1, mid + 0.01)
+    }
+
+    setZoomViewport({ xPercent: [newX0, newX1], yPercent: [newY0, newY1] })
+  }, [zoomViewport])
 
   // 拖拽平移
   const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if (!hasZoom) return
-    // 只在 Shift+左键或中键时触发拖拽平移
     if (!e.shiftKey && e.button !== 1) return
     e.preventDefault()
     setIsPanning(true)
-    panStartRef.current = { x: e.clientX, y: e.clientY }
-    panDomainRef.current = { x: [...xDomain] as [number, number], y: [...yDomain] as [number, number] }
-  }, [hasZoom, xDomain, yDomain])
+    const cur = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
+    panStartRef.current = {
+      xPercent: [cur.xPercent[0], cur.xPercent[1]],
+      yPercent: [cur.yPercent[0], cur.yPercent[1]],
+      mx: e.clientX,
+      my: e.clientY,
+    }
+  }, [zoomViewport])
 
   const handlePanMove = useCallback((e: MouseEvent) => {
     if (!isPanning || !panStartRef.current) return
@@ -780,28 +828,37 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
     if (!chartEl) return
 
     const rect = chartEl.getBoundingClientRect()
-    const dx = e.clientX - panStartRef.current.x
-    const dy = e.clientY - panStartRef.current.y
+    const dx = e.clientX - panStartRef.current.mx
+    const dy = e.clientY - panStartRef.current.my
 
     const margin = { left: 60, right: 20 }
     const plotW = rect.width - margin.left - margin.right
     const plotH = rect.height - 50
 
-    const panX = -(dx / plotW) * (panDomainRef.current.x[1] - panDomainRef.current.x[0])
-    const panY = (dy / plotH) * (panDomainRef.current.y[1] - panDomainRef.current.y[0])
+    const px = panStartRef.current.xPercent
+    const py = panStartRef.current.yPercent
 
-    setZoomDomain({
-      x: [panDomainRef.current.x[0] + panX, panDomainRef.current.x[1] + panX],
-      y: [panDomainRef.current.y[0] + panY, panDomainRef.current.y[1] + panY],
-    })
+    const panXPct = -(dx / plotW) * (px[1] - px[0])
+    const panYPct = (dy / plotH) * (py[1] - py[0])
+
+    let newX0 = px[0] + panXPct
+    let newX1 = px[1] + panXPct
+    let newY0 = py[0] + panYPct
+    let newY1 = py[1] + panYPct
+
+    // 钳位
+    if (newX0 < 0) { newX1 -= newX0; newX0 = 0 }
+    if (newX1 > 1) { newX0 -= (newX1 - 1); newX1 = 1; newX0 = Math.max(0, newX0) }
+    if (newY0 < 0) { newY1 -= newY0; newY0 = 0 }
+    if (newY1 > 1) { newY0 -= (newY1 - 1); newY1 = 1; newY0 = Math.max(0, newY0) }
+
+    setZoomViewport({ xPercent: [newX0, newX1], yPercent: [newY0, newY1] })
   }, [isPanning])
 
   const handlePanEnd = useCallback(() => {
     setIsPanning(false)
     panStartRef.current = null
-    document.removeEventListener('mousemove', handlePanMove)
-    document.removeEventListener('mouseup', handlePanEnd)
-  }, [handlePanMove])
+  }, [])
 
   useEffect(() => {
     if (!isPanning) return
@@ -931,8 +988,8 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
                   <ResponsiveContainer width="100%" height="100%">
                     <ScatterChart>
                       <CartesianGrid />
-                      <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} />
-                      <YAxis type="number" dataKey="y" name={axisLabels[yAxisType] || 'Y轴评分'} unit="次" domain={yDomain} allowDataOverflow={false} />
+                      <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} allowDataOverflow={false} tickCount={6} tickFormatter={(v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1)} />
+                      <YAxis type="number" dataKey="y" name={axisLabels[yAxisType] || 'Y轴评分'} unit="次" domain={yDomain} allowDataOverflow={false} tickCount={6} tickFormatter={(v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1)} />
                       <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
                       <ChartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#999' }} />
 
@@ -1812,9 +1869,6 @@ function ContributorDetailPage() {
 /* ------------------------------------------------------------------ */
 
 function ContributorBoard() {
-  const [classificationData, setClassificationData] = useState<ClassificationSummary | null>(null)
-  const [classificationLoading, setClassificationLoading] = useState(false)
-
   const [repos, setRepos] = useState<string[]>([])
   const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
 
@@ -1827,7 +1881,6 @@ function ContributorBoard() {
   }, [])
 
   useEffect(() => {
-    loadClassification()
     loadRepos()
   }, [])
 
@@ -1838,36 +1891,22 @@ function ContributorBoard() {
     } catch { /* ignore */ }
   }
 
-  const loadClassification = async () => {
-    setClassificationLoading(true)
-    try {
-      const data = await getClassificationSummary()
-      await new Promise(r => setTimeout(r, 400))
-      setClassificationData(data)
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { detail?: string } }; message?: string }
-      message.error('加载分类统计失败：' + (err.response?.data?.detail || err.message || '未知错误'))
-    } finally {
-      setClassificationLoading(false)
-    }
-  }
-
 
   const tabItems = [
     {
       key: 'classification',
       label: <><CodeOutlined /> 提交分类统计</>,
-      children: <ClassificationTab data={classificationData} loading={classificationLoading} />,
+      children: <ClassificationTab selectedRepo={selectedRepo} />,
     },
     {
       key: 'builds',
       label: <><RocketOutlined /> 构建优化统计</>,
-      children: <BuildsTab />,
+      children: <BuildsTab selectedRepo={selectedRepo} />,
     },
     {
       key: 'quadrant',
       label: <><GithubOutlined /> 四象限看板</>,
-      children: <QuadrantTab refreshKey={settingsRefreshTrigger} />,
+      children: <QuadrantTab refreshKey={settingsRefreshTrigger} selectedRepo={selectedRepo} />,
     },
     {
       key: 'ranking',
@@ -1897,7 +1936,7 @@ function ContributorBoard() {
         <div style={{ marginBottom: 12 }}>
           <Select
             allowClear
-            placeholder="选择仓库（影响排行榜 Tab）"
+            placeholder="选择仓库（影响所有 Tab）"
             value={selectedRepo}
             onChange={setSelectedRepo}
             style={{ width: 260 }}
@@ -1907,7 +1946,7 @@ function ContributorBoard() {
         </div>
       )}
 
-      <Tabs defaultActiveKey="classification" items={tabItems} />
+      <Tabs defaultActiveKey="classification" items={tabItems} destroyInactiveTabPane />
     </div>
   )
 }

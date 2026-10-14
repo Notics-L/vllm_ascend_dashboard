@@ -1074,6 +1074,7 @@ class CommitClassification(Base):
     chip_target = Column(String(50))
     contributor_login = Column(String(100), index=True)
     pr_number = Column(Integer, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 
@@ -1109,6 +1110,7 @@ class ImageBuildPlan(Base):
     cache_strategy = Column(String(50))
     estimated_saving_percent = Column(Float, default=0)
     actual_execution = Column(Boolean, default=False)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 

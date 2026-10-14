@@ -488,6 +488,7 @@ class ContributorSyncCollector:
                 existing.chip_target = classification.chip_target
                 existing.contributor_login = contributor_login
                 existing.pr_number = pr_number
+                existing.repo_name = f"{self.owner}/{self.repo}"
             else:
                 new_entry = CommitClassification(
                     commit_sha=commit_sha,
@@ -500,6 +501,7 @@ class ContributorSyncCollector:
                     chip_target=classification.chip_target,
                     contributor_login=contributor_login,
                     pr_number=pr_number,
+                    repo_name=f"{self.owner}/{self.repo}",
                 )
                 self.db.add(new_entry)
         except Exception as e:
@@ -626,6 +628,7 @@ class ContributorSyncCollector:
             existing.estimated_saving_percent = saving_pct
             existing.created_at = pr_created
             existing.actual_execution = False
+            existing.repo_name = f"{self.owner}/{self.repo}"
         else:
             self.db.add(ImageBuildPlan(
                 pr_number=pr_number,
@@ -637,6 +640,7 @@ class ContributorSyncCollector:
                 cache_strategy="smart_cache",
                 estimated_saving_percent=saving_pct,
                 actual_execution=False,
+                repo_name=f"{self.owner}/{self.repo}",
                 created_at=pr_created,
             ))
 
