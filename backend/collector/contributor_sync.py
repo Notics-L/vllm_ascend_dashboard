@@ -28,6 +28,7 @@ from infrastructure.persistence.models import (
     Contributor,
     ContributorMetrics,
     ErrorRecord,
+    ImageBuildPlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class SyncResult:
 
     contributors_synced: int = 0
     commits_classified: int = 0
+    build_plans_created: int = 0
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0
     synced_at: datetime | None = None
@@ -261,6 +263,11 @@ class ContributorSyncCollector:
             if review.get("state") == "APPROVED":
                 reviewer_agg["approval_count"] += 1
 
+        # 收集 PR 级别的构建计划信息
+        pr_commit_shas: list[str] = []
+        pr_commit_types: list[str] = []
+        pr_all_files: list[str] = []
+
         # 对 commits 进行分类
         for commit in commits:
             commit_sha = commit.get("sha", "")
@@ -311,6 +318,22 @@ class ContributorSyncCollector:
                 description = original_message.group(1) if original_message else ""
                 await self._record_revert_error(login, pr_number, commit_sha, description, result)
                 agg["error_score"] += 1.0
+
+            # 收集构建计划数据
+            pr_commit_shas.append(commit_sha)
+            pr_commit_types.append(classification_result.commit_type.value)
+            if files_changed:
+                pr_all_files.extend(files_changed)
+
+        # 为 PR 创建构建计划记录
+        try:
+            await self._create_build_plan_from_pr(
+                pr, pr_number, pr_commit_shas, pr_commit_types,
+                list(set(pr_all_files)), login,
+            )
+            result.build_plans_created += 1
+        except Exception as e:
+            logger.warning("Failed to create build plan for PR #%s: %s", pr_number, e)
 
         # 周期 commit 提交
         if result.commits_classified % _COMMIT_BATCH_SIZE == 0:
@@ -532,6 +555,90 @@ class ContributorSyncCollector:
                 pr_number,
                 commit_sha[:8],
             )
+
+    # ── 私有方法：Build Plan ─────────────────────────────────────
+
+    @staticmethod
+    def _derive_build_plan(commit_types: list[str], files_changed: list[str], additions: int, deletions: int) -> tuple[str, float, str]:
+        """根据 commit 分类和变更信息推导构建计划。
+
+        Returns:
+            (build_type, estimated_saving_percent, reasoning)
+        """
+        has_doc = "Doc" in commit_types
+        has_test = "Test" in commit_types
+        has_misc = "Misc" in commit_types
+        has_ci = "CI" in commit_types
+        has_revert = "Revert" in commit_types
+        has_perf = "Performance" in commit_types
+        has_feature = "Feature" in commit_types
+
+        modules_lower = [f.lower() for f in files_changed]
+        touches_chip = any(p in m for p in ("910", "310", "a2", "a3", "a5", "npu", "cann", "ascend") for m in modules_lower)
+
+        if all(t in ("Doc", "Test", "Misc") for t in commit_types):
+            return "skip", 100.0, f"Commit 类型为 {', '.join(sorted(set(commit_types)))}，无需构建"
+        if has_revert:
+            core = any(km in m for km in ("attention", "kernel", "moe", "mrv2", "eplb") for m in modules_lower)
+            if core or touches_chip:
+                return "full_build", 0.0, "Revert 涉及核心/NPU 模块，需要全量重建"
+            else:
+                return "conservative", 40.0, "Revert 非核心模块，保守构建"
+        if has_ci and not (has_feature or has_perf):
+            return "nightly_only", 70.0, "CI 配置变更，仅需夜间构建验证"
+        if has_perf or (has_feature and touches_chip):
+            return "full_build", 0.0, "性能优化/新特性涉及 NPU 模块，需要全量构建"
+        total_lines = additions + deletions
+        if has_feature and total_lines > 500:
+            return "full_build", 0.0, "新特性变更量大，需要全量构建"
+        if len(files_changed) <= 5:
+            return "minimal_build", 60.0, f"仅变更 {len(files_changed)} 个文件，可最小化构建"
+        return "smart_check", 50.0, f"Commit 类型 {', '.join(sorted(set(commit_types)))}，智能检查构建"
+
+    async def _create_build_plan_from_pr(
+        self,
+        pr: dict[str, Any],
+        pr_number: int,
+        commit_shas: list[str],
+        commit_types: list[str],
+        files_changed: list[str],
+        contributor_login: str,
+    ) -> None:
+        """为 PR 创建 ImageBuildPlan 记录，created_at 取自 PR 创建时间。"""
+        pr_created = self._parse_datetime(pr.get("created_at"))
+        additions = pr.get("additions") or 0
+        deletions = pr.get("deletions") or 0
+
+        build_type, saving_pct, reasoning = self._derive_build_plan(
+            commit_types, files_changed, additions, deletions
+        )
+
+        unique_commit_type = commit_types[0] if commit_types else "Misc"
+
+        stmt = select(ImageBuildPlan).where(ImageBuildPlan.pr_number == pr_number)
+        result = await self.db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.commit_sha = commit_shas[0] if commit_shas else ""
+            existing.commit_type = unique_commit_type
+            existing.build_type = build_type
+            existing.estimated_saving_percent = saving_pct
+            existing.created_at = pr_created
+            existing.actual_execution = False
+        else:
+            self.db.add(ImageBuildPlan(
+                pr_number=pr_number,
+                commit_sha=commit_shas[0] if commit_shas else "",
+                commit_type=unique_commit_type,
+                build_type=build_type,
+                chips=[],
+                os_list=["ubuntu22.04"],
+                cache_strategy="smart_cache",
+                estimated_saving_percent=saving_pct,
+                actual_execution=False,
+                created_at=pr_created,
+            ))
 
     # ── 私有方法：Aggregate Metrics ──────────────────────────────
 
@@ -766,6 +873,7 @@ async def sync_contributors(since_date: datetime | None = None) -> SyncResult:
 
             combined.contributors_synced += result.contributors_synced
             combined.commits_classified += result.commits_classified
+            combined.build_plans_created += result.build_plans_created
             combined.errors.extend(result.errors)
         except Exception as e:
             logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
@@ -775,9 +883,10 @@ async def sync_contributors(since_date: datetime | None = None) -> SyncResult:
         combined.synced_at = datetime.now(UTC)
 
     logger.info(
-        "All repos sync finished: total_contributors=%d total_commits=%d total_errors=%d",
+        "All repos sync finished: total_contributors=%d total_commits=%d total_build_plans=%d total_errors=%d",
         combined.contributors_synced,
         combined.commits_classified,
+        combined.build_plans_created,
         len(combined.errors),
     )
     return combined

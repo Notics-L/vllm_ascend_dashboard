@@ -951,6 +951,7 @@ class ContributorBoardService:
             return ContributorSyncResponse(
                 contributors_synced=result.contributors_synced,
                 commits_classified=result.commits_classified,
+                build_plans_created=result.build_plans_created,
                 errors=result.errors,
                 duration_seconds=result.duration_seconds,
                 synced_at=result.synced_at or datetime.now(UTC),

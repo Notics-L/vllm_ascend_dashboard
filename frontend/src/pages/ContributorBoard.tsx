@@ -601,7 +601,7 @@ const axisLabels: Record<string, string> = {
   code_additions: '代码行数',
 }
 
-function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
+function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; selectedRepo?: string }) {
   const navigate = useNavigate()
   const chartRef = useRef<HTMLDivElement>(null)
   const [searchLogin, setSearchLogin] = useState('')
@@ -640,10 +640,10 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
     }
   }, [refreshKey])
 
-  const loadQuadrant = useCallback(async (axis: string) => {
+  const loadQuadrant = useCallback(async (axis: string, repo: string | undefined) => {
     setQuadrantLoading(true)
     try {
-      const data = await getQuadrantData({ y_axis_type: axis })
+      const data = await getQuadrantData({ y_axis_type: axis, repo_name: repo || null })
       await new Promise(r => setTimeout(r, 400))
       setQuadrantData(data)
     } catch { /* silently fail */ } finally {
@@ -652,8 +652,8 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
   }, [])
 
   useEffect(() => {
-    loadQuadrant(yAxisType)
-  }, [yAxisType, loadQuadrant])
+    loadQuadrant(yAxisType, selectedRepo)
+  }, [yAxisType, selectedRepo, loadQuadrant])
 
   const scatterData: ScatterDataPoint[] = (() => {
     const deduped = new Map<string, ScatterDataPoint>()
@@ -673,13 +673,12 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
     return Array.from(deduped.values())
   })()
 
-  // 散点图缩放 — 框选缩放（类似 echarts 的 brush）
+  // 散点图缩放 — 鼠标滚轮缩放 + 拖拽平移
   const [zoomDomain, setZoomDomain] = useState<{ x: [number, number] | null; y: [number, number] | null }>({ x: null, y: null })
 
-  const [brushing, setBrushing] = useState(false)
-  const [brushStart, setBrushStart] = useState<{ x: number; y: number } | null>(null)
-  const [brushEnd, setBrushEnd] = useState<{ x: number; y: number } | null>(null)
-  const svgBoundsRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const [isPanning, setIsPanning] = useState(false)
+  const panStartRef = useRef<{ x: number; y: number } | null>(null)
+  const panDomainRef = useRef<{ x: [number, number]; y: [number, number] }>({ x: [0, 1], y: [0, 1] })
 
   // 计算数据范围
   const xMax = Math.max(...scatterData.map(p => p.x), 1)
@@ -711,82 +710,108 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
     }
   }
 
-
-
-  const handleResetZoom = () => {
+  const handleResetZoom = useCallback(() => {
     setZoomDomain({ x: null, y: null })
-  }
+  }, [])
 
-  // 框选缩放逻辑 — 通过 div.onMouseDown 触发，mousemove/mouseUp 走全局事件
-  const finishBrush = useCallback(() => {
-    if (!brushing || !brushStart || !brushEnd || !svgBoundsRef.current) {
-      setBrushing(false)
-      setBrushStart(null)
-      setBrushEnd(null)
-      return
-    }
+  // 鼠标滚轮缩放 — 以光标为中心缩放
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const chartEl = chartRef.current
+    if (!chartEl) return
 
-    const bounds = svgBoundsRef.current
-    // 图表内容区域（去掉左右 Y 轴和 X 轴标签区域的大致比例）
+    const rect = chartEl.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+
+    // 图表边距（与 recharts 默认大致一致）
     const margin = { left: 60, right: 20, top: 10, bottom: 40 }
-    const plotW = bounds.w - margin.left - margin.right
-    const plotH = bounds.h - margin.top - margin.bottom
+    const plotLeft = margin.left
+    const plotTop = margin.top
+    const plotW = rect.width - margin.left - margin.right
+    const plotH = rect.height - margin.top - margin.bottom
 
-    const curXDomain = zoomDomain.x || [0, Math.max(...scatterData.map(p => p.x), 1)]
-    const allYMax = Math.max(...scatterData.map(p => p.y), 1)
-    const curYDomain = zoomDomain.y || [0, Math.max(12, Math.ceil((allYMax + 1) * 1.2))]
+    if (mouseX < plotLeft || mouseX > plotLeft + plotW || mouseY < plotTop || mouseY > plotTop + plotH) return
 
-    const sx = Math.min(brushStart.x, brushEnd.x)
-    const sy = Math.min(brushStart.y, brushEnd.y)
-    const ex = Math.max(brushStart.x, brushEnd.x)
-    const ey = Math.max(brushStart.y, brushEnd.y)
+    const curXDomain = zoomDomain.x || [0, xMax]
+    const curYDomain = zoomDomain.y || [0, yMax]
 
-    // 转换为数据坐标
-    const plotStartX = margin.left + Math.max(0, sx - margin.left)
-    const plotEndX = margin.left + Math.min(plotW, ex - margin.left)
-    const plotStartY = margin.top + Math.max(0, sy - margin.top)
-    const plotEndY = margin.top + Math.min(plotH, ey - margin.top)
+    // 光标在 plot 区域中的相对位置 (0-1)
+    const ratioX = (mouseX - plotLeft) / plotW
+    const ratioY = 1 - (mouseY - plotTop) / plotH // Y 轴反转
 
-    // 只有框选区域足够大才触发缩放
-    if (plotEndX - plotStartX > 10 && plotEndY - plotStartY > 10) {
-      const newXMin = curXDomain[0] + (curXDomain[1] - curXDomain[0]) * (plotStartX - margin.left) / plotW
-      const newXMax = curXDomain[0] + (curXDomain[1] - curXDomain[0]) * (plotEndX - margin.left) / plotW
-      const newYMax = curYDomain[1] - (curYDomain[1] - curYDomain[0]) * (plotStartY - margin.top) / plotH
-      const newYMin = curYDomain[1] - (curYDomain[1] - curYDomain[0]) * (plotEndY - margin.top) / plotH
+    // 缩放因子：滚轮向上放大 (deltaY < 0)，向下缩小
+    const zoomFactor = e.deltaY > 0 ? 1.15 : 1 / 1.15
 
-      setZoomDomain({
-        x: [newXMin, newXMax],
-        y: [newYMin, newYMax],
-      })
-    }
+    // 计算缩放后的 domain
+    const xRange = curXDomain[1] - curXDomain[0]
+    const yRange = curYDomain[1] - curYDomain[0]
+    const mouseXVal = curXDomain[0] + xRange * ratioX
+    const mouseYVal = curYDomain[0] + yRange * ratioY
 
-    setBrushing(false)
-    setBrushStart(null)
-    setBrushEnd(null)
-  }, [brushing, brushStart, brushEnd, scatterData, zoomDomain])
+    const newXRange = Math.max(xRange * zoomFactor, 1)
+    const newYRange = Math.max(yRange * zoomFactor, 1)
 
-  // 全局 mousemove / mouseup 监听（当用户框选时）
+    const newMinX = mouseXVal - newXRange * ratioX
+    const newMaxX = mouseXVal + newXRange * (1 - ratioX)
+    const newMinY = mouseYVal - newYRange * ratioY
+    const newMaxY = mouseYVal + newYRange * (1 - ratioY)
+
+    setZoomDomain({
+      x: [newMinX, newMaxX],
+      y: [newMinY, newMaxY],
+    })
+  }, [zoomDomain, scatterData, xMax, yMax])
+
+  // 拖拽平移
+  const handlePanStart = useCallback((e: React.MouseEvent) => {
+    if (!hasZoom) return
+    // 只在 Shift+左键或中键时触发拖拽平移
+    if (!e.shiftKey && e.button !== 1) return
+    e.preventDefault()
+    setIsPanning(true)
+    panStartRef.current = { x: e.clientX, y: e.clientY }
+    panDomainRef.current = { x: [...xDomain] as [number, number], y: [...yDomain] as [number, number] }
+  }, [hasZoom, xDomain, yDomain])
+
+  const handlePanMove = useCallback((e: MouseEvent) => {
+    if (!isPanning || !panStartRef.current) return
+    const chartEl = chartRef.current
+    if (!chartEl) return
+
+    const rect = chartEl.getBoundingClientRect()
+    const dx = e.clientX - panStartRef.current.x
+    const dy = e.clientY - panStartRef.current.y
+
+    const margin = { left: 60, right: 20 }
+    const plotW = rect.width - margin.left - margin.right
+    const plotH = rect.height - 50
+
+    const panX = -(dx / plotW) * (panDomainRef.current.x[1] - panDomainRef.current.x[0])
+    const panY = (dy / plotH) * (panDomainRef.current.y[1] - panDomainRef.current.y[0])
+
+    setZoomDomain({
+      x: [panDomainRef.current.x[0] + panX, panDomainRef.current.x[1] + panX],
+      y: [panDomainRef.current.y[0] + panY, panDomainRef.current.y[1] + panY],
+    })
+  }, [isPanning])
+
+  const handlePanEnd = useCallback(() => {
+    setIsPanning(false)
+    panStartRef.current = null
+    document.removeEventListener('mousemove', handlePanMove)
+    document.removeEventListener('mouseup', handlePanEnd)
+  }, [handlePanMove])
+
   useEffect(() => {
-    if (!brushing) return
-
-    const handleMove = (e: MouseEvent) => {
-      if (!svgBoundsRef.current) return
-      setBrushEnd({ x: e.clientX - svgBoundsRef.current.x, y: e.clientY - svgBoundsRef.current.y })
-    }
-
-    const handleUp = () => {
-      finishBrush()
-      document.removeEventListener('mousemove', handleMove)
-      document.removeEventListener('mouseup', handleUp)
-    }
-
-    document.addEventListener('mousemove', handleMove)
-    document.addEventListener('mouseup', handleUp)
+    if (!isPanning) return
+    document.addEventListener('mousemove', handlePanMove)
+    document.addEventListener('mouseup', handlePanEnd)
     return () => {
-      document.removeEventListener('mousemove', handleMove)
-      document.removeEventListener('mouseup', handleUp)
+      document.removeEventListener('mousemove', handlePanMove)
+      document.removeEventListener('mouseup', handlePanEnd)
     }
-  }, [brushing, finishBrush])
+  }, [isPanning, handlePanMove, handlePanEnd])
 
   const handleExportPNG = useCallback(() => {
     if (chartRef.current) {
@@ -886,23 +911,19 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
             }
           >
             <div
-              style={{ height: 490, position: 'relative', cursor: brushing ? 'crosshair' : undefined }}
               ref={chartRef}
-              onMouseDown={(e) => {
-                // 仅在点击空白区域时触发框选（点散点时事件已被散点拦截，不会冒泡到这里）
-                if (e.button !== 0) return
-                if (!chartRef.current) return
-                const rect = chartRef.current.getBoundingClientRect()
-                svgBoundsRef.current = {
-                  x: rect.left,
-                  y: rect.top,
-                  w: rect.width,
-                  h: rect.height,
+              onWheel={handleWheel}
+              onMouseDown={handlePanStart}
+              style={{
+                height: 490,
+                position: 'relative',
+                cursor: isPanning ? 'grabbing' : hasZoom ? 'grab' : 'default',
+              }}
+              onMouseLeave={() => {
+                if (isPanning) {
+                  setIsPanning(false)
+                  panStartRef.current = null
                 }
-                setBrushing(true)
-                const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-                setBrushStart(pt)
-                setBrushEnd(pt)
               }}
             >
               {scatterData.length > 0 ? (
@@ -913,7 +934,7 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
                       <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} />
                       <YAxis type="number" dataKey="y" name={axisLabels[yAxisType] || 'Y轴评分'} unit="次" domain={yDomain} allowDataOverflow={false} />
                       <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
-                      <ChartsTooltip content={<CustomTooltip />} cursor={!brushing ? { stroke: '#999' } : undefined} />
+                      <ChartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#999' }} />
 
                       {quadrantData?.quad_x != null && (
                         <>
@@ -935,6 +956,7 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
                                 if (payload) handlePointClick(payload)
                               }}
                               onMouseDown={(e) => {
+                                // 阻止滚轮在SVG上触发浏览器的默认缩放行为
                                 e.stopPropagation()
                               }}
                             >
@@ -962,23 +984,7 @@ function QuadrantTab({ refreshKey }: { refreshKey?: number }) {
                     </ScatterChart>
                   </ResponsiveContainer>
 
-                  {/* 框选高亮矩形 */}
-                  {brushing && brushStart && brushEnd && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: Math.min(brushStart.x, brushEnd.x),
-                        top: Math.min(brushStart.y, brushEnd.y),
-                        width: Math.abs(brushEnd.x - brushStart.x),
-                        height: Math.abs(brushEnd.y - brushStart.y),
-                        background: 'rgba(255, 77, 79, 0.12)',
-                        border: '1.5px dashed #ff4d4f',
-                        pointerEvents: 'none',
-                        boxSizing: 'border-box',
-                        zIndex: 20,
-                      }}
-                    />
-                  )}
+
                 </>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>

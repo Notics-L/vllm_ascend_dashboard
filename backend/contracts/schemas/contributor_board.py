@@ -312,6 +312,7 @@ class ContributorSyncRequest(BaseModel):
 class ContributorSyncResponse(BaseModel):
     contributors_synced: int = 0
     commits_classified: int = 0
+    build_plans_created: int = 0
     errors: list[str] = []
     duration_seconds: float = 0
     synced_at: datetime | None = None
