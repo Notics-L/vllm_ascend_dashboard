@@ -2085,7 +2085,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
                     <Text strong>错误信息 ({errors.length})：</Text>
                     <div style={{ marginTop: 8 }}>
                       {errors.map((err: string, i: number) => (
-                        <Alert key={i} message={err} type="error" showIcon style={{ marginBottom: 4 }} closable />
+                        <Alert key={i} message={err} type="error" showIcon style={{ marginBottom: 4 }} />
                       ))}
                     </div>
                   </div>
