@@ -308,7 +308,7 @@ class ContributorOverviewStats(BaseModel):
 # ============ Sync Schemas ============
 
 class ContributorSyncRequest(BaseModel):
-    since_date: date | None = Field(None, description="增量同步起始日期，不传则同步最近 7 天")
+    since_date: date | None = Field(None, description="增量同步起始日期，不传则从 2024-01-01 全量采集")
     full_resync: bool = Field(False, description="是否全量重新评估")
 
 

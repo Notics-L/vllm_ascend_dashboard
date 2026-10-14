@@ -970,13 +970,13 @@ class ContributorBoardService:
         since_date: date | None = None,
         full_resync: bool = False,
     ) -> ContributorSyncResponse:
-        from datetime import UTC, datetime, timedelta, time
+        from datetime import UTC, datetime, time
         from collector.contributor_sync import sync_contributors
 
         if full_resync:
             since_dt = None
         elif since_date is None:
-            since_dt = datetime.now(UTC) - timedelta(days=7)
+            since_dt = datetime(2024, 1, 1, tzinfo=UTC)
         else:
             since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
 
