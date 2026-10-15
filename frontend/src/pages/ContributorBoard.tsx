@@ -47,10 +47,11 @@ import {
   RocketOutlined,
   SearchOutlined,
   SettingOutlined,
-  SortAscendingOutlined,
-  StarOutlined,
-  ToolOutlined,
-  TrophyOutlined,
+   SortAscendingOutlined,
+   StarOutlined,
+   StopOutlined,
+   ToolOutlined,
+   TrophyOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
@@ -2088,6 +2089,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
     completed: { color: 'success', label: '成功', icon: <CheckCircleOutlined /> },
     failed: { color: 'error', label: '失败', icon: <CloseCircleOutlined /> },
     partial: { color: 'warning', label: '部分成功', icon: <FlagOutlined /> },
+    cancelled: { color: 'orange', label: '已取消', icon: <StopOutlined /> },
   }
 
   const columns = [
@@ -2120,7 +2122,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
       width: 180,
       render: (_: unknown, record: SyncRecord) => (
         <div>
-          <Progress percent={Math.round(record.progress_percent)} size="small" status={record.status === 'failed' ? 'exception' : record.status === 'completed' ? 'success' : record.status === 'partial' ? 'normal' : 'active'} />
+          <Progress percent={Math.round(record.progress_percent)} size="small" status={record.status === 'failed' ? 'exception' : record.status === 'cancelled' ? 'normal' : record.status === 'completed' ? 'success' : record.status === 'partial' ? 'normal' : 'active'} />
           {record.progress_message && <div style={{ fontSize: 11, color: '#999' }}>{record.progress_message}</div>}
         </div>
       ),
@@ -2201,6 +2203,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
             { label: '成功', value: 'completed' },
             { label: '失败', value: 'failed' },
             { label: '部分成功', value: 'partial' },
+            { label: '已取消', value: 'cancelled' },
           ]}
         />
         <Text type="secondary">共 {total} 条记录</Text>
@@ -2258,7 +2261,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
               </Descriptions.Item>
               <Descriptions.Item label="进度">
                 <Progress percent={Math.round(detailRecord.progress_percent)} size="small"
-                  status={detailRecord.status === 'failed' ? 'exception' : detailRecord.status === 'completed' ? 'success' : detailRecord.status === 'partial' ? 'normal' : 'active'} />
+                  status={detailRecord.status === 'failed' ? 'exception' : detailRecord.status === 'cancelled' ? 'normal' : detailRecord.status === 'completed' ? 'success' : detailRecord.status === 'partial' ? 'normal' : 'active'} />
               </Descriptions.Item>
               <Descriptions.Item label="进度信息">
                 {detailRecord.progress_message || '无'}
@@ -2344,7 +2347,7 @@ function ContributorBoard() {
         setCurrentSyncRecord(status)
         setSyncProgress(status.progress_percent)
         setSyncProgressMsg(status.progress_message || '')
-        if (status.status === 'completed' || status.status === 'failed') {
+        if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
           if (_pollTimer) clearInterval(_pollTimer)
           _pollTimer = null
           message.success(status.status === 'completed' ? '同步完成' : '同步失败')
@@ -2504,7 +2507,7 @@ function ContributorBoard() {
           <Button key="close" onClick={handleCloseSyncModal}>
             关闭
           </Button>,
-          !syncLoading && (currentSyncRecord?.status === 'completed' || currentSyncRecord?.status === 'failed' || currentSyncRecord?.status === 'partial' || !currentSyncRecord) && (
+          !syncLoading && (currentSyncRecord?.status === 'completed' || currentSyncRecord?.status === 'failed' || currentSyncRecord?.status === 'partial' || currentSyncRecord?.status === 'cancelled' || !currentSyncRecord) && (
             <Button key="sync" type="primary" icon={<CloudUploadOutlined />} loading={syncLoading} onClick={handleSync}>
               同步
             </Button>
@@ -2525,6 +2528,7 @@ function ContributorBoard() {
                   {currentSyncRecord.status === 'completed' && <Tag color="success"><CheckCircleOutlined /> 成功</Tag>}
                   {currentSyncRecord.status === 'failed' && <Tag color="error"><CloseCircleOutlined /> 失败</Tag>}
                   {currentSyncRecord.status === 'partial' && <Tag color="warning"><FlagOutlined /> 部分成功</Tag>}
+                  {currentSyncRecord.status === 'cancelled' && <Tag color="orange"><StopOutlined /> 已取消</Tag>}
                 </Descriptions.Item>
                 <Descriptions.Item label="贡献者">
                   {currentSyncRecord.contributors_synced}
@@ -2546,6 +2550,7 @@ function ContributorBoard() {
               percent={Math.round(syncProgress)}
               status={
                 currentSyncRecord?.status === 'failed' ? 'exception'
+                : currentSyncRecord?.status === 'cancelled' ? 'normal'
                 : currentSyncRecord?.status === 'completed' ? 'success'
                 : currentSyncRecord?.status === 'partial' ? 'normal'
                 : 'active'

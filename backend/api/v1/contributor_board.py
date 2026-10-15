@@ -13,6 +13,7 @@ class BuildPlanFilterOptions(BaseModel):
     build_types: list[str]
 
 from api.deps import CurrentAdminUser, CurrentUser, DbSession
+from infrastructure.persistence.models import ContributorSyncRecord
 from contracts.schemas.contributor_board import (
     BuildOptimizationStats,
     BuildPlanEvaluateRequest,
@@ -306,27 +307,44 @@ async def cancel_sync(
     _admin: CurrentAdminUser,
 ):
     """取消/终止正在运行的同步任务（管理员可见）"""
+    from datetime import UTC, datetime
     from infrastructure.tasks.background_task import BackgroundTaskTracker
     from sqlalchemy import update as sa_update, text
 
     sync_record = await db.get(ContributorSyncRecord, record_id)
     if not sync_record:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=f"Sync record {record_id} not found")
-    if sync_record.status not in ("running", "pending"):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Sync record {record_id} status={sync_record.status}, cannot cancel")
+        from infrastructure.core.exceptions import NotFoundError
+        raise NotFoundError(f"Sync record {record_id} not found")
+    if sync_record.status not in ("running", "pending", "cancelled"):
+        from infrastructure.core.exceptions import ValidationError
+        raise ValidationError(f"Sync record {record_id} status={sync_record.status}, cannot cancel")
 
     # 更新 contributor_sync_records
     await db.execute(
         sa_update(ContributorSyncRecord)
         .where(ContributorSyncRecord.id == record_id)
-        .values(status="failed", progress_message="任务被用户取消", completed_at=func.now())
+        .values(status="cancelled", progress_message="任务被用户取消", completed_at=datetime.now(UTC))
     )
     await db.commit()
 
-    # 同时取消 background_task_records（如果存在）
-    await BackgroundTaskTracker.cancel(record_id)
+    # 通过 task_params 中的 sync_record_id 查找并取消 background task
+    try:
+        bg_result = await db.execute(
+            text(f"""
+                SELECT id FROM {BackgroundTaskTracker.TABLE_NAME}
+                WHERE task_type = 'contributor_sync'
+                  AND status IN ('running', 'pending')
+                  AND JSON_EXTRACT(task_params, '$.sync_record_id') = :sync_id
+            """),
+            {"sync_id": record_id},
+        )
+        bg_row = bg_result.fetchone()
+        if bg_row:
+            bg_task_id = bg_row[0]
+            await BackgroundTaskTracker.cancel(bg_task_id)
+            logger.info("Cancelled background task %d for sync record %d", bg_task_id, record_id)
+    except Exception as e:
+        logger.warning("Failed to cancel background task for sync %d: %s", record_id, e)
 
     return {"success": True, "message": "任务已取消"}
 

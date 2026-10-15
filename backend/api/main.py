@@ -537,6 +537,55 @@ def create_app() -> FastAPI:
             "environment": settings.ENVIRONMENT,
         }
 
+    # ── 全局异常处理器 ──────────────────────────────────────────
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):
+        """
+        全局异常处理器，返回统一 JSON 格式：
+        {"code": int, "msg": str, "data": null}
+        """
+        from fastapi import HTTPException as FastAPIHTTPException
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        from infrastructure.core.exceptions import BusinessException, StatusCode
+
+        def _respond(status: StatusCode, msg: str) -> JSONResponse:
+            return JSONResponse(
+                status_code=int(status),
+                content={"code": int(status), "msg": msg, "data": None},
+            )
+
+        # HTTPException → 透传原始状态码
+        if isinstance(exc, FastAPIHTTPException):
+            status = StatusCode.from_http_status(exc.status_code)
+            return _respond(status, str(exc.detail))
+
+        # 业务异常 → 按枚举映射
+        if isinstance(exc, BusinessException):
+            msg = exc.msg
+            if settings.DEBUG and exc.detail is not None:
+                msg = f"{msg} [{exc.detail}]"
+            return _respond(exc.status_code, msg)
+
+        # 编程错误 → 500
+        if isinstance(exc, (NameError, TypeError, AttributeError, KeyError)):
+            detail = f"{type(exc).__name__}: {exc}" if settings.DEBUG else StatusCode.INTERNAL.default_msg
+            return _respond(StatusCode.INTERNAL, detail)
+
+        # 超时/连接 → 503
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+            return _respond(StatusCode.SERVICE_UNAVAILABLE, StatusCode.SERVICE_UNAVAILABLE.default_msg)
+
+        # 其他未知 → 500
+        detail = f"{type(exc).__name__}: {exc}" if settings.DEBUG else StatusCode.INTERNAL.default_msg
+        logger.error(
+            "Unhandled exception on %s %s: %s\n%s",
+            request.method, request.url.path, exc, traceback.format_exc(),
+        )
+        return _respond(StatusCode.INTERNAL, detail)
+
     return app
 
 

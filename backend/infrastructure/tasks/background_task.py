@@ -60,12 +60,13 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"       # 成功完成
     FAILED = "failed"             # 完全失败
     PARTIAL = "partial"          # 部分成功（部分仓库成功，部分失败）
+    CANCELLED = "cancelled"     # 用户取消
 
 
 # 合法状态转移
 _VALID_TRANSITIONS: dict[str, set[str]] = {
-    TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.FAILED},
-    TaskStatus.RUNNING: {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PARTIAL},
+    TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.RUNNING: {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PARTIAL, TaskStatus.CANCELLED},
 }
 
 
@@ -206,7 +207,7 @@ class BackgroundTaskTracker:
                 logger.warning("cancel: task %d not found", task_id)
                 return False
             current_status = row[0]
-            if current_status not in ("running", "pending"):
+            if current_status not in ("running", "pending", "cancelled"):
                 logger.warning("cancel: task %d status=%s cannot cancel", task_id, current_status)
                 return False
 
@@ -221,7 +222,7 @@ class BackgroundTaskTracker:
             await db.execute(
                 text(f"""
                     UPDATE {BackgroundTaskTracker.TABLE_NAME}
-                    SET status = 'failed', error_message = '任务被用户取消',
+                    SET status = 'cancelled', error_message = '任务被用户取消',
                         completed_at = NOW()
                     WHERE id = :id
                 """),
