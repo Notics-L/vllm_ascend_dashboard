@@ -1,6 +1,15 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import * as echarts from 'echarts'
 import {useNavigate, useParams} from 'react-router-dom'
+
+/** 保存当前 tab/repo 到 sessionStorage 以便详情页返回时恢复，然后导航到详情页 */
+function navigateToDetail(navigate: ReturnType<typeof useNavigate>, login: string, tab: string, repo: string | undefined) {
+  try {
+    if (tab !== 'classification') sessionStorage.setItem('cb_last_tab', tab)
+    if (repo) sessionStorage.setItem('cb_last_repo', repo)
+  } catch { /* ignore */ }
+  navigate(`/contributor-board/detail/${login}`)
+}
 import {
   Alert,
   Avatar,
@@ -319,8 +328,8 @@ function EChartsBarChart({ data }: { data: Array<{ date: string; merged_pr_count
     const inst = echarts.init(el)
     inst.setOption({
       tooltip: { trigger: 'axis' },
-      legend: { bottom: 0, textStyle: { fontSize: 12 } },
-      grid: { left: 50, right: 16, top: 10, bottom: 30 },
+      legend: { bottom: 4, textStyle: { fontSize: 11 } },
+      grid: { left: 50, right: 16, top: 10, bottom: 40 },
       xAxis: {
         type: 'category',
         data: data.map(d => d.date),
@@ -359,8 +368,8 @@ function EChartsLineChart<T extends object>({
     const inst = echarts.init(el)
     inst.setOption({
       tooltip: { trigger: 'axis' },
-      legend: { bottom: 0, textStyle: { fontSize: 12 } },
-      grid: { left: 50, right: 16, top: 10, bottom: 30 },
+      legend: { bottom: 4, textStyle: { fontSize: 11 } },
+      grid: { left: 50, right: 16, top: 10, bottom: 40 },
       xAxis: {
         type: 'category',
         data: (data as any).map((d: any) => d.date),
@@ -755,6 +764,7 @@ function SingleChart({
   quadY,
   highlightedLogins,
   height = 750,
+  sourceTab = 'quadrant',
 }: {
   data: ScatterDataPoint[];
   yLabel: string;
@@ -762,6 +772,7 @@ function SingleChart({
   quadY: number;
   highlightedLogins: Set<string>;
   height?: number;
+  sourceTab?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
@@ -885,7 +896,7 @@ function SingleChart({
     if (opt) inst.setOption(opt, true)
 
     inst.on('click', (params: any) => {
-      if (params.data?.login) navigate(`/contributor-board/detail/${params.data.login}`)
+      if (params.data?.login) navigateToDetail(navigate, params.data.login, sourceTab, undefined)
     })
 
     inst.on('legendselectchanged', (params: any) => {
@@ -937,7 +948,7 @@ function QuadSubChart({
     if (option) inst.setOption(option, true)
 
     inst.on('click', (params: any) => {
-      if (params.data?.login) navigate(`/contributor-board/detail/${params.data.login}`)
+      if (params.data?.login) navigateToDetail(navigate, params.data.login, title.toLowerCase(), undefined)
     })
 
     const onResize = () => inst.resize()
@@ -1432,7 +1443,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       render: (login: string, record: RankingItem) => (
         <Space>
           <Avatar src={record.avatar_url} size="small" icon={<GithubOutlined />} />
-          <a onClick={() => navigate(`/contributor-board/detail/${login}`)} style={{ cursor: 'pointer' }}>
+          <a onClick={() => navigateToDetail(navigate, login, 'ranking', selectedRepo)} style={{ cursor: 'pointer' }}>
             {login}
           </a>
         </Space>
@@ -2195,12 +2206,18 @@ function SettingsTab() {
 function ContributorDetailPage() {
   const navigate = useNavigate()
   const { login } = useParams<{ login: string }>()
+  const [referrerTab, setReferrerTab] = useState<string | null>(null)
+  const [referrerRepo, setReferrerRepo] = useState<string | null>(null)
   const [detail, setDetail] = useState<ContributorDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [policy, setPolicy] = useState<PolicyResult | null>(null)
   const [trend, setTrend] = useState<ExtendedTrend | null>(null)
 
   useEffect(() => {
+    try {
+      setReferrerTab(sessionStorage.getItem('cb_last_tab'))
+      setReferrerRepo(sessionStorage.getItem('cb_last_repo'))
+    } catch { /* ignore */ }
     loadAll()
   }, [login])
 
@@ -2233,7 +2250,12 @@ function ContributorDetailPage() {
     <div>
       <Row gutter={[16, 0]} style={{ marginBottom: 16 }}>
         <Col span={22}>
-          <Button onClick={() => navigate('/contributor-board')} style={{ marginBottom: 8 }}>← 返回看板</Button>
+          <Button onClick={() => {
+            const params = new URLSearchParams()
+            if (referrerTab && referrerTab !== 'classification') params.set('tab', referrerTab)
+            if (referrerRepo) params.set('repo', referrerRepo)
+            navigate(`/contributor-board${params.toString() ? '?' + params.toString() : ''}`)
+          }} style={{ marginBottom: 8 }}>← 返回看板</Button>
         </Col>
       </Row>
 
@@ -2322,7 +2344,7 @@ function ContributorDetailPage() {
       <Row gutter={[16, 16]}>
         <Col span={12}>
           <Card title="提交量趋势">
-            <div style={{ height: 300 }}>
+            <div style={{ height: 350 }}>
               {trend?.commit_trend && trend.commit_trend.length > 0 ? (
                 <EChartsBarChart data={trend.commit_trend} />
               ) : (
@@ -2334,7 +2356,7 @@ function ContributorDetailPage() {
 
         <Col span={12}>
           <Card title="Review 趋势">
-            <div style={{ height: 300 }}>
+            <div style={{ height: 350 }}>
               {trend?.review_trend && trend.review_trend.length > 0 ? (
                 <EChartsLineChart
                   data={trend.review_trend}
@@ -2352,7 +2374,7 @@ function ContributorDetailPage() {
 
         <Col span={24}>
           <Card title="分数趋势 (贡献分数 vs 出错分数)">
-            <div style={{ height: 300 }}>
+            <div style={{ height: 350 }}>
               {trend?.score_trend && trend.score_trend.length > 0 ? (
                 <EChartsLineChart
                   data={trend.score_trend}
@@ -2670,15 +2692,38 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
 let _pollTimer: ReturnType<typeof setInterval> | null = null
 
 function ContributorBoard() {
+  const navigate = useNavigate()
+  const searchParams = new URLSearchParams(window.location.search)
+  const [activeTab, setActiveTab] = useState<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync_history' | 'settings'>(
+    (searchParams.get('tab') as any) || 'classification'
+  )
+  const [selectedRepo, setSelectedRepo] = useState<string | undefined>(
+    searchParams.get('repo') || undefined
+  )
   const [repos, setRepos] = useState<string[]>([])
-  const [selectedRepo, setSelectedRepo] = useState<string | undefined>(undefined)
   const [syncLoading, setSyncLoading] = useState(false)
   const [syncModalOpen, setSyncModalOpen] = useState(false)
   const [syncModalRepo, setSyncModalRepo] = useState<string | undefined>(undefined)
   const [currentSyncRecord, setCurrentSyncRecord] = useState<SyncRecord | null>(null)
   const [syncProgress, setSyncProgress] = useState(0)
   const [syncProgressMsg, setSyncProgressMsg] = useState('')
-  const tabRef = useRef<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync_history' | 'settings'>('classification')
+  const tabRef = useRef(activeTab)
+
+  useEffect(() => {
+    tabRef.current = activeTab
+  }, [activeTab])
+
+  useEffect(() => {
+    updateUrlState(activeTab, selectedRepo)
+  }, [selectedRepo])
+
+  const updateUrlState = (tab?: string, repo?: string) => {
+    const params = new URLSearchParams()
+    if (tab && tab !== 'classification') params.set('tab', tab)
+    if (repo) params.set('repo', repo)
+    const query = params.toString()
+    navigate(`/contributor-board${query ? '?' + query : ''}`, { replace: true })
+  }
 
   // 监听 SettingsTab 发出的配置更新事件
   const [settingsRefreshTrigger, setSettingsRefreshTrigger] = useState(0)
@@ -2852,11 +2897,14 @@ function ContributorBoard() {
         </div>
       )}
 
-      <Tabs
-        defaultActiveKey="classification"
+          <Tabs
+        activeKey={activeTab}
         items={tabItems}
         destroyInactiveTabPane
-        onChange={(key) => { tabRef.current = key as typeof tabRef.current }}
+        onChange={(key) => {
+          setActiveTab(key as typeof activeTab)
+          updateUrlState(key, selectedRepo)
+        }}
       />
 
       <Modal

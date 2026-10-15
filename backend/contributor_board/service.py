@@ -49,6 +49,7 @@ from contributor_board.quadrant_engine import (
     calculate_quadrants,
     determine_quadrant,
 )
+from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 from infrastructure.persistence.models import (
     CommitClassification,
     Contributor,
@@ -61,7 +62,6 @@ from infrastructure.persistence.models import (
 )
 from sqlalchemy import Integer, func
 from sqlalchemy import and_, or_, select, true
-from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -1102,11 +1102,12 @@ class ContributorBoardService:
         tracker: Any,  # BackgroundTaskTracker instance
     ) -> dict[str, Any]:
         """后台执行的同步任务函数 — 由 BackgroundTaskTracker.create_and_run 调用"""
-        from datetime import UTC, datetime, date as date_type, time
+        from datetime import UTC, datetime
         from collector.contributor_sync import sync_contributors
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
         from sqlalchemy import update as sa_update
-        import json as _json
+
+        logger.info("_run_contributor_sync started, params: %s", task_params)
 
         sync_record_id = task_params["sync_record_id"]
         repo_name = task_params.get("repo_name")
@@ -1146,10 +1147,14 @@ class ContributorBoardService:
                         .values(progress_percent=pct, progress_message=msg)
                     )
                     await update_db.commit()
-            except Exception:
-                pass
+            except Exception as progress_err:
+                logger.debug(
+                    "Failed to update sync progress for record %d: %s",
+                    sync_record_id, progress_err,
+                )
 
         try:
+            logger.info("Starting sync_contributors for record %d", sync_record_id)
             result = await sync_contributors(
                 since_date=since_dt,
                 repo_name=repo_name,
@@ -1157,6 +1162,7 @@ class ContributorBoardService:
             )
 
             # 最终状态
+            logger.info("sync_contributors returned: contributors=%d commits=%d build_plans=%d errors=%d duration=%.1f", result.contributors_synced, result.commits_classified, result.build_plans_created, len(result.errors), result.duration_seconds)
             errors_json = result.errors if isinstance(result.errors, list) else []
             has_errors = len(errors_json) > 0
             has_results = (result.contributors_synced > 0 or result.commits_classified > 0)
@@ -1183,6 +1189,7 @@ class ContributorBoardService:
                 })
 
             # 更新 ContributorSyncRecord 最终结果
+            logger.info("Updating ContributorSyncRecord %d final status: %s", sync_record_id, final_status)
             final_msg = f"同步 {final_status}: {result.contributors_synced} 贡献者, {result.commits_classified} 提交"
             async with AsyncSessionLocal() as update_db:
                 await update_db.execute(

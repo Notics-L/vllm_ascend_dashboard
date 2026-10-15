@@ -133,14 +133,23 @@ class ContributorSyncCollector:
                         "Unexpected error processing PR #%s: %s", pr_number, e, exc_info=True
                     )
                     result.errors.append(f"Unexpected error PR #{pr_number}: {e}")
+                    # Commit pending data to prevent session from being poisoned
                     try:
-                        await self.db.rollback()
-                    except Exception:
-                        pass
+                        await self.db.commit()
+                    except Exception as commit_err:
+                        logger.debug("Commit failed after PR error, rolling back: %s", commit_err)
+                        try:
+                            await self.db.rollback()
+                        except Exception as rb_err:
+                            logger.warning("Rollback also failed for PR #%s: %s", pr_number, rb_err)
                     continue
 
             # 聚合写入 ContributorMetrics
-            await self._upsert_metrics(contributor_aggregates, since, result)
+            try:
+                await self._upsert_metrics(contributor_aggregates, since, result)
+            except Exception as e:
+                logger.error("Failed to upsert metrics: %s", e, exc_info=True)
+                result.errors.append(f"Metrics upsert failed: {e}")
 
         except Exception as e:
             logger.error("Contributor sync failed: %s", e, exc_info=True)
@@ -197,6 +206,7 @@ class ContributorSyncCollector:
         # 拉取 reviews / commits / files
         reviews: list[dict[str, Any]] = []
         commits: list[dict[str, Any]] = []
+        pr_files: list[dict[str, Any]] = []
 
         try:
             reviews = await self.github.get_pr_reviews(self.owner, self.repo, pr_number)
@@ -211,6 +221,24 @@ class ContributorSyncCollector:
             raise
         except Exception as e:
             logger.warning("Failed to fetch commits for PR #%s: %s", pr_number, e)
+
+        try:
+            pr_files = await self.github.get_pr_files(self.owner, self.repo, pr_number)
+        except GitHubRateLimitError:
+            raise
+        except Exception as e:
+            logger.warning("Failed to fetch files for PR #%s: %s", pr_number, e)
+
+        # From files API: extract file paths and code additions/deletions
+        pr_file_paths: list[str] = []
+        pr_additions: int = 0
+        pr_deletions: int = 0
+        for f in pr_files:
+            fname = f.get("filename", "")
+            if fname:
+                pr_file_paths.append(fname)
+            pr_additions += f.get("additions") or 0
+            pr_deletions += f.get("deletions") or 0
 
         # 更新 Contributor 记录
         db_contributor = await self._upsert_contributor(user_info, commits, login)
@@ -244,9 +272,9 @@ class ContributorSyncCollector:
 
         if is_merged:
             agg["merged_pr_count"] += 1
-            # 从 PR summary 获取 add / delete
-            agg["code_additions"] += pr.get("additions") or 0
-            agg["code_deletions"] += pr.get("deletions") or 0
+            # 从 PR files API 获取代码增减量
+            agg["code_additions"] += pr_additions
+            agg["code_deletions"] += pr_deletions
         elif pr_state == "open":
             agg["pending_pr_count"] += 1
         else:
@@ -310,6 +338,9 @@ class ContributorSyncCollector:
             commit_info = commit.get("commit", {})
             commit_message = commit_info.get("message", "")
             files_changed = self._get_files_from_commit(commit)
+            # Fall back to PR-level file list when commit-level is empty
+            if not files_changed and pr_file_paths:
+                files_changed = pr_file_paths
 
             classification_result = classify_commit(commit_message, files_changed)
             await self._upsert_commit_classification(
@@ -381,6 +412,17 @@ class ContributorSyncCollector:
                 return matches[0]
         return None
 
+    @staticmethod
+    def _refresh_contributor(existing: Contributor, login: str, avatar_url: str | None, email: str, name: str, employee_id: str | None) -> None:
+        """更新现有 Contributor 记录的字段"""
+        existing.login = login
+        existing.avatar_url = avatar_url or existing.avatar_url
+        existing.email = email or existing.email
+        existing.name = name or existing.name
+        if employee_id:
+            existing.employee_id = employee_id
+        existing.updated_at = datetime.now(UTC)
+
     async def _upsert_contributor(
         self,
         user_info: dict[str, Any],
@@ -410,13 +452,7 @@ class ContributorSyncCollector:
         employee_id = self._extract_employee_id(user_info, email)
 
         if existing:
-            existing.login = login
-            existing.avatar_url = avatar_url or existing.avatar_url
-            existing.email = email or existing.email
-            existing.name = name or existing.name
-            if employee_id:
-                existing.employee_id = employee_id
-            existing.updated_at = datetime.now(UTC)
+            self._refresh_contributor(existing, login, avatar_url, email, name, employee_id)
             logger.debug("Updated Contributor %s (id=%s)", login, github_id)
             return existing
         else:
@@ -446,13 +482,7 @@ class ContributorSyncCollector:
                     result = await self.db.execute(lookup)
                     existing = result.scalar_one_or_none()
                     if existing:
-                        existing.login = login
-                        existing.avatar_url = avatar_url or existing.avatar_url
-                        existing.email = email or existing.email
-                        existing.name = name or existing.name
-                        if employee_id:
-                            existing.employee_id = employee_id
-                        existing.updated_at = datetime.now(UTC)
+                        self._refresh_contributor(existing, login, avatar_url, email, name, employee_id)
                         logger.debug("Recovered duplicate Contributor %s (id=%s)", login, github_id)
                         return existing
                     raise
@@ -490,9 +520,12 @@ class ContributorSyncCollector:
         try:
             stmt = select(CommitClassification).where(CommitClassification.commit_sha == commit_sha)
             result = await self.db.execute(stmt)
-            existing = result.scalar_one_or_none()
-
-            if existing:
+            rows = result.all()
+            # Handle duplicate rows: update first, delete extras
+            if rows:
+                existing = rows[0][0] if rows[0] else rows[0]
+                if isinstance(existing, tuple):
+                    existing = existing[0]
                 existing.commit_message = commit_message
                 existing.commit_type = classification.commit_type.value
                 existing.confidence = classification.confidence
@@ -503,27 +536,41 @@ class ContributorSyncCollector:
                 existing.contributor_login = contributor_login
                 existing.pr_number = pr_number
                 existing.repo_name = f"{self.owner}/{self.repo}"
+                # Clean up duplicate rows (keep first)
+                for dup in rows[1:]:
+                    dup_obj = dup[0] if isinstance(dup, tuple) else dup
+                    if dup_obj and dup_obj.id != existing.id:
+                        try:
+                            await self.db.delete(dup_obj)
+                        except Exception as del_err:
+                            logger.debug("Failed to remove duplicate commit classification for %s: %s", commit_sha, del_err)
             else:
-                new_entry = CommitClassification(
-                    commit_sha=commit_sha,
-                    commit_message=commit_message,
-                    commit_type=classification.commit_type.value,
-                    confidence=classification.confidence,
-                    modules_touched=classification.modules_touched,
-                    files_changed_count=files_changed_count,
-                    is_chip_specific=classification.is_chip_specific,
-                    chip_target=classification.chip_target,
-                    contributor_login=contributor_login,
-                    pr_number=pr_number,
-                    repo_name=f"{self.owner}/{self.repo}",
-                )
-                self.db.add(new_entry)
+                try:
+                    new_entry = CommitClassification(
+                        commit_sha=commit_sha,
+                        commit_message=commit_message,
+                        commit_type=classification.commit_type.value,
+                        confidence=classification.confidence,
+                        modules_touched=classification.modules_touched,
+                        files_changed_count=files_changed_count,
+                        is_chip_specific=classification.is_chip_specific,
+                        chip_target=classification.chip_target,
+                        contributor_login=contributor_login,
+                        pr_number=pr_number,
+                        repo_name=f"{self.owner}/{self.repo}",
+                    )
+                    self.db.add(new_entry)
+                except Exception as insert_e:
+                    # Handle duplicate commit_sha: another PR may have classified the same commit
+                    if "Duplicate entry" in str(insert_e):
+                        try:
+                            self.db.expunge(new_entry)
+                        except Exception as exp_err:
+                            logger.debug("Failed to expunge duplicate commit classification for %s: %s", commit_sha, exp_err)
+                        return  # Already exists, skip
+                    raise
         except Exception as e:
             logger.warning("Failed to upsert commit classification for %s: %s", commit_sha, e)
-            try:
-                await self.db.rollback()
-            except Exception:
-                pass
 
     # ── 私有方法：Error Record / Revert ───────────────────────────
 
@@ -695,64 +742,96 @@ class ContributorSyncCollector:
                         employee_id=None,
                     )
                     self.db.add(new_c)
-                    await self.db.flush()
-                    agg["contributor_id"] = new_c.id
-                    logger.debug("Created Contributor for reviewer/author %s", login)
+                    try:
+                        await self.db.flush()
+                        agg["contributor_id"] = new_c.id
+                        logger.debug("Created Contributor for reviewer/author %s", login)
+                    except Exception as e:
+                        logger.warning("Failed to create contributor %s: %s, re-lookup", login, e)
+                        self.db.expunge(new_c)
+                        lookup2 = select(Contributor).where(Contributor.login == login)
+                        db_result2 = await self.db.execute(lookup2)
+                        fallback = db_result2.scalar_one_or_none()
+                        if fallback:
+                            agg["contributor_id"] = fallback.id
+                        else:
+                            agg["contributor_id"] = None
+            elif agg.get("contributor_id") is not None:
+                # 验证 contributor_id 仍然有效（防止之前的 rollback 使其失效）
+                lookup = select(Contributor).where(Contributor.id == agg["contributor_id"])
+                db_result = await self.db.execute(lookup)
+                existing_contrib = db_result.scalar_one_or_none()
+                if not existing_contrib:
+                    logger.warning("Contributor id=%s missing for %s, re-lookup by login", agg["contributor_id"], login)
+                    lookup2 = select(Contributor).where(Contributor.login == login)
+                    db_result2 = await self.db.execute(lookup2)
+                    fallback = db_result2.scalar_one_or_none()
+                    if fallback:
+                        agg["contributor_id"] = fallback.id
+                    else:
+                        agg["contributor_id"] = None
+
+            if agg.get("contributor_id") is None:
+                logger.warning("Skipping metrics for %s: no contributor_id", login)
+                continue
 
             score = self._calculate_contribution_score(agg)
             quadrant = self._calculate_quadrant(score, agg["error_score"])
 
-            stmt = select(ContributorMetrics).where(
-                and_(
-                    ContributorMetrics.contributor_login == login,
-                    ContributorMetrics.period_start == period_start,
-                    ContributorMetrics.period_end == period_end,
+            try:
+                stmt = select(ContributorMetrics).where(
+                    and_(
+                        ContributorMetrics.contributor_login == login,
+                        ContributorMetrics.period_start == period_start,
+                        ContributorMetrics.period_end == period_end,
+                    )
                 )
-            )
-            db_result = await self.db.execute(stmt)
-            existing = db_result.scalar_one_or_none()
+                db_result = await self.db.execute(stmt)
+                existing = db_result.scalar_one_or_none()
 
-            repo_full_name = f"{self.owner}/{self.repo}"
-            if existing:
-                if not existing.repo_name:
-                    existing.repo_name = repo_full_name
-                existing.merged_pr_count += agg["merged_pr_count"]
-                existing.pending_pr_count += agg["pending_pr_count"]
-                existing.code_additions += agg["code_additions"]
-                existing.code_deletions += agg["code_deletions"]
-                existing.review_count += agg["review_count"]
-                existing.approval_count += agg["approval_count"]
-                existing.merge_count += agg["merge_count"]
-                existing.core_module_count += agg["core_module_count"]
-                existing.closed_pr_count += agg["closed_pr_count"]
-                existing.commit_count += agg.get("commit_count", 0)
-                existing.error_score += agg["error_score"]
-                if score > existing.contribution_score:
-                    existing.contribution_score = score
-                existing.quadrant = quadrant
-                existing.updated_at = now
-            else:
-                new_metrics = ContributorMetrics(
-                    contributor_id=agg["contributor_id"],
-                    contributor_login=login,
-                    repo_name=repo_full_name,
-                    period_start=period_start,
-                    period_end=period_end,
-                    merged_pr_count=agg["merged_pr_count"],
-                    pending_pr_count=agg["pending_pr_count"],
-                    code_additions=agg["code_additions"],
-                    code_deletions=agg["code_deletions"],
-                    review_count=agg["review_count"],
-                    approval_count=agg["approval_count"],
-                    merge_count=agg["merge_count"],
-                    core_module_count=agg["core_module_count"],
-                    closed_pr_count=agg["closed_pr_count"],
-                    commit_count=agg.get("commit_count", 0),
-                    contribution_score=score,
-                    error_score=agg["error_score"],
-                    quadrant=quadrant,
-                )
-                self.db.add(new_metrics)
+                repo_full_name = f"{self.owner}/{self.repo}"
+                if existing:
+                    if not existing.repo_name:
+                        existing.repo_name = repo_full_name
+                    existing.merged_pr_count += agg["merged_pr_count"]
+                    existing.pending_pr_count += agg["pending_pr_count"]
+                    existing.code_additions += agg["code_additions"]
+                    existing.code_deletions += agg["code_deletions"]
+                    existing.review_count += agg["review_count"]
+                    existing.approval_count += agg["approval_count"]
+                    existing.merge_count += agg["merge_count"]
+                    existing.core_module_count += agg["core_module_count"]
+                    existing.closed_pr_count += agg["closed_pr_count"]
+                    existing.commit_count += agg.get("commit_count", 0)
+                    existing.error_score += agg["error_score"]
+                    if score > existing.contribution_score:
+                        existing.contribution_score = score
+                    existing.quadrant = quadrant
+                    existing.updated_at = now
+                else:
+                    new_metrics = ContributorMetrics(
+                        contributor_id=agg["contributor_id"],
+                        contributor_login=login,
+                        repo_name=repo_full_name,
+                        period_start=period_start,
+                        period_end=period_end,
+                        merged_pr_count=agg["merged_pr_count"],
+                        pending_pr_count=agg["pending_pr_count"],
+                        code_additions=agg["code_additions"],
+                        code_deletions=agg["code_deletions"],
+                        review_count=agg["review_count"],
+                        approval_count=agg["approval_count"],
+                        merge_count=agg["merge_count"],
+                        core_module_count=agg["core_module_count"],
+                        closed_pr_count=agg["closed_pr_count"],
+                        commit_count=agg.get("commit_count", 0),
+                        contribution_score=score,
+                        error_score=agg["error_score"],
+                        quadrant=quadrant,
+                    )
+                    self.db.add(new_metrics)
+            except Exception as e:
+                logger.warning("Failed to upsert metrics for %s: %s", login, e)
 
         # 自动推断并更新角色类型
         for login, agg in contributor_aggregates.items():
@@ -899,6 +978,7 @@ async def sync_contributors(
 
     logger.info("Contributor sync target repos: %s", target_repos)
 
+    start_time = datetime.now(UTC)
     combined = SyncResult()
     total_repos = len(target_repos)
 
@@ -946,12 +1026,17 @@ async def sync_contributors(
             combined.commits_classified += result.commits_classified
             combined.build_plans_created += result.build_plans_created
             combined.errors.extend(result.errors)
+            if result.synced_at and (combined.synced_at is None or result.synced_at > combined.synced_at):
+                combined.synced_at = result.synced_at
 
     if progress_callback:
         await progress_callback(98, "Finalizing...")
 
     if combined.synced_at is None:
         combined.synced_at = datetime.now(UTC)
+
+    end_time = datetime.now(UTC)
+    combined.duration_seconds = (end_time - start_time).total_seconds()
 
     logger.info(
         "All repos sync finished: total_contributors=%d total_commits=%d total_build_plans=%d total_errors=%d",
