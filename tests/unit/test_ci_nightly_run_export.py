@@ -2,7 +2,16 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from api.v1.ci import _build_nightly_runs_xlsx
+from datetime import datetime
+
+from api.v1.ci import _build_nightly_runs_xlsx, _nightly_export_run_time_bounds
+
+
+def test_nightly_run_export_dates_use_shanghai_day_boundaries():
+    start, end = _nightly_export_run_time_bounds("2026-10-15", "2026-10-15")
+
+    assert start == datetime(2026, 10, 14, 16, 0, 0)
+    assert end == datetime(2026, 10, 15, 16, 0, 0)
 
 
 def test_nightly_runs_xlsx_is_openpyxl_readable_with_links_and_merges():

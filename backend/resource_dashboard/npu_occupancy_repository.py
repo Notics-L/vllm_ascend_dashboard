@@ -5,14 +5,14 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import ClassVar
 
 from sqlalchemy import bindparam, or_, select, text
 
-from infrastructure.core.config import settings
 from infrastructure.clients.github_client import GitHubClient
+from infrastructure.core.config import settings
 from infrastructure.db.base import SessionLocal
 from infrastructure.github_run_metadata import workflow_file_from_ref
 from infrastructure.persistence.models import CIJob, CIResult, PullRequest, WorkflowConfig
@@ -25,6 +25,15 @@ from resource_dashboard.npu_occupancy_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def is_stale_sync(updated_at: datetime | None, *, now: datetime, lease_seconds: int) -> bool:
+    """Return whether a durable running marker can safely be taken over."""
+    if updated_at is None:
+        return True
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return now - updated_at.astimezone(UTC) >= timedelta(seconds=lease_seconds)
 
 
 def _workflow_names_by_run_id(jobs: list[CIJob]) -> dict[int, set[str]]:
@@ -136,14 +145,49 @@ class NpuOccupancyRepository:
 
     async def sync(self, start: datetime, end: datetime) -> dict:
         task_id = uuid.uuid4().hex
+        now = datetime.now(UTC)
         async with SessionLocal() as db:
-            state = await db.execute(text("SELECT status FROM npu_occupancy_sync_state WHERE id=1 FOR UPDATE"))
-            if state.scalar_one_or_none() == "running":
-                return {"status": "running"}
+            state = (
+                await db.execute(
+                    text(
+                        "SELECT status, active_task_id, updated_at "
+                        "FROM npu_occupancy_sync_state WHERE id=1 FOR UPDATE"
+                    )
+                )
+            ).mappings().first()
+            if state and state["status"] == "running":
+                if not is_stale_sync(
+                    state["updated_at"],
+                    now=now,
+                    lease_seconds=settings.NPU_OCCUPANCY_SYNC_LEASE_SECONDS,
+                ):
+                    logger.info(
+                        "NPU occupancy sync already running (task=%s, updated_at=%s)",
+                        state["active_task_id"],
+                        state["updated_at"],
+                    )
+                    return {"status": "running"}
+                logger.warning(
+                    "Taking over stale NPU occupancy sync (task=%s, updated_at=%s)",
+                    state["active_task_id"],
+                    state["updated_at"],
+                )
+                await db.execute(
+                    text(
+                        "UPDATE npu_occupancy_sync_state "
+                        "SET status='failed', active_task_id=NULL, "
+                        "error_message='previous NPU occupancy sync lease expired', "
+                        "updated_at=UTC_TIMESTAMP() WHERE id=1"
+                    )
+                )
             await db.execute(text("UPDATE npu_occupancy_sync_state SET status='running', active_task_id=:task, error_message=NULL, updated_at=UTC_TIMESTAMP() WHERE id=1"), {"task": task_id})
             await db.commit()
         try:
-            envs = await asyncio.to_thread(NpuOccupancyClient().fetch_window, start, end)
+            logger.info("Starting NPU occupancy sync task=%s for %s to %s", task_id, start, end)
+            envs = await asyncio.wait_for(
+                asyncio.to_thread(NpuOccupancyClient().fetch_window, start, end),
+                timeout=settings.NPU_OCCUPANCY_SYNC_TIMEOUT_SECONDS,
+            )
             snapshot_at = datetime.now(UTC)
             records = normalize_records(envs, snapshot_at)
             should_start_backfill = False
@@ -217,6 +261,7 @@ class NpuOccupancyRepository:
                 type(self)._metadata_backfill_task = task
             return {"status": "ready", "count": len(envs), "snapshot_at": snapshot_at}
         except Exception as exc:
+            logger.exception("NPU occupancy sync failed (task=%s)", task_id)
             async with SessionLocal() as db:
                 await db.execute(text("""
                     UPDATE npu_occupancy_sync_state SET status='failed', active_task_id=NULL,

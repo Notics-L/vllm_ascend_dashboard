@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
@@ -12,6 +13,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.persistence.models import KubernetesClusterConfig, ResourceNodeMetrics
+
+
+@dataclass(frozen=True)
+class NodeMetricSample:
+    """Minimal projection needed for heatmap interval integration."""
+
+    cluster_id: int
+    cluster_name: str
+    node_name: str
+    npu_used: float | None
+    collected_at: datetime
 
 
 def _utc(value: datetime) -> datetime:
@@ -29,7 +41,7 @@ def _bucket_floor(value: datetime, hours: int) -> datetime:
 
 
 def build_node_utilization_heatmap(
-    rows: Iterable[ResourceNodeMetrics],
+    rows: Iterable[ResourceNodeMetrics | NodeMetricSample],
     *,
     start: datetime,
     end: datetime,
@@ -135,18 +147,24 @@ async def query_node_utilization_heatmap(
 
     # Include one day before the window so the first interval can be bounded by
     # the first in-window sample without turning an unknown gap into zero use.
-    rows = list(
-        (
-            await db.scalars(
-                select(ResourceNodeMetrics)
-                .where(
-                    ResourceNodeMetrics.cluster_id.in_(cluster_ids),
-                    ResourceNodeMetrics.collected_at >= _utc(start).replace(tzinfo=None) - timedelta(days=1),
-                    ResourceNodeMetrics.collected_at <= _utc(end).replace(tzinfo=None),
-                )
-                .order_by(ResourceNodeMetrics.collected_at.asc())
-            )
-        ).all()
+    # Do not instantiate hundreds of thousands of ORM objects just to read
+    # four heatmap fields. The composite index keeps this bounded range scan
+    # efficient for a seven-day, minute-level history.
+    stmt = (
+        select(
+            ResourceNodeMetrics.cluster_id,
+            ResourceNodeMetrics.cluster_name,
+            ResourceNodeMetrics.node_name,
+            ResourceNodeMetrics.npu_used,
+            ResourceNodeMetrics.collected_at,
+        )
+        .where(
+            ResourceNodeMetrics.cluster_id.in_(cluster_ids),
+            ResourceNodeMetrics.collected_at >= _utc(start).replace(tzinfo=None) - timedelta(days=1),
+            ResourceNodeMetrics.collected_at <= _utc(end).replace(tzinfo=None),
+        )
+        .order_by(ResourceNodeMetrics.cluster_id.asc(), ResourceNodeMetrics.node_name.asc(), ResourceNodeMetrics.collected_at.asc())
     )
+    rows = [NodeMetricSample(*row) for row in (await db.execute(stmt)).tuples().all()]
     result = build_node_utilization_heatmap(rows, start=start, end=end, bucket_hours=bucket_hours)
     return {"pool": pool, **result}

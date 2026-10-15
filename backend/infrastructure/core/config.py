@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     NPU_OCCUPANCY_MAX_WINDOW_SECONDS: int = 2_592_000
     NPU_OCCUPANCY_SYNC_INTERVAL_MINUTES: int = 60
     NPU_OCCUPANCY_SYNC_LOOKBACK_HOURS: int = 6
+    # A failed upstream call must not leave the durable sync state in
+    # ``running`` forever.  This bounds one invocation; a stale-state lease
+    # below is deliberately a little longer to avoid taking over healthy work.
+    NPU_OCCUPANCY_SYNC_TIMEOUT_SECONDS: int = 1_200
+    NPU_OCCUPANCY_SYNC_LEASE_SECONDS: int = 1_800
     NPU_OCCUPANCY_METADATA_BACKFILL_BATCH_SIZE: int = 500
     NPU_OCCUPANCY_METADATA_BACKFILL_CONCURRENCY: int = 10
     NPU_OCCUPANCY_METADATA_BACKFILL_MAX_PAGES_PER_REPOSITORY: int = 60

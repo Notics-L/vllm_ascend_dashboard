@@ -28,11 +28,16 @@ from database.migrations.ci_npu_queue_snapshot_physical_running import (
     run as migrate_ci_npu_queue_snapshot_physical_running,
 )
 from database.migrations.ci_npu_queue_snapshots import run as migrate_ci_npu_queue_snapshots
+from database.migrations.github_workflow_run_metadata import (
+    run as migrate_github_workflow_run_metadata,
+)
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
 from database.migrations.npu_occupancy import run as migrate_npu_occupancy
-from database.migrations.github_workflow_run_metadata import run as migrate_github_workflow_run_metadata
 from database.migrations.process_runtime import run as migrate_process_runtime
+from database.migrations.resource_metrics_query_indexes import (
+    run as migrate_resource_metrics_query_indexes,
+)
 from database.migrations.service_permissions import run as migrate_service_permissions
 from database.migrations.task_queue import run as migrate_phase_a
 from database.migrations.test_board_data import run as migrate_test_board_data
@@ -60,6 +65,7 @@ async def migrate() -> None:
     await migrate_process_runtime()
     await migrate_npu_occupancy()
     await migrate_github_workflow_run_metadata()
+    await migrate_resource_metrics_query_indexes()
     await migrate_ci_npu_facts()
     await migrate_ci_npu_queue_snapshots()
     await migrate_ci_npu_queue_snapshot_physical_running()

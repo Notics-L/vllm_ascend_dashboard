@@ -461,6 +461,10 @@ class ResourceNpuMetrics(Base):
     top_pods_json = Column(JSON)
     collected_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), index=True)
 
+    __table_args__ = (
+        Index("ix_resource_npu_metrics_cluster_collected", "cluster_id", "collected_at"),
+    )
+
 
 class ResourceNodeMetrics(Base):
     """资源节点指标采集表"""
@@ -484,6 +488,10 @@ class ResourceNodeMetrics(Base):
     npu_utilization = Column(Float, default=0)
     executing_pods_count = Column(Integer, default=0)
     collected_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), index=True)
+
+    __table_args__ = (
+        Index("ix_resource_node_metrics_cluster_collected", "cluster_id", "collected_at"),
+    )
 
 
 class AlertRule(Base):

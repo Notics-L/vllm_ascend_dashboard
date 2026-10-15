@@ -12,6 +12,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
+from zoneinfo import ZoneInfo
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Response, status
@@ -75,6 +76,9 @@ from tooling.model_fo_mapping import (
 from tooling.official_ci_scope import build_official_ci_filter
 
 logger = logging.getLogger(__name__)
+
+# 日期筛选控件使用北京时间；GitHub 和 CI 表中的时间均以 UTC 保存。
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 router = APIRouter()
 
@@ -670,6 +674,26 @@ def _format_nightly_export_time(value: datetime | None) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _nightly_export_run_time_bounds(
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Translate UI calendar dates (Asia/Shanghai) into UTC DB boundaries."""
+
+    def to_utc_naive(value: str) -> datetime:
+        local_midnight = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=SHANGHAI_TZ)
+        # MySQL TIMESTAMP values are returned as naive UTC datetimes in this project.
+        return local_midnight.astimezone(UTC).replace(tzinfo=None)
+
+    start = to_utc_naive(start_date) if start_date else None
+    end = (
+        to_utc_naive((datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d"))
+        if end_date
+        else None
+    )
+    return start, end
 
 
 def _format_nightly_ai_analysis(analysis: JobFailureAnalysis | None) -> str:
@@ -3670,13 +3694,17 @@ async def export_nightly_test_case_runs(
             select(CIJob, CIResult)
             .join(CIResult, CIResult.run_id == CIJob.run_id)
             .where(CIJob.workflow_name.in_(workflows))
-            .order_by(CIResult.started_at.asc(), CIJob.started_at.asc(), CIJob.id.asc())
+            # Keep the capped export useful: the old ascending order only ever
+            # reached the oldest Jobs and omitted current Nightly executions.
+            .order_by(CIResult.started_at.desc(), CIJob.started_at.desc(), CIJob.id.desc())
             .limit(10_000)
         )
-        if scope == "filtered" and start_date:
-            jobs_stmt = jobs_stmt.where(CIResult.started_at >= datetime.fromisoformat(start_date))
-        if scope == "filtered" and end_date:
-            jobs_stmt = jobs_stmt.where(CIResult.started_at < datetime.fromisoformat(end_date) + timedelta(days=1))
+        if scope == "filtered":
+            run_start, run_end = _nightly_export_run_time_bounds(start_date, end_date)
+            if run_start:
+                jobs_stmt = jobs_stmt.where(CIResult.started_at >= run_start)
+            if run_end:
+                jobs_stmt = jobs_stmt.where(CIResult.started_at < run_end)
 
         jobs_and_runs = (await db.execute(jobs_stmt)).all()
         snapshots_by_workflow: dict[str, list[NightlyTestCase]] = {}
