@@ -139,11 +139,17 @@ def _detect_modules(files_changed: list[str] | None) -> tuple[list[str], bool]:
     touched: list[str] = []
     is_core = False
     for f in files_changed:
+        # Extract top-level directory as module name
+        parts = f.split("/")
+        if len(parts) > 1:
+            top_dir = parts[0]
+        else:
+            top_dir = "root"
+        if top_dir not in touched:
+            touched.append(top_dir)
         lower_f = f.lower()
         for mod in CORE_MODULES:
             if mod in lower_f:
-                if mod not in touched:
-                    touched.append(mod)
                 is_core = True
     return touched, is_core
 

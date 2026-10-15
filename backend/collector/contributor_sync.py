@@ -640,6 +640,7 @@ class ContributorSyncCollector:
             existing.commit_type = unique_commit_type
             existing.build_type = build_type
             existing.estimated_saving_percent = saving_pct
+            existing.reasoning = reasoning
             existing.created_at = pr_created
             existing.actual_execution = False
             existing.repo_name = f"{self.owner}/{self.repo}"
@@ -654,6 +655,7 @@ class ContributorSyncCollector:
                 cache_strategy="smart_cache",
                 estimated_saving_percent=saving_pct,
                 actual_execution=False,
+                reasoning=reasoning,
                 repo_name=f"{self.owner}/{self.repo}",
                 created_at=pr_created,
             ))

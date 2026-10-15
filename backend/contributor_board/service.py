@@ -271,7 +271,7 @@ class ContributorBoardService:
                     cache_strategy=p.cache_strategy,
                     estimated_saving_percent=p.estimated_saving_percent or 0,
                     actual_execution=p.actual_execution or False,
-                    reasoning=None,
+                    reasoning=p.reasoning,
                     created_at=p.created_at,
                 )
                 for p in plans
