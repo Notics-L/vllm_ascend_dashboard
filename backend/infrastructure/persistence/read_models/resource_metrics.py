@@ -58,17 +58,23 @@ class ResourceMetricsQueryService:
         cluster_result = await self.db.execute(cluster_query)
         clusters = list(cluster_result.scalars().all())
 
-        result_clusters = []
-
-        for cluster in clusters:
+        raw_by_cluster: dict[int, list[ResourceNpuMetrics]] = {
+            cluster.id: [] for cluster in clusters
+        }
+        if raw_by_cluster:
+            # One bounded range scan is materially cheaper than running the
+            # same range query once per resource pool.
             stmt = select(ResourceNpuMetrics).where(
-                ResourceNpuMetrics.cluster_id == cluster.id,
+                ResourceNpuMetrics.cluster_id.in_(raw_by_cluster),
                 ResourceNpuMetrics.collected_at >= start_time,
                 ResourceNpuMetrics.collected_at <= end_time,
-            ).order_by(ResourceNpuMetrics.collected_at.asc())
+            ).order_by(ResourceNpuMetrics.cluster_id.asc(), ResourceNpuMetrics.collected_at.asc())
+            for metric in (await self.db.execute(stmt)).scalars().all():
+                raw_by_cluster[metric.cluster_id].append(metric)
 
-            metrics_result = await self.db.execute(stmt)
-            raw_metrics = list(metrics_result.scalars().all())
+        result_clusters = []
+        for cluster in clusters:
+            raw_metrics = raw_by_cluster[cluster.id]
 
             if granularity_minutes <= 1:
                 aggregated = raw_metrics

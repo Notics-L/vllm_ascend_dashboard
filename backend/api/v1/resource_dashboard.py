@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -23,6 +24,8 @@ from resource_dashboard.node_utilization import query_node_utilization_heatmap
 from resource_dashboard.service import ResourceDashboardService
 
 router = APIRouter()
+_HEATMAP_CACHE_TTL_SECONDS = 60
+_heatmap_cache: dict[tuple[str | None, datetime, datetime, int], tuple[float, dict]] = {}
 
 
 @router.get("/node-utilization-heatmap")
@@ -34,7 +37,9 @@ async def get_node_utilization_heatmap(
     end: datetime | None = Query(None),
     bucket_hours: int = Query(24, ge=1, le=168),
 ):
-    end = end or datetime.now(UTC)
+    # The default range is minute-aligned so adjacent UI requests can share a
+    # short-lived cached aggregation instead of repeating a seven-day scan.
+    end = end or datetime.now(UTC).replace(second=0, microsecond=0)
     if start is None:
         local_end = end.astimezone(UTC) + timedelta(hours=8)
         local_start = local_end.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
@@ -45,13 +50,19 @@ async def get_node_utilization_heatmap(
         raise HTTPException(status_code=422, detail="start must be earlier than end")
     if end - start > timedelta(days=31):
         raise HTTPException(status_code=422, detail="time window cannot exceed 31 days")
-    return await query_node_utilization_heatmap(
+    cache_key = (pool, start, end, bucket_hours)
+    cached = _heatmap_cache.get(cache_key)
+    if cached and monotonic() - cached[0] < _HEATMAP_CACHE_TTL_SECONDS:
+        return cached[1]
+    result = await query_node_utilization_heatmap(
         db,
         start=start,
         end=end,
         pool=pool,
         bucket_hours=bucket_hours,
     )
+    _heatmap_cache[cache_key] = (monotonic(), result)
+    return result
 
 
 def _cluster_response(cluster: KubernetesClusterConfig) -> KubernetesClusterResponse:

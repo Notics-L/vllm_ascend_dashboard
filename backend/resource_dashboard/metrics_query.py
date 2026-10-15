@@ -69,18 +69,11 @@ class PersistedResourceMetricsService:
         # fresh zero-only summary with an older non-zero node snapshot.
         latest_snapshot = (
             select(
-                ResourceNpuMetrics.cluster_id,
-                func.max(ResourceNpuMetrics.collected_at).label("collected_at"),
+                ResourceNodeMetrics.cluster_id,
+                func.max(ResourceNodeMetrics.collected_at).label("collected_at"),
             )
-            .join(
-                ResourceNodeMetrics,
-                and_(
-                    ResourceNodeMetrics.cluster_id == ResourceNpuMetrics.cluster_id,
-                    ResourceNodeMetrics.collected_at == ResourceNpuMetrics.collected_at,
-                ),
-            )
-            .where(ResourceNpuMetrics.cluster_id.in_(cluster_ids))
-            .group_by(ResourceNpuMetrics.cluster_id)
+            .where(ResourceNodeMetrics.cluster_id.in_(cluster_ids))
+            .group_by(ResourceNodeMetrics.cluster_id)
             .subquery()
         )
         npu_rows = (
