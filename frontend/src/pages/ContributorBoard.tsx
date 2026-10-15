@@ -25,6 +25,7 @@ import {
   Space,
   Spin,
   Statistic,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -80,6 +81,9 @@ import {
   updateQuadrantConfig,
   updateScoringWeights,
   updateRoleThresholds,
+  getSyncSchedule,
+  updateSyncSchedule,
+  type ContributorSyncScheduleConfig,
   syncContributors,
   type SyncRecord,
   getSyncStatus,
@@ -1664,29 +1668,287 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
 /*                            设置 Tab                                */
 /* ------------------------------------------------------------------ */
 
+function CronModal({ open, cron, onChange, onClose }: {
+  open: boolean
+  cron: string
+  onChange: (cron: string) => void
+  onClose: () => void
+}) {
+  const [mode, setMode] = useState<'preset' | 'custom' | 'weekly'>('preset')
+  const [customHour, setCustomHour] = useState(2)
+  const [customMinute, setCustomMinute] = useState(0)
+  const [weekDays, setWeekDays] = useState<number[]>([0, 1, 2, 3, 4])
+  const [selectedPreset, setSelectedPreset] = useState('0 2 * * *')
+
+  useEffect(() => {
+    const parts = cron.split(' ')
+    if (parts.length === 5) {
+      setCustomMinute(parseInt(parts[0]) || 0)
+      setCustomHour(parseInt(parts[1]) || 0)
+      setSelectedPreset(cron)
+    }
+    if (cron.startsWith('0 2 * * *')) {
+      setMode('preset')
+    } else if (parts.length === 5 && parts[4] !== '*') {
+      setMode('weekly')
+      const days = parts[4].split(',').map(Number).filter(n => !isNaN(n))
+      if (days.length) setWeekDays(days)
+    } else {
+      setMode('custom')
+    }
+  }, [cron])
+
+  const cronToText = (expr: string) => {
+    const parts = expr.split(' ')
+    if (parts.length !== 5) return expr
+    const [min, hour, day, _month, dow] = parts
+    if (dow !== '*') {
+      const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      const days = dow.split(',').map(n => parseInt(n)).map(n => dayNames[n] || n).join('、')
+      return `每周${days} ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+    }
+    if (day !== '*') return `每月${day}日 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+    return `每天 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+  }
+
+  const presetGroups = [
+    {
+      title: '每天',
+      items: [
+        { label: '02:00', value: '0 2 * * *' },
+        { label: '03:00', value: '0 3 * * *' },
+        { label: '06:00', value: '0 6 * * *' },
+        { label: '12:00', value: '0 12 * * *' },
+      ],
+    },
+    {
+      title: '每周',
+      items: [
+        { label: '周日', value: '0 2 * * 0' },
+        { label: '周一', value: '0 2 * * 1' },
+        { label: '周五', value: '0 2 * * 5' },
+        { label: '周六', value: '0 2 * * 6' },
+      ],
+    },
+    {
+      title: '每月',
+      items: [
+        { label: '1号', value: '0 2 1 * *' },
+        { label: '15号', value: '0 2 15 * *' },
+      ],
+    },
+  ]
+
+  const weekDayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+  const toggleWeekDay = (day: number) => {
+    setWeekDays(prev =>
+      prev.includes(day) ? prev.filter(d => d !== day).sort() : [...prev, day].sort()
+    )
+  }
+
+  const handleSave = () => {
+    if (mode === 'weekly' && weekDays.length === 0) {
+      message.warning('请至少选择一个星期几')
+      return
+    }
+    let newCron = cron
+    if (mode === 'preset') {
+      newCron = selectedPreset
+    } else if (mode === 'weekly') {
+      newCron = `${customMinute} ${customHour} * * ${weekDays.join(',')}`
+    } else if (mode === 'custom') {
+      newCron = `${customMinute} ${customHour} * * *`
+    }
+    onChange(newCron)
+    message.success(`已设置为 ${cronToText(newCron)}`)
+    onClose()
+  }
+
+  const presetCardStyle = (val: string) => ({
+    padding: '8px 14px',
+    borderRadius: 8,
+    border: `1.5px solid ${val === selectedPreset ? '#5b46f5' : '#f0f0f0'}`,
+    background: val === selectedPreset ? '#f5f3ff' : '#fafafa',
+    color: val === selectedPreset ? '#5b46f5' : '#666',
+    fontWeight: val === selectedPreset ? 600 : 400,
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+    fontSize: 13,
+    transition: 'all 0.15s',
+    userSelect: 'none' as const,
+  })
+
+  return (
+    <Modal
+      title="设置全量同步时间"
+      open={open}
+      onCancel={onClose}
+      destroyOnClose={false}
+      maskClosable
+      width={480}
+      footer={[
+        <Button key="cancel" onClick={onClose}>取消</Button>,
+        <Button key="save" type="primary" onClick={handleSave}>确定</Button>,
+      ]}
+    >
+      <Alert
+        message={cronToText(cron)}
+        description={<Text code style={{ fontSize: 11 }}>{cron}</Text>}
+        type="info"
+        showIcon
+        style={{ marginBottom: 16, fontSize: 13 }}
+      />
+
+      <Tabs
+        defaultActiveKey="preset"
+        onChange={key => setMode(key as typeof mode)}
+        items={[
+          {
+            key: 'preset',
+            label: '快速选择',
+            children: (
+              <div>
+                {presetGroups.map(group => (
+                  <div key={group.title} style={{ marginBottom: 14 }}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>{group.title}</Text>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {group.items.map(p => (
+                        <div
+                          key={p.value}
+                          style={presetCardStyle(p.value)}
+                          onClick={() => setSelectedPreset(p.value)}
+                        >
+                          {p.label}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ),
+          },
+          {
+            key: 'custom',
+            label: '自定义',
+            children: (
+              <div>
+                <Text type="secondary" style={{ display: 'block', marginBottom: 16, fontSize: 13 }}>
+                  每天在固定时间执行全量同步
+                </Text>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'center' }}>
+                  <Select
+                    value={customHour}
+                    onChange={v => setCustomHour(v)}
+                    style={{ width: 100 }}
+                    options={Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}`, value: i }))}
+                  />
+                  <Text style={{ fontSize: 20, fontWeight: 600 }}>:</Text>
+                  <Select
+                    value={customMinute}
+                    onChange={v => setCustomMinute(v)}
+                    style={{ width: 100 }}
+                    options={[{ label: '00', value: 0 }, { label: '15', value: 15 }, { label: '30', value: 30 }, { label: '45', value: 45 }]}
+                  />
+                </div>
+                <div style={{ textAlign: 'center', marginTop: 12 }}>
+                  <Tag color="blue">{cronToText(`${customMinute} ${customHour} * * *`)}</Tag>
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: 'weekly',
+            label: '每周指定日',
+            children: (
+              <div>
+                <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>
+                  选择星期几，设定执行时间
+                </Text>
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 16 }}>
+                  {weekDayLabels.map((label, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => toggleWeekDay(idx)}
+                      style={{
+                        width: 32, height: 32, borderRadius: '50%',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 12, cursor: 'pointer', userSelect: 'none',
+                        background: weekDays.includes(idx) ? '#5b46f5' : '#f5f5f5',
+                        color: weekDays.includes(idx) ? '#fff' : '#999',
+                        fontWeight: weekDays.includes(idx) ? 600 : 400,
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {label.slice(1)}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'center' }}>
+                  <Select
+                    value={customHour}
+                    onChange={v => setCustomHour(v)}
+                    style={{ width: 100 }}
+                    options={Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}`, value: i }))}
+                  />
+                  <Text style={{ fontSize: 20, fontWeight: 600 }}>:</Text>
+                  <Select
+                    value={customMinute}
+                    onChange={v => setCustomMinute(v)}
+                    style={{ width: 100 }}
+                    options={[{ label: '00', value: 0 }, { label: '15', value: 15 }, { label: '30', value: 30 }, { label: '45', value: 45 }]}
+                  />
+                </div>
+                <div style={{ textAlign: 'center', marginTop: 12 }}>
+                  <Tag color="blue">
+                    {weekDays.length
+                      ? `每周${weekDays.map(d => weekDayLabels[d]).join('、')} ${customHour}:${customMinute.toString().padStart(2, '0')}`
+                      : '请选择星期几'}
+                  </Tag>
+                </div>
+              </div>
+            ),
+          },
+        ]}
+      />
+    </Modal>
+  )
+}
+
 function SettingsTab() {
   const [form] = Form.useForm()
   const [settings, setSettings] = useState<SettingsType | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [scheduleForm] = Form.useForm()
+  const [schedule, setSchedule] = useState<ContributorSyncScheduleConfig | null>(null)
+  const [scheduleSaving, setScheduleSaving] = useState(false)
+  const [cronModalOpen, setCronModalOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       setLoading(true)
       try {
-        const data = await getContributorBoardSettings()
+        const [settingsData, scheduleData] = await Promise.all([
+          getContributorBoardSettings(),
+          getSyncSchedule(),
+        ])
         if (!cancelled) {
-          setSettings(data)
-          form.setFieldValue('y_axis_type', data.quadrant_config.y_axis_type)
-          form.setFieldValue('merged_pr_weight', data.scoring_weights.merged_pr_weight)
-          form.setFieldValue('code_line_weight', data.scoring_weights.code_line_weight)
-          form.setFieldValue('review_weight', data.scoring_weights.review_weight)
-          form.setFieldValue('approval_weight', data.scoring_weights.approval_weight)
-          form.setFieldValue('core_module_weight', data.scoring_weights.core_module_weight)
-          form.setFieldValue('star_threshold', data.role_thresholds.star_threshold)
-          form.setFieldValue('active_threshold', data.role_thresholds.active_threshold)
-          form.setFieldValue('max_error_score', data.role_thresholds.max_error_score)
+          setSettings(settingsData)
+          setSchedule(scheduleData)
+          form.setFieldValue('y_axis_type', settingsData.quadrant_config.y_axis_type)
+          form.setFieldValue('merged_pr_weight', settingsData.scoring_weights.merged_pr_weight)
+          form.setFieldValue('code_line_weight', settingsData.scoring_weights.code_line_weight)
+          form.setFieldValue('review_weight', settingsData.scoring_weights.review_weight)
+          form.setFieldValue('approval_weight', settingsData.scoring_weights.approval_weight)
+          form.setFieldValue('core_module_weight', settingsData.scoring_weights.core_module_weight)
+          form.setFieldValue('star_threshold', settingsData.role_thresholds.star_threshold)
+          form.setFieldValue('active_threshold', settingsData.role_thresholds.active_threshold)
+          form.setFieldValue('max_error_score', settingsData.role_thresholds.max_error_score)
+          scheduleForm.setFieldValue('scheduled_enabled', scheduleData.enabled)
+          scheduleForm.setFieldValue('scheduled_full_cron', scheduleData.full_cron)
+          scheduleForm.setFieldValue('scheduled_incremental_interval', scheduleData.incremental_interval_minutes)
         }
       } catch { /* ignore */ } finally {
         if (!cancelled) setLoading(false)
@@ -1694,7 +1956,7 @@ function SettingsTab() {
     }
     load()
     return () => { cancelled = true }
-  }, [form])
+  }, [form, scheduleForm])
 
   const handleSave = async () => {
     try {
@@ -1716,15 +1978,33 @@ function SettingsTab() {
         }),
       ])
       message.success('设置已保存，四象限和排行榜将使用新配置重新计算')
-      // 通知四象限 Tab 刷新 Y 轴配置
       window.dispatchEvent(new CustomEvent('settings-updated'))
-      // 重新加载
       const data = await getContributorBoardSettings()
       setSettings(data)
     } catch (err) {
       message.error('保存失败')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleScheduleSave = async () => {
+    try {
+      const values = await scheduleForm.validateFields()
+      setScheduleSaving(true)
+      await updateSyncSchedule({
+        enabled: values.scheduled_enabled,
+        full_cron: values.scheduled_full_cron,
+        incremental_interval_minutes: values.scheduled_incremental_interval,
+      })
+      message.success('定时同步设置已保存，Scheduler 将在下次重载时生效')
+      window.dispatchEvent(new CustomEvent('settings-updated'))
+      const data = await getSyncSchedule()
+      setSchedule(data)
+    } catch (err) {
+      message.error('保存定时同步设置失败')
+    } finally {
+      setScheduleSaving(false)
     }
   }
 
@@ -1839,6 +2119,71 @@ function SettingsTab() {
           </Card>
         </Col>
       </Row>
+
+      {/* 定时同步设置 */}
+      <Row gutter={[20, 0]} style={{ marginTop: 20 }}>
+        <Col xs={24} md={12}>
+          <Card
+            title={<><ClockCircleOutlined style={{ marginRight: 6, color: '#722ed1' }} />定时同步设置</>}
+            extra={
+              <Button size="small" loading={scheduleSaving} onClick={handleScheduleSave}>
+                保存定时设置
+              </Button>
+            }
+            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}
+          >
+            <Form form={scheduleForm}>
+              <Form.Item name="scheduled_enabled" label="启用定时同步" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="全量同步时间">
+                {(() => {
+                  const c = schedule?.full_cron || '0 2 * * *'
+                  const p = c.split(' ')
+                  if (p.length !== 5) return <Text>{c}</Text>
+                  const [min, hour, day, _month, dow] = p
+                  let display = ''
+                  if (dow !== '*') {
+                    const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+                    const days = dow.split(',').map(n => parseInt(n)).map(n => dayNames[n] || n).join('、')
+                    display = `每周${days} ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+                  } else if (day !== '*') {
+                    display = `每月${day}日 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+                  } else {
+                    display = `每天 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+                  }
+                  return (
+                    <Space>
+                      <Text style={{ fontSize: 13 }}>{display}</Text>
+                      <Button type="link" size="small" onClick={() => setCronModalOpen(true)}>修改</Button>
+                    </Space>
+                  )
+                })()}
+              </Form.Item>
+              <Form.Item
+                name="scheduled_incremental_interval"
+                label="增量同步间隔"
+                tooltip="每多少分钟执行一次增量同步（30-1440 分钟）"
+                rules={[
+                  { required: true, message: '请输入增量同步间隔' }
+                ]}
+                extra={`当前: ${(schedule?.incremental_interval_minutes ?? 360) / 60} 小时`}
+              >
+                <InputNumber min={30} max={1440} step={30} style={{ width: '100%' }} addonAfter="分钟" />
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+      </Row>
+
+      <CronModal
+        open={cronModalOpen}
+        cron={schedule?.full_cron || '0 2 * * *'}
+        onChange={(newCron) => {
+          scheduleForm.setFieldValue('scheduled_full_cron', newCron)
+        }}
+        onClose={() => setCronModalOpen(false)}
+      />
     </Spin>
   )
 }
@@ -2107,6 +2452,21 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
       render: (status: string) => {
         const cfg = statusConfig[status] || { color: 'default', label: status, icon: null }
         return <Tag color={cfg.color}>{cfg.icon} {cfg.label}</Tag>
+      },
+    },
+    {
+      title: '来源',
+      dataIndex: 'trigger_source',
+      key: 'trigger_source',
+      width: 100,
+      render: (v: string | undefined) => {
+        const map: Record<string, { color: string; label: string }> = {
+          manual: { color: 'blue', label: '手动' },
+          scheduled_full: { color: 'cyan', label: '定时全量' },
+          scheduled_incremental: { color: 'purple', label: '定时增量' },
+        }
+        const cfg = map[v ?? ''] || { color: 'default', label: v ?? '其他' }
+        return <Tag color={cfg.color} style={{ margin: 0 }}>{cfg.label}</Tag>
       },
     },
     {

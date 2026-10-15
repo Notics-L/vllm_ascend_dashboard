@@ -23,6 +23,8 @@ from contracts.schemas.contributor_board import (
     ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
+    ContributorSyncScheduleConfig,
+    ContributorSyncScheduleUpdateRequest,
     ContributorTrendPoint,
     ContributorTrendResponse,
     ExtendedTrendResponse,
@@ -817,6 +819,57 @@ class ContributorBoardService:
             db, "role_thresholds", request.model_dump(), "静态角色标签阈值"
         )
 
+    @staticmethod
+    async def get_sync_schedule(
+        db,
+    ) -> ContributorSyncScheduleConfig:
+        """获取定时同步设置"""
+        result = await db.execute(
+            select(ContributorBoardSettings).where(
+                ContributorBoardSettings.setting_key == "sync_schedule"
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing and existing.setting_value:
+            return ContributorSyncScheduleConfig(**existing.setting_value)
+        return ContributorSyncScheduleConfig()
+
+    @staticmethod
+    async def update_sync_schedule(
+        db, request: ContributorSyncScheduleUpdateRequest
+    ) -> ContributorSyncScheduleConfig:
+        """更新定时同步设置"""
+        current = await ContributorBoardService.get_sync_schedule(db)
+        updates = request.model_dump(exclude_none=True)
+        merged = {**current.model_dump(), **updates}
+
+        await ContributorBoardService.update_setting(
+            db, "sync_schedule", merged, "定时同步配置"
+        )
+
+        # 写入 ProjectDashboardConfig 供 Scheduler 读取
+        try:
+            from infrastructure.persistence.models import ProjectDashboardConfig
+
+            cfg_result = await db.execute(
+                select(ProjectDashboardConfig).where(
+                    ProjectDashboardConfig.config_key == "contributor_sync_schedule"
+                )
+            )
+            cfg_row = cfg_result.scalar_one_or_none()
+            if cfg_row:
+                cfg_row.config_value = merged
+            else:
+                db.add(ProjectDashboardConfig(
+                    config_key="contributor_sync_schedule",
+                    config_value=merged,
+                    description="Contributor sync schedule configuration",
+                ))
+        except Exception as e:
+            logger.warning(f"Failed to write sync schedule to ProjectDashboardConfig: {e}")
+
+        return ContributorSyncScheduleConfig(**merged)
+
     # ---- 趋势数据 ----
 
     @staticmethod
@@ -976,9 +1029,13 @@ class ContributorBoardService:
         since_date: date | None = None,
         full_resync: bool = False,
         repo_name: str | None = None,
+        trigger_source: str = "manual",
     ) -> ContributorSyncResponse:
         """
         触发异步同步任务（非阻塞）
+
+        Args:
+            trigger_source: 触发来源 ('manual', 'scheduled_full', 'scheduled_incremental')
 
         1. 检查是否有正在运行的同类任务（防重复）
         2. 创建任务记录（pending 状态）
@@ -1009,6 +1066,7 @@ class ContributorBoardService:
             repo_name=repo_name,
             status=TaskStatus.PENDING,
             since_date=since_date,
+            trigger_source=trigger_source,
             progress_percent=0,
             progress_message="任务已创建，等待执行",
         )

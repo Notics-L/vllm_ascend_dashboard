@@ -262,6 +262,29 @@ class UpdateRoleThresholdsRequest(BaseModel):
     repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 
+# ============ Sync Schedule Schemas ============
+
+class ContributorSyncScheduleConfig(BaseModel):
+    """定时同步设置"""
+    full_cron: str = Field(
+        default="0 2 * * *",
+        description="全量同步 CRON 表达式（5字段，默认每日 02:00）"
+    )
+    incremental_interval_minutes: int = Field(
+        default=360, ge=30, le=1440,
+        description="增量同步间隔（分钟），最小 30，最大 1440（24小时）"
+    )
+    enabled: bool = Field(
+        default=True, description="是否启用定时同步"
+    )
+
+
+class ContributorSyncScheduleUpdateRequest(BaseModel):
+    full_cron: str | None = Field(None, description="全量同步 CRON 表达式（5字段）")
+    incremental_interval_minutes: int | None = Field(None, ge=30, le=1440, description="增量同步间隔（分钟）")
+    enabled: bool | None = Field(None, description="是否启用定时同步")
+
+
 # ============ Trend Schemas ============
 
 class ContributorTrendPoint(BaseModel):
@@ -338,6 +361,7 @@ class ContributorSyncRecordResponse(BaseModel):
     synced_at: datetime | None = None
     progress_percent: float = 0
     progress_message: str | None = None
+    trigger_source: str = "manual"
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime

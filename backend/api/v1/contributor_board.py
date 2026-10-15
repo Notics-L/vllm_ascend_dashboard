@@ -30,6 +30,8 @@ from contracts.schemas.contributor_board import (
     ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
+    ContributorSyncScheduleConfig,
+    ContributorSyncScheduleUpdateRequest,
     ExtendedTrendResponse,
     ModuleHotspotResponse,
     PolicyResultResponse,
@@ -107,8 +109,6 @@ async def get_build_optimization_stats(
 @router.post("/builds/evaluate", response_model=BuildPlanResponse)
 async def evaluate_build(
     request: BuildPlanEvaluateRequest,
-    db: DbSession,
-    current_user: CurrentUser,
 ):
     """对新 PR 评估构建策略"""
     service = get_contributor_board_service()
@@ -464,3 +464,65 @@ async def update_role_thresholds(db: DbSession, request: UpdateRoleThresholdsReq
     """更新角色阈值"""
     service = get_contributor_board_service()
     return await service.update_role_thresholds(db, request)
+
+
+# ---- 定时同步设置 ----
+
+@router.get("/settings/sync-schedule", response_model=ContributorSyncScheduleConfig)
+async def get_sync_schedule(db: DbSession):
+    """获取定时同步设置"""
+    service = get_contributor_board_service()
+    return await service.get_sync_schedule(db)
+
+
+@router.put("/settings/sync-schedule", response_model=ContributorSyncScheduleConfig)
+async def update_sync_schedule(db: DbSession, request: ContributorSyncScheduleUpdateRequest):
+    """更新定时同步设置
+    
+    保存后会通知 Scheduler 进程重载定时任务配置。
+    """
+    from infrastructure.tasks.scheduler_config import persist_scheduler_runtime_config
+    import json
+    import uuid
+
+    service = get_contributor_board_service()
+    result = await service.update_sync_schedule(db, request)
+
+    # 触发 Scheduler 重载：通过 control_outbox 发消息
+    try:
+        from sqlalchemy import text as sa_text
+
+        async with db.begin_nested():
+            version_result = await db.execute(
+                sa_text(
+                    """
+                    SELECT aggregate_version FROM control_outbox
+                    WHERE aggregate_type = 'scheduler'
+                      AND aggregate_id = 'runtime-config'
+                      AND event_type = 'scheduler.config.reload'
+                    ORDER BY aggregate_version DESC LIMIT 1
+                    """
+                )
+            )
+            current_version = version_result.scalar_one_or_none() or 0
+
+            await db.execute(
+                sa_text(
+                    """
+                    INSERT INTO control_outbox
+                        (event_id, aggregate_type, aggregate_id, event_type, aggregate_version, payload)
+                    VALUES
+                        (:event_id, 'scheduler', 'runtime-config', 'scheduler.config.reload', :version, :payload)
+                    """
+                ),
+                {
+                    "event_id": str(uuid.uuid4()),
+                    "version": int(current_version) + 1,
+                    "payload": json.dumps({"changed": ["contributor_sync_schedule"]}),
+                },
+            )
+        logger.info("Queued contributor sync schedule reload for scheduler")
+    except Exception as e:
+        logger.warning("Failed to queue scheduler reload: %s", e)
+
+    return result

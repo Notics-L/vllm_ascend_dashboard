@@ -1184,6 +1184,8 @@ from .contributor_board import (
     ContributorResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
+    ContributorSyncScheduleConfig,
+    ContributorSyncScheduleUpdateRequest,
     ContributorTrendPoint,
     ContributorTrendResponse,
     QuadrantConfig,

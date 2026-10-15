@@ -29,6 +29,7 @@ async def run() -> dict[str, int]:
                     synced_at TIMESTAMP NULL,
                     progress_percent FLOAT DEFAULT 0,
                     progress_message VARCHAR(500),
+                    trigger_source VARCHAR(50) NOT NULL DEFAULT 'manual',
                     started_at TIMESTAMP NULL,
                     completed_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -63,6 +64,19 @@ async def run() -> dict[str, int]:
             try:
                 await db.execute(text("""
                     ALTER TABLE contributor_sync_records ADD COLUMN completed_at TIMESTAMP NULL AFTER started_at
+                """))
+            except Exception:
+                pass
+
+        # Add trigger_source column
+        result = await db.execute(text("""
+            SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_sync_records' AND COLUMN_NAME = 'trigger_source'
+        """))
+        if int(result.scalar_one()) == 0:
+            try:
+                await db.execute(text("""
+                    ALTER TABLE contributor_sync_records ADD COLUMN trigger_source VARCHAR(50) NOT NULL DEFAULT 'manual' AFTER progress_message
                 """))
             except Exception:
                 pass

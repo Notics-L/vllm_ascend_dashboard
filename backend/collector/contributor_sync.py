@@ -8,11 +8,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
-
-from sqlalchemy import and_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from contributor_board.classifier import ClassificationResult, classify_commit
 from contributor_board.role_analytics import detect_roles
@@ -30,6 +27,8 @@ from infrastructure.persistence.models import (
     ErrorRecord,
     ImageBuildPlan,
 )
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -459,8 +458,8 @@ class ContributorSyncCollector:
                     raise
                 raise
 
+    @staticmethod
     async def _update_contribution_dates(
-        self,
         contributor: Contributor,
         updated_at: datetime,
     ) -> None:
@@ -901,12 +900,16 @@ async def sync_contributors(
     combined = SyncResult()
     total_repos = len(target_repos)
 
-    for repo_idx, (owner, repo) in enumerate(target_repos, 1):
+    async def _sync_single_repo(
+        owner: str, repo: str, repo_idx: int, total: int
+    ) -> SyncResult:
+        """同步单个仓库（用于并行执行）"""
         repo_key = f"{owner}/{repo}"
-        repo_base_pct = (repo_idx - 1) / total_repos * 100 if total_repos > 1 else 0
-        repo_pct_range = 100 / total_repos if total_repos > 1 else 100
+        repo_base_pct = (repo_idx - 1) / total * 100 if total > 1 else 0
+        repo_pct_range = 100 / total if total > 1 else 100
 
         logger.info("=== Starting sync for repo: %s ===", repo_key)
+        result = SyncResult(errors=[f"Repo {repo_key}: repo skipped"])
         try:
             async with GitHubClient(token=token, owner=owner, repo=repo) as github_client:
                 async with AsyncSessionLocal() as db:
@@ -917,14 +920,30 @@ async def sync_contributors(
 
                     collector = ContributorSyncCollector(github_client, db, progress_callback=repo_progress)
                     result = await collector.collect(since=since_date)
+        except Exception as e:
+            logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
+            result = SyncResult(errors=[f"Repo {repo_key}: {e}"])
+        return result
 
+    # 并行执行所有仓库同步（限制最大并发数为 5）
+    import asyncio
+    semaphore = asyncio.Semaphore(min(5, total_repos))
+
+    async def _sync_with_semaphore(owner: str, repo: str, idx: int) -> SyncResult:
+        async with semaphore:
+            return await _sync_single_repo(owner, repo, idx, total_repos)
+
+    tasks = [_sync_with_semaphore(o, r, i) for i, (o, r) in enumerate(target_repos, 1)]
+    repo_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in repo_results:
+        if isinstance(result, Exception):
+            combined.errors.append(f"Unexpected error: {result}")
+        else:
             combined.contributors_synced += result.contributors_synced
             combined.commits_classified += result.commits_classified
             combined.build_plans_created += result.build_plans_created
             combined.errors.extend(result.errors)
-        except Exception as e:
-            logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
-            combined.errors.append(f"Repo {repo_key}: {e}")
 
     if progress_callback:
         await progress_callback(98, "Finalizing...")

@@ -1149,6 +1149,7 @@ class ContributorSyncRecord(Base):
     synced_at = Column(TIMESTAMP)
     progress_percent = Column(Float, default=0)
     progress_message = Column(String(500))
+    trigger_source = Column(String(20), nullable=False, default="manual")
     started_at = Column(TIMESTAMP, nullable=True)
     completed_at = Column(TIMESTAMP, nullable=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))

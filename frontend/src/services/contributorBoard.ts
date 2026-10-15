@@ -320,6 +320,7 @@ export interface SyncRecord {
   synced_at: string | null
   progress_percent: number
   progress_message: string | null
+  trigger_source: string
   started_at: string | null
   completed_at: string | null
   created_at: string
@@ -552,5 +553,21 @@ export const updateScoringWeights = async (weights: ScoringWeightsConfig) => {
 
 export const updateRoleThresholds = async (thresholds: RoleThresholdsConfig) => {
   const response = await api.put('/contributor-board/settings/role_thresholds', thresholds)
+  return response.data
+}
+
+export interface ContributorSyncScheduleConfig {
+  full_cron: string
+  incremental_interval_minutes: number
+  enabled: boolean
+}
+
+export const getSyncSchedule = async () => {
+  const response = await api.get<ContributorSyncScheduleConfig>('/contributor-board/settings/sync-schedule')
+  return response.data
+}
+
+export const updateSyncSchedule = async (config: Partial<ContributorSyncScheduleConfig>) => {
+  const response = await api.put<ContributorSyncScheduleConfig>('/contributor-board/settings/sync-schedule', config)
   return response.data
 }
