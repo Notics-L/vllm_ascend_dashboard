@@ -1169,8 +1169,9 @@ class ContributorBoardService:
 
             if has_errors and has_results:
                 final_status = "partial"
+                error_summary = f"{len(errors_json)} errors (first: {errors_json[0][:120]}...)" if errors_json else "unknown error"
                 await tracker.partial(
-                    error_message="; ".join(errors_json[:5]),
+                    error_message=error_summary,
                     result_metadata={
                         "contributors_synced": result.contributors_synced,
                         "commits_classified": result.commits_classified,
@@ -1179,7 +1180,8 @@ class ContributorBoardService:
                 )
             elif has_errors:
                 final_status = "failed"
-                await tracker.fail("; ".join(errors_json))
+                error_summary = f"{len(errors_json)} errors (first: {errors_json[0][:120]}...)" if errors_json else "unknown error"
+                await tracker.fail(error_summary)
             else:
                 final_status = "completed"
                 await tracker.complete(result_metadata={

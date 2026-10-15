@@ -1,4 +1,4 @@
-﻿"""
+"""
 贡献者数据采集模块
 
 从 GitHub 拉取 PR/Commit/Review 数据，执行分类分析，并增量写入数据库。
@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from contributor_board.classifier import ClassificationResult, classify_commit
@@ -104,8 +104,9 @@ class ContributorSyncCollector:
             if self.progress_callback:
                 await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
 
-            # 每个贡献者在当前采集周期内的临时指标聚合
-            contributor_aggregates: dict[str, dict[str, Any]] = {}
+            # 每个贡献者每个时间周期内的临时指标聚合
+            # Key: (period_start_date, login), Value: aggregate dict
+            contributor_period_aggregates: dict[tuple[date, str], dict[str, Any]] = {}
 
             total_prs = len(prs)
             for idx, pr in enumerate(prs, 1):
@@ -119,7 +120,7 @@ class ContributorSyncCollector:
                         await self.progress_callback(pct, f"Processing PRs: {idx}/{total_prs}")
 
                 try:
-                    await self._process_pr(pr, pr_number, result, contributor_aggregates)
+                    await self._process_pr(pr, pr_number, result, contributor_period_aggregates)
                 except GitHubRateLimitError as e:
                     logger.error("Rate limit exceeded at PR #%s, stopping sync: %s", pr_number, e)
                     result.errors.append(f"Rate limit at PR #{pr_number}: {e}")
@@ -146,7 +147,7 @@ class ContributorSyncCollector:
 
             # 聚合写入 ContributorMetrics
             try:
-                await self._upsert_metrics(contributor_aggregates, since, result)
+                await self._upsert_metrics(contributor_period_aggregates, result)
             except Exception as e:
                 logger.error("Failed to upsert metrics: %s", e, exc_info=True)
                 result.errors.append(f"Metrics upsert failed: {e}")
@@ -194,7 +195,7 @@ class ContributorSyncCollector:
         pr: dict[str, Any],
         pr_number: int,
         result: SyncResult,
-        contributor_aggregates: dict[str, dict[str, Any]],
+        contributor_period_aggregates: dict[tuple[date, str], dict[str, Any]],
     ) -> None:
         """处理单个 PR，更新 contributor 并 classify commits."""
         user_info = pr.get("user") or {}
@@ -245,26 +246,36 @@ class ContributorSyncCollector:
         if db_contributor is None:
             return
 
-        # 初始化/获取该贡献者聚合桶
-        agg = contributor_aggregates.setdefault(login, {
-            "contributor_id": db_contributor.id,
-            "merged_pr_count": 0,
-            "pending_pr_count": 0,
-            "code_additions": 0,
-            "code_deletions": 0,
-            "review_count": 0,
-            "approval_count": 0,
-            "merge_count": 0,
-            "core_module_count": 0,
-            "closed_pr_count": 0,
-            "commit_count": 0,
-            "error_score": 0.0,
-        })
+        # 按 PR 创建时间的月度周期拆分聚合桶
+        pr_created_dt = self._parse_datetime(pr.get("created_at"))
+        if pr_created_dt is None:
+            pr_created_dt = datetime.now(UTC)
+        period_key = date(pr_created_dt.year, pr_created_dt.month, 1)
 
-        # 更新贡献时间窗口
-        updated_at = self._parse_datetime(pr.get("updated_at"))
-        if updated_at:
-            await self._update_contribution_dates(db_contributor, updated_at)
+        def _empty_agg():
+            return {
+                "contributor_id": db_contributor.id,
+                "merged_pr_count": 0,
+                "pending_pr_count": 0,
+                "code_additions": 0,
+                "code_deletions": 0,
+                "review_count": 0,
+                "approval_count": 0,
+                "merge_count": 0,
+                "core_module_count": 0,
+                "closed_pr_count": 0,
+                "commit_count": 0,
+                "error_score": 0.0,
+            }
+
+        agg_key = (period_key, login)
+        agg = contributor_period_aggregates.setdefault(agg_key, _empty_agg())
+
+        # 更新贡献时间窗口 — 使用 PR 创建时间作为真实贡献时间点
+        pr_created = self._parse_datetime(pr.get("created_at"))
+        pr_updated = self._parse_datetime(pr.get("updated_at"))
+        if pr_created:
+            await self._update_contribution_dates(db_contributor, pr_created, pr_updated)
 
         # 判定 PR 状态
         is_merged = bool(pr.get("merged") or pr.get("merged_at"))
@@ -285,8 +296,9 @@ class ContributorSyncCollector:
             review_user = (review.get("user") or {}).get("login", "")
             if not review_user:
                 continue
-            # 为 reviewer 创建/获取聚合桶
-            reviewer_agg = contributor_aggregates.setdefault(review_user, {
+            # 为 reviewer 创建/获取聚合桶（按同一周期）
+            reviewer_key = (period_key, review_user)
+            reviewer_empty = {
                 "contributor_id": None,
                 "merged_pr_count": 0,
                 "pending_pr_count": 0,
@@ -300,7 +312,8 @@ class ContributorSyncCollector:
                 "commit_count": 0,
                 "error_score": 0.0,
                 "_is_reviewer_only": True,
-            })
+            }
+            reviewer_agg = contributor_period_aggregates.setdefault(reviewer_key, reviewer_empty)
             reviewer_agg["review_count"] += 1
             if review.get("state") == "APPROVED":
                 reviewer_agg["approval_count"] += 1
@@ -318,7 +331,8 @@ class ContributorSyncCollector:
 
             commit_author = (commit.get("author") or {}).get("login", "")
             if commit_author:
-                author_agg = contributor_aggregates.setdefault(commit_author, {
+                author_key = (period_key, commit_author)
+                author_empty = {
                     "contributor_id": None,
                     "merged_pr_count": 0,
                     "pending_pr_count": 0,
@@ -332,7 +346,8 @@ class ContributorSyncCollector:
                     "commit_count": 0,
                     "error_score": 0.0,
                     "_is_commit_author_only": True,
-                })
+                }
+                author_agg = contributor_period_aggregates.setdefault(author_key, author_empty)
                 author_agg["commit_count"] += 1
 
             commit_info = commit.get("commit", {})
@@ -491,8 +506,10 @@ class ContributorSyncCollector:
     @staticmethod
     async def _update_contribution_dates(
         contributor: Contributor,
-        updated_at: datetime,
+        pr_created_at: datetime,
+        pr_updated_at: datetime | None = None,
     ) -> None:
+        """使用 PR 创建时间追踪首次贡献，用 PR 更新时间追踪最后贡献。"""
         first = contributor.first_contribution_at
         if first and first.tzinfo is None:
             first = first.replace(tzinfo=UTC)
@@ -501,10 +518,11 @@ class ContributorSyncCollector:
         if last and last.tzinfo is None:
             last = last.replace(tzinfo=UTC)
         contributor.last_contribution_at = last
-        if contributor.first_contribution_at is None or updated_at < contributor.first_contribution_at:
-            contributor.first_contribution_at = updated_at
-        if contributor.last_contribution_at is None or updated_at > contributor.last_contribution_at:
-            contributor.last_contribution_at = updated_at
+        if contributor.first_contribution_at is None or pr_created_at < contributor.first_contribution_at:
+            contributor.first_contribution_at = pr_created_at
+        ref_date = pr_updated_at if pr_updated_at else pr_created_at
+        if contributor.last_contribution_at is None or ref_date > contributor.last_contribution_at:
+            contributor.last_contribution_at = ref_date
 
     # ── 私有方法：Commit Classification ───────────────────────────
 
@@ -711,15 +729,18 @@ class ContributorSyncCollector:
 
     async def _upsert_metrics(
         self,
-        contributor_aggregates: dict[str, dict[str, Any]],
-        since: datetime,
+        contributor_period_aggregates: dict[tuple[date, str], dict[str, Any]],
         result: SyncResult,
     ) -> None:
         now = datetime.now(UTC)
-        period_start = since.replace(hour=0, minute=0, second=0, microsecond=0).date()
-        period_end = now.replace(hour=0, minute=0, second=0, microsecond=0).date()
 
-        for login, agg in contributor_aggregates.items():
+        for (period_start, login), agg in contributor_period_aggregates.items():
+            # 计算周期结束日期（下个月的第一天减一天）
+            if period_start.month == 12:
+                period_end = date(period_start.year + 1, 1, 1)
+            else:
+                period_end = date(period_start.year, period_start.month + 1, 1)
+
             # 为纯 reviewer / commit author 补齐 contributor_id（通过 GitHub login 查找或创建）
             is_reviewer_only = agg.pop("_is_reviewer_only", False)
             is_commit_only = agg.pop("_is_commit_author_only", False)
@@ -772,7 +793,7 @@ class ContributorSyncCollector:
                         agg["contributor_id"] = None
 
             if agg.get("contributor_id") is None:
-                logger.warning("Skipping metrics for %s: no contributor_id", login)
+                logger.warning("Skipping metrics for %s (period=%s): no contributor_id", login, period_start)
                 continue
 
             score = self._calculate_contribution_score(agg)
@@ -831,16 +852,28 @@ class ContributorSyncCollector:
                     )
                     self.db.add(new_metrics)
             except Exception as e:
-                logger.warning("Failed to upsert metrics for %s: %s", login, e)
+                logger.warning("Failed to upsert metrics for %s (period=%s): %s", login, period_start, e)
 
-        # 自动推断并更新角色类型
-        for login, agg in contributor_aggregates.items():
+        # 自动推断并更新角色类型（聚合所有周期的数据）
+        login_totals: dict[str, dict[str, int]] = {}
+        for (period_start, login), agg in contributor_period_aggregates.items():
+            total = login_totals.setdefault(login, {
+                "merged_pr_count": 0, "review_count": 0,
+                "approval_count": 0, "merge_count": 0, "code_additions": 0,
+            })
+            total["merged_pr_count"] += agg["merged_pr_count"]
+            total["review_count"] += agg["review_count"]
+            total["approval_count"] += agg["approval_count"]
+            total["merge_count"] += agg["merge_count"]
+            total["code_additions"] += agg["code_additions"]
+
+        for login, total in login_totals.items():
             roles = detect_roles(
-                merged_pr_count=agg["merged_pr_count"],
-                review_count=agg["review_count"],
-                approval_count=agg["approval_count"],
-                merge_count=agg["merge_count"],
-                code_additions=agg["code_additions"],
+                merged_pr_count=total["merged_pr_count"],
+                review_count=total["review_count"],
+                approval_count=total["approval_count"],
+                merge_count=total["merge_count"],
+                code_additions=total["code_additions"],
             )
 
             stmt = select(Contributor).where(Contributor.login == login)
@@ -855,12 +888,13 @@ class ContributorSyncCollector:
         # 最终提交
         try:
             await self.db.commit()
-            result.contributors_synced = len(contributor_aggregates)
+            unique_logins = {login for (_, login) in contributor_period_aggregates.keys()}
+            result.contributors_synced = len(unique_logins)
+            unique_periods = {ps for (ps, _) in contributor_period_aggregates.keys()}
             logger.info(
-                "Upserted metrics for %d contributors (period=%s~%s)",
-                len(contributor_aggregates),
-                period_start.isoformat(),
-                period_end.isoformat(),
+                "Upserted metrics for %d contributors across %d periods",
+                len(unique_logins),
+                len(unique_periods),
             )
         except Exception as e:
             logger.error("Failed to commit contributor metrics: %s", e)

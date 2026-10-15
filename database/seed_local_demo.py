@@ -389,7 +389,7 @@ async def upsert(
     values: dict[str, Any],
 ) -> Any:
     """Update an owned record or insert it when it does not exist."""
-    result = await db.execute(select(model).filter_by(**filters))
+    result = await db.execute(select(model).filter_by(**filters).limit(1))
     item = result.scalar_one_or_none()
     if item is None:
         item = model(**filters, **values)

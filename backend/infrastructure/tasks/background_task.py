@@ -303,8 +303,10 @@ class BackgroundTaskTracker:
             params: dict[str, Any] = {"status": status, "task_id": self.task_id}
 
             if message:
+                # Truncate to fit VARCHAR(500) column
+                truncated = (message[:497] + "...") if len(message) > 500 else message
                 updates.append("progress_message = :message")
-                params["message"] = message
+                params["message"] = truncated
             if progress_percent is not None:
                 updates.append("progress_percent = :pct")
                 params["pct"] = progress_percent
