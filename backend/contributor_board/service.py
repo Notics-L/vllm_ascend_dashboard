@@ -879,9 +879,24 @@ class ContributorBoardService:
         period_start: date | None = None,
         period_end: date | None = None,
     ):
+        """查询贡献者 metrics，同周期只取最新一条（防重复插入导致的多行）。"""
+        # 子查询：每个 (contributor_login, period_start, period_end) 取最大 id
+        sub = (
+            select(ContributorMetrics.id)
+            .where(ContributorMetrics.contributor_login == login)
+            .group_by(
+                ContributorMetrics.contributor_login,
+                ContributorMetrics.period_start,
+                ContributorMetrics.period_end,
+            )
+            .having(ContributorMetrics.id == func.max(ContributorMetrics.id))
+            .subquery()
+        )
+
         stmt = (
             select(ContributorMetrics)
             .where(ContributorMetrics.contributor_login == login)
+            .where(ContributorMetrics.id.in_(select(sub.c.id)))
             .order_by(ContributorMetrics.period_start)
         )
 
@@ -1048,11 +1063,21 @@ class ContributorBoardService:
         await BackgroundTaskTracker.ensure_table(db)
 
         # 检查是否有正在运行的同类任务（防重复提交）
+        # 运行超过 6 小时的任务视为超时，自动清理
         active = await BackgroundTaskTracker.get_active_task(db, "contributor_sync", repo_name)
         if active:
-            raise ValueError(
-                f"同步任务已在运行中 (task_id={active['id']})，请稍后再试"
-            )
+            from datetime import timedelta as td
+            created = active.get("created_at")
+            if created and (datetime.now(UTC) - created) > td(hours=6):
+                logger.warning("Found stale running task id=%s, auto-clearing", active["id"])
+                await BackgroundTaskTracker.update_status(
+                    active["id"], TaskStatus.FAILED, "Task timeout (auto-cleared)"
+                )
+                active = None
+            else:
+                raise ValueError(
+                    f"同步任务已在运行中 (task_id={active['id']})，请稍后再试"
+                )
 
         if full_resync:
             since_dt = None

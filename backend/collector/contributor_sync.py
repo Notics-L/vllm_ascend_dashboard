@@ -812,45 +812,43 @@ class ContributorSyncCollector:
 
                 repo_full_name = f"{self.owner}/{self.repo}"
                 if existing:
-                    if not existing.repo_name:
-                        existing.repo_name = repo_full_name
-                    existing.merged_pr_count += agg["merged_pr_count"]
-                    existing.pending_pr_count += agg["pending_pr_count"]
-                    existing.code_additions += agg["code_additions"]
-                    existing.code_deletions += agg["code_deletions"]
-                    existing.review_count += agg["review_count"]
-                    existing.approval_count += agg["approval_count"]
-                    existing.merge_count += agg["merge_count"]
-                    existing.core_module_count += agg["core_module_count"]
-                    existing.closed_pr_count += agg["closed_pr_count"]
-                    existing.commit_count += agg.get("commit_count", 0)
-                    existing.error_score += agg["error_score"]
-                    if score > existing.contribution_score:
-                        existing.contribution_score = score
-                    existing.quadrant = quadrant
-                    existing.updated_at = now
+                    self._accumulate_metrics(existing, agg, score, quadrant, now, repo_full_name)
                 else:
-                    new_metrics = ContributorMetrics(
-                        contributor_id=agg["contributor_id"],
-                        contributor_login=login,
-                        repo_name=repo_full_name,
-                        period_start=period_start,
-                        period_end=period_end,
-                        merged_pr_count=agg["merged_pr_count"],
-                        pending_pr_count=agg["pending_pr_count"],
-                        code_additions=agg["code_additions"],
-                        code_deletions=agg["code_deletions"],
-                        review_count=agg["review_count"],
-                        approval_count=agg["approval_count"],
-                        merge_count=agg["merge_count"],
-                        core_module_count=agg["core_module_count"],
-                        closed_pr_count=agg["closed_pr_count"],
-                        commit_count=agg.get("commit_count", 0),
-                        contribution_score=score,
-                        error_score=agg["error_score"],
-                        quadrant=quadrant,
-                    )
-                    self.db.add(new_metrics)
+                    try:
+                        new_metrics = ContributorMetrics(
+                            contributor_id=agg["contributor_id"],
+                            contributor_login=login,
+                            repo_name=repo_full_name,
+                            period_start=period_start,
+                            period_end=period_end,
+                            merged_pr_count=agg["merged_pr_count"],
+                            pending_pr_count=agg["pending_pr_count"],
+                            code_additions=agg["code_additions"],
+                            code_deletions=agg["code_deletions"],
+                            review_count=agg["review_count"],
+                            approval_count=agg["approval_count"],
+                            merge_count=agg["merge_count"],
+                            core_module_count=agg["core_module_count"],
+                            closed_pr_count=agg["closed_pr_count"],
+                            commit_count=agg.get("commit_count", 0),
+                            contribution_score=score,
+                            error_score=agg["error_score"],
+                            quadrant=quadrant,
+                        )
+                        self.db.add(new_metrics)
+                    except Exception as insert_err:
+                        if "Duplicate entry" in str(insert_err) or "IntegrityError" in type(insert_err).__name__:
+                            self.db.expunge(new_metrics)
+                            logger.debug("Race condition on metrics insert, re-selecting for %s period=%s", login, period_start)
+                            await self.db.flush()
+                            retry = await self.db.execute(stmt)
+                            retry_existing = retry.scalar_one_or_none()
+                            if retry_existing:
+                                self._accumulate_metrics(retry_existing, agg, score, quadrant, now, repo_full_name)
+                            else:
+                                raise
+                        else:
+                            raise
             except Exception as e:
                 logger.warning("Failed to upsert metrics for %s (period=%s): %s", login, period_start, e)
 
@@ -900,6 +898,27 @@ class ContributorSyncCollector:
             logger.error("Failed to commit contributor metrics: %s", e)
             await self.db.rollback()
             result.errors.append(f"Failed to commit metrics: {e}")
+
+    @staticmethod
+    def _accumulate_metrics(existing: ContributorMetrics, agg: dict[str, Any], score: float, quadrant: str, now: datetime, repo_full_name: str) -> None:
+        """累加聚合数据到现有 metrics 记录"""
+        if not existing.repo_name:
+            existing.repo_name = repo_full_name
+        existing.merged_pr_count += agg["merged_pr_count"]
+        existing.pending_pr_count += agg["pending_pr_count"]
+        existing.code_additions += agg["code_additions"]
+        existing.code_deletions += agg["code_deletions"]
+        existing.review_count += agg["review_count"]
+        existing.approval_count += agg["approval_count"]
+        existing.merge_count += agg["merge_count"]
+        existing.core_module_count += agg["core_module_count"]
+        existing.closed_pr_count += agg["closed_pr_count"]
+        existing.commit_count += agg.get("commit_count", 0)
+        existing.error_score += agg["error_score"]
+        if score > existing.contribution_score:
+            existing.contribution_score = score
+        existing.quadrant = quadrant
+        existing.updated_at = now
 
     @staticmethod
     def _calculate_contribution_score(agg: dict[str, Any]) -> float:
