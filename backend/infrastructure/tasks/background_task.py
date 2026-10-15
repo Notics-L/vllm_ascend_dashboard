@@ -44,6 +44,14 @@ from sqlalchemy.types import JSON, Float, TIMESTAMP
 
 logger = logging.getLogger(__name__)
 
+# 全局 asyncio task 引用字典：task_id → asyncio.Task
+_active_tasks: dict[int, asyncio.Task] = {}
+
+
+class TaskCancelled(Exception):
+    """后台任务被取消时抛出的异常"""
+    pass
+
 
 class TaskStatus(str, Enum):
     """任务状态枚举"""
@@ -165,13 +173,63 @@ class BackgroundTaskTracker:
                 task_id = await BackgroundTaskTracker.create(create_db, task_type, task_params, repo_name)
 
         # 在后台启动任务，不阻塞 HTTP 响应
-        asyncio.create_task(
+        task = asyncio.create_task(
             BackgroundTaskTracker._run_task(task_id, task_func, task_params or {}),
             name=f"bg-task-{task_type}-{task_id}",
         )
+        _active_tasks[task_id] = task
+        # task 执行完毕后自动清理引用
+        task.add_done_callback(lambda t: _active_tasks.pop(task_id, None))
 
         logger.info("Scheduled background task %d type=%s", task_id, task_type)
         return task_id
+
+    @staticmethod
+    async def cancel(task_id: int) -> bool:
+        """
+        取消/终止一个正在运行的后台任务。
+        方法：取消 asyncio.Task + 数据库状态设为 failed + 错误信息记录取消原因。
+
+        Returns:
+            True 如果成功取消，False 如果任务不存在或已不在运行中
+        """
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+
+        # 检查任务是否存在且处于 running 状态
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                text(f"SELECT status FROM {BackgroundTaskTracker.TABLE_NAME} WHERE id = :id"),
+                {"id": task_id},
+            )
+            row = result.fetchone()
+            if not row:
+                logger.warning("cancel: task %d not found", task_id)
+                return False
+            current_status = row[0]
+            if current_status not in ("running", "pending"):
+                logger.warning("cancel: task %d status=%s cannot cancel", task_id, current_status)
+                return False
+
+        # 取消 asyncio task
+        task = _active_tasks.get(task_id)
+        if task and not task.done():
+            task.cancel()
+            logger.info("Cancelled asyncio task %d", task_id)
+
+        # 更新数据库状态
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text(f"""
+                    UPDATE {BackgroundTaskTracker.TABLE_NAME}
+                    SET status = 'failed', error_message = '任务被用户取消',
+                        completed_at = NOW()
+                    WHERE id = :id
+                """),
+                {"id": task_id},
+            )
+            await db.commit()
+
+        return True
 
     @staticmethod
     async def _run_task(
@@ -208,6 +266,18 @@ class BackgroundTaskTracker:
 
     def __init__(self, task_id: int):
         self.task_id = task_id
+
+    async def is_cancelled(self) -> bool:
+        """检查任务是否已被取消"""
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                text(f"SELECT status FROM {self.TABLE_NAME} WHERE id = :id"),
+                {"id": self.task_id},
+            )
+            row = result.scalar_one_or_none()
+            return row == "failed" and _active_tasks.get(self.task_id) is not None
 
     async def update_status(
         self,
@@ -429,4 +499,5 @@ class BackgroundTaskTracker:
             params["repo_name"] = repo_name
 
         result = await db.execute(query, params)
-        return dict(result.mapping.first()) if result.first() else None
+        row = result.mappings().first()
+        return dict(row) if row else None

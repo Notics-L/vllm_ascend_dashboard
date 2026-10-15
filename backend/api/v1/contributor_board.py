@@ -299,6 +299,38 @@ async def get_sync_history(
     return await service.get_sync_history(db, limit=limit, offset=offset, repo_name=repo_name, status=status)
 
 
+@router.post("/sync/status/{record_id}/cancel")
+async def cancel_sync(
+    record_id: int,
+    db: DbSession,
+    _admin: CurrentAdminUser,
+):
+    """取消/终止正在运行的同步任务（管理员可见）"""
+    from infrastructure.tasks.background_task import BackgroundTaskTracker
+    from sqlalchemy import update as sa_update, text
+
+    sync_record = await db.get(ContributorSyncRecord, record_id)
+    if not sync_record:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Sync record {record_id} not found")
+    if sync_record.status not in ("running", "pending"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Sync record {record_id} status={sync_record.status}, cannot cancel")
+
+    # 更新 contributor_sync_records
+    await db.execute(
+        sa_update(ContributorSyncRecord)
+        .where(ContributorSyncRecord.id == record_id)
+        .values(status="failed", progress_message="任务被用户取消", completed_at=func.now())
+    )
+    await db.commit()
+
+    # 同时取消 background_task_records（如果存在）
+    await BackgroundTaskTracker.cancel(record_id)
+
+    return {"success": True, "message": "任务已取消"}
+
+
 # ---- 角色统计（管理员可见）----
 
 @router.get("/stats/roles", response_model=RoleStats)

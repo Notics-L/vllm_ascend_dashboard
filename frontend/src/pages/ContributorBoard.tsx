@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
+import * as echarts from 'echarts'
 import {useNavigate, useParams} from 'react-router-dom'
 import {
   Alert,
@@ -36,6 +37,8 @@ import {
   CloudUploadOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  DeleteOutlined,
+  EyeOutlined,
   DownloadOutlined,
   FlagOutlined,
   FilterOutlined,
@@ -99,6 +102,7 @@ import {
   type SyncRecord,
   getSyncStatus,
   getSyncHistory,
+  cancelSync,
 } from '../services/contributorBoard'
 
 const { Title, Text } = Typography
@@ -638,43 +642,390 @@ const axisLabels: Record<string, string> = {
   code_additions: '代码行数',
 }
 
-function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; selectedRepo?: string }) {
+type ViewMode = 'single' | 'quad'
+
+/* ------------------------------------------------------------------ */
+/*  独立 ECharts 散点图组件 — 各自管理实例生命周期                      */
+/* ------------------------------------------------------------------ */
+
+function SingleChart({
+  data,
+  yLabel,
+  quadX,
+  quadY,
+  highlightedLogins,
+  height = 750,
+}: {
+  data: ScatterDataPoint[];
+  yLabel: string;
+  quadX: number;
+  quadY: number;
+  highlightedLogins: Set<string>;
+  height?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
-  const chartRef = useRef<HTMLDivElement>(null)
+  const disabledQuadsRef = useRef(new Set<string>())
+
+  const buildOption = useCallback((disabled: Set<string>) => {
+    let filtered = data
+    if (highlightedLogins.size > 0) {
+      filtered = filtered.filter(p => highlightedLogins.has(p.login))
+    }
+    if (disabled.size > 0 && highlightedLogins.size === 0) {
+      filtered = filtered.filter(p => !disabled.has(p.quadrant))
+    }
+    if (filtered.length === 0) return null
+
+    const fXMax = Math.max(...filtered.map(p => p.x), 1)
+    const fYMax = Math.max(...filtered.map(p => p.y), 1)
+    const xMax = Math.ceil((fXMax + 1) * 1.15)
+    const yMax = Math.max(15, Math.ceil((fYMax + 1) * 1.15))
+
+    const series: any[] = []
+    const allQuads = ['INCENTIVE', 'ENCOURAGE', 'IMPROVE', 'REPLACE']
+    for (const q of allQuads) {
+      const qData = filtered.filter(p => p.quadrant === q)
+      series.push({
+        type: 'scatter',
+        name: quadrantLabels[q],
+        symbolSize: () => highlightedLogins.size > 0 ? 10 : 8,
+        data: qData.length === 0 ? [] : qData.map((p, idx) => {
+          const isHighlighted = highlightedLogins.has(p.login)
+          return {
+            value: [p.x, p.y, p.z, idx],
+            login: p.login,
+            quadrant: p.quadrant,
+            itemStyle: {
+              color: quadrantColors[q],
+              opacity: highlightedLogins.size === 0 || isHighlighted ? 0.9 : 0.15,
+            },
+          }
+        }),
+      })
+    }
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const raw = params.data
+          if (!raw || !raw.value) return ''
+          const [xVal, yVal, zVal] = raw.value
+          const login = raw.login
+          const quadrant = raw.quadrant
+          if (!login) return ''
+          return `
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+              <img src="https://avatars.githubusercontent.com/${login}" style="width:20px;height:20px;border-radius:50%;" />
+              <strong>${login}</strong>
+            </div>
+            <div style="border-top:1px solid #eee;padding-top:6px;">
+              贡献分数: <b>${xVal.toFixed(1)}</b><br/>
+              ${yLabel}: <b>${yVal.toFixed(1)}</b><br/>
+              合并 PR: <b>${zVal}</b><br/>
+              象限: <span style="color:${quadrantColors[quadrant]};font-weight:bold">${quadrantLabels[quadrant] || quadrant}</span>
+            </div>
+          `
+        },
+      },
+      legend: {
+        orient: 'horizontal',
+        bottom: 0,
+        data: allQuads.map(q => ({
+          name: quadrantLabels[q],
+          itemStyle: { color: quadrantColors[q] },
+        })),
+        textStyle: { fontSize: 12, color: '#666' },
+        itemGap: 24,
+        itemWidth: 12,
+        itemHeight: 12,
+        selected: Object.fromEntries(allQuads.map(q => [quadrantLabels[q], !disabled.has(q)])),
+      },
+      grid: {
+        left: 60,
+        right: 16,
+        top: 10,
+        bottom: 40,
+      },
+      xAxis: {
+        type: 'value',
+        nameLocation: 'middle',
+        nameGap: 36,
+        min: 0,
+        max: xMax,
+        splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } },
+        scale: true,
+      },
+      yAxis: {
+        type: 'value',
+        name: yLabel,
+        nameLocation: 'middle',
+        nameGap: 44,
+        min: 0,
+        max: yMax,
+        splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } },
+        scale: true,
+      },
+      dataZoom: [
+        { type: 'inside', xAxisIndex: 0, filterMode: 'filter', zoomOnMouseWheel: true, moveOnMouseWheel: true },
+        { type: 'inside', yAxisIndex: 0, filterMode: 'filter', zoomOnMouseWheel: true, moveOnMouseWheel: true },
+      ],
+      series,
+      graphic: [],
+    }
+  }, [data, yLabel, highlightedLogins])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const inst = echarts.init(el)
+    const opt = buildOption(disabledQuadsRef.current)
+    if (opt) inst.setOption(opt, true)
+
+    inst.on('click', (params: any) => {
+      if (params.data?.login) navigate(`/contributor-board/detail/${params.data.login}`)
+    })
+
+    inst.on('legendselectchanged', (params: any) => {
+      const selected = params.selected
+      const newDisabled = new Set<string>()
+      for (const q of ['INCENTIVE', 'ENCOURAGE', 'IMPROVE', 'REPLACE']) {
+        if (!selected[quadrantLabels[q]]) {
+          newDisabled.add(q)
+        }
+      }
+      disabledQuadsRef.current = newDisabled
+      const newOpt = buildOption(newDisabled)
+      if (newOpt) inst.setOption(newOpt, true)
+    })
+
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [buildOption, navigate])
+
+  return <div ref={containerRef} style={{ height, width: '100%' }} />
+}
+
+function QuadSubChart({
+  option,
+  title,
+  color,
+  count,
+  height = 350,
+}: {
+  option: any;
+  title: string;
+  color: string;
+  count: number;
+  height?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const inst = echarts.init(el)
+    if (option) inst.setOption(option, true)
+
+    inst.on('click', (params: any) => {
+      if (params.data?.login) navigate(`/contributor-board/detail/${params.data.login}`)
+    })
+
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [option, navigate])
+
+  return (
+    <Card
+      size="small"
+      title={
+        <span>
+          <span
+            style={{
+              display: 'inline-block',
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              backgroundColor: color,
+              marginRight: 6,
+            }}
+          />
+          {title} ({count})
+        </span>
+      }
+      style={{ width: '100%' }}
+      bodyStyle={{ padding: '4px 8px 8px' }}
+    >
+      <div ref={containerRef} style={{ height, width: '100%' }} />
+    </Card>
+  )
+}
+
+function buildScatterOption(
+  data: ScatterDataPoint[],
+  yLabel: string,
+  quadX: number,
+  quadY: number,
+  highlightedLogins: Set<string>,
+  quadFilter?: string,
+  isSearchMode?: boolean,
+  showXAxisName?: boolean,
+): any {
+  let filtered = quadFilter ? data.filter(p => p.quadrant === quadFilter) : data
+
+  if (isSearchMode && filtered.length > 0) {
+    filtered = filtered.filter(p => highlightedLogins.has(p.login))
+  }
+
+  if (filtered.length === 0) {
+    return null
+  }
+
+  const fXMax = Math.max(...filtered.map(p => p.x), 1)
+  const fYMax = Math.max(...filtered.map(p => p.y), 1)
+
+  const xMax = Math.ceil((fXMax + 1) * 1.15)
+  const yMax = Math.max(15, Math.ceil((fYMax + 1) * 1.15))
+
+  const series: any[] = []
+  const quadsToShow = quadFilter ? [quadFilter] : ['INCENTIVE', 'ENCOURAGE', 'IMPROVE', 'REPLACE']
+
+  for (const q of quadsToShow) {
+    const qData = filtered.filter(p => p.quadrant === q)
+    if (qData.length === 0 && !quadFilter) continue
+
+    series.push({
+      type: 'scatter',
+      name: quadrantLabels[q],
+      symbolSize: () => isSearchMode && qData.length <= 20 ? 12 : (highlightedLogins.size > 0 ? 10 : 8),
+      data: qData.map((p, idx) => {
+        const isHighlighted = highlightedLogins.has(p.login)
+        return {
+          value: [p.x, p.y, p.z, idx],
+          login: p.login,
+          quadrant: p.quadrant,
+          itemStyle: {
+            color: quadrantColors[q],
+            opacity: highlightedLogins.size === 0 || isHighlighted ? 0.9 : 0.15,
+          },
+        }
+      }),
+    })
+  }
+
+  return {
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: any) => {
+        const raw = params.data
+        if (!raw || !raw.value) return ''
+        const [xVal, yVal, zVal] = raw.value
+        const login = raw.login
+        const quadrant = raw.quadrant
+        if (!login) return ''
+        return `
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <img src="https://avatars.githubusercontent.com/${login}" style="width:20px;height:20px;border-radius:50%;" />
+            <strong>${login}</strong>
+          </div>
+          <div style="border-top:1px solid #eee;padding-top:6px;">
+            贡献分数: <b>${xVal.toFixed(1)}</b><br/>
+            ${yLabel}: <b>${yVal.toFixed(1)}</b><br/>
+            合并 PR: <b>${zVal}</b><br/>
+            象限: <span style="color:${quadrantColors[quadrant]};font-weight:bold">${quadrantLabels[quadrant] || quadrant}</span>
+          </div>
+        `
+      },
+    },
+    legend: quadFilter ? undefined : {
+      orient: 'horizontal',
+      bottom: 0,
+      data: ['INCENTIVE', 'ENCOURAGE', 'IMPROVE', 'REPLACE'].map(q => ({
+        name: quadrantLabels[q],
+        itemStyle: { color: quadrantColors[q] },
+      })),
+      textStyle: { fontSize: 12, color: '#666' },
+      itemGap: 24,
+      itemWidth: 12,
+      itemHeight: 12,
+    },
+    grid: {
+      left: 60,
+      right: quadFilter ? 12 : 16,
+      top: quadFilter ? 8 : 10,
+      bottom: quadFilter ? 16 : 40,
+    },
+    xAxis: {
+      type: 'value',
+      name: showXAxisName ? '贡献分数' : undefined,
+      nameLocation: 'middle',
+      nameGap: 36,
+      min: 0,
+      max: xMax,
+      splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } },
+      scale: true,
+    },
+    yAxis: {
+      type: 'value',
+      name: yLabel,
+      nameLocation: 'middle',
+      nameGap: 44,
+      min: 0,
+      max: yMax,
+      splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } },
+      scale: true,
+    },
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0, filterMode: 'filter', zoomOnMouseWheel: true, moveOnMouseWheel: true },
+      { type: 'inside', yAxisIndex: 0, filterMode: 'filter', zoomOnMouseWheel: true, moveOnMouseWheel: true },
+    ],
+    series,
+    graphic: [],
+  }
+}
+
+function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; selectedRepo?: string }) {
   const [searchLogin, setSearchLogin] = useState('')
   const [quadrantData, setQuadrantData] = useState<QuadrantData | null>(null)
   const [quadrantLoading, setQuadrantLoading] = useState(true)
   const [yAxisType, setYAxisType] = useState('review_count')
+  const [viewMode, setViewMode] = useState<ViewMode>('single')
 
-  // 从设置加载初始 Y 轴配置
   useEffect(() => {
     let cancelled = false
     const loadSettings = async () => {
       try {
         const data = await getContributorBoardSettings()
-        if (!cancelled) {
-          setYAxisType(data.quadrant_config.y_axis_type)
-        }
+        if (!cancelled) setYAxisType(data.quadrant_config.y_axis_type)
       } catch { /* ignore */ }
     }
     loadSettings()
     return () => { cancelled = true }
   }, [])
 
-  // 当 refreshKey 变化时，重新从 settings 读取 Y 轴
   useEffect(() => {
     let cancelled = false
     const reloadAxis = async () => {
       try {
         const data = await getContributorBoardSettings()
-        if (!cancelled) {
-          setYAxisType(data.quadrant_config.y_axis_type)
-        }
+        if (!cancelled) setYAxisType(data.quadrant_config.y_axis_type)
       } catch { /* ignore */ }
     }
-    if (refreshKey && refreshKey > 0) {
-      reloadAxis()
-    }
+    if (refreshKey && refreshKey > 0) reloadAxis()
   }, [refreshKey])
 
   const loadQuadrant = useCallback(async (axis: string, repo: string | undefined) => {
@@ -692,15 +1043,11 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
     loadQuadrant(yAxisType, selectedRepo)
   }, [yAxisType, selectedRepo, loadQuadrant])
 
-  const scatterData: ScatterDataPoint[] = (() => {
+  const scatterData: ScatterDataPoint[] = useMemo(() => {
     const deduped = new Map<string, ScatterDataPoint>()
     ;(quadrantData?.points ?? []).forEach(p => {
       const pt: ScatterDataPoint = {
-        x: p.contribution_score,
-        y: p.y_value,
-        z: p.merged_pr_count,
-        login: p.login,
-        quadrant: p.quadrant,
+        x: p.contribution_score, y: p.y_value, z: p.merged_pr_count, login: p.login, quadrant: p.quadrant,
       }
       const existing = deduped.get(p.login)
       if (!existing || pt.z > existing.z || (pt.z === existing.z && pt.x > existing.x)) {
@@ -708,42 +1055,30 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
       }
     })
     return Array.from(deduped.values())
-  })()
-
-  // 散点图缩放 — 滚轮/拖拽始终基于真实数据范围，避免坐标偏移
-  const [zoomViewport, setZoomViewport] = useState<{ xPercent: [number, number]; yPercent: [number, number] } | null>(null)
-  const [isPanning, setIsPanning] = useState(false)
-  const panStartRef = useRef<{ xPercent: [number, number]; yPercent: [number, number]; mx: number; my: number } | null>(null)
-
-  // 基础数据范围（永不包含负值）
-  const dataXMin = 0
-  const dataXMax = Math.max(...scatterData.map(p => p.x), 1)
-  const dataYMin = 0
-  const dataYMax = Math.max(12, Math.ceil((Math.max(...scatterData.map(p => p.y), 1) + 1) * 1.2))
-
-  // 将 viewport 百分比映射为实际的 data domain
-  const viewport = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
-  const xDomain: [number, number] = [
-    dataXMin + (dataXMax - dataXMin) * viewport.xPercent[0],
-    dataXMin + (dataXMax - dataXMin) * viewport.xPercent[1],
-  ]
-  const yDomain: [number, number] = [
-    dataYMin + (dataYMax - dataYMin) * viewport.yPercent[0],
-    dataYMin + (dataYMax - dataYMin) * viewport.yPercent[1],
-  ]
-
-  const hasZoom = zoomViewport !== null
+  }, [quadrantData])
 
   const isHighlightedPoint = useCallback((login: string) => {
     if (!searchLogin.trim()) return false
     return login.toLowerCase().includes(searchLogin.trim().toLowerCase())
   }, [searchLogin])
 
-  const handlePointClick = (point: ScatterDataPoint | undefined) => {
-    if (point?.login) {
-      navigate(`/contributor-board/detail/${point.login}`)
-    }
-  }
+  const highlightedLogins = useMemo(() => {
+    const s = new Set<string>()
+    scatterData.forEach(p => { if (isHighlightedPoint(p.login)) s.add(p.login) })
+    return s
+  }, [scatterData, isHighlightedPoint])
+
+  const yLabel = axisLabels[yAxisType] || 'Y轴评分'
+  const quadX = quadrantData?.quad_x ?? 0
+  const quadY = quadrantData?.quad_y ?? 0
+
+  const quadOrder = ['INCENTIVE', 'ENCOURAGE', 'IMPROVE', 'REPLACE']
+
+  const quadOptions = useMemo(() => {
+    return quadOrder.map(q =>
+      buildScatterOption(scatterData, yLabel, quadX, quadY, highlightedLogins, q),
+    )
+  }, [scatterData, yLabel, quadX, quadY, highlightedLogins])
 
   const handleLocate = () => {
     if (!searchLogin.trim()) return
@@ -755,195 +1090,15 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
     }
   }
 
-  const handleResetZoom = useCallback(() => {
-    setZoomViewport(null)
-  }, [])
-
-  // 基于百分比 viewport 的滚轮缩放
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const chartEl = chartRef.current
-    if (!chartEl) return
-
-    const rect = chartEl.getBoundingClientRect()
-    const mouseX = e.clientX - rect.left
-    const mouseY = e.clientY - rect.top
-
-    const margin = { left: 60, right: 20, top: 10, bottom: 40 }
-    const plotLeft = margin.left
-    const plotTop = margin.top
-    const plotW = rect.width - margin.left - margin.right
-    const plotH = rect.height - margin.top - margin.bottom
-
-    if (mouseX < plotLeft || mouseX > plotLeft + plotW || mouseY < plotTop || mouseY > plotTop + plotH) return
-
-    const cur = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
-    // 光标在当前 viewport 中的百分比位置 (0-1)
-    const ratioX = (mouseX - plotLeft) / plotW
-    const ratioY = 1 - (mouseY - plotTop) / plotH
-
-    const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2
-    const xp = cur.xPercent
-    const yp = cur.yPercent
-
-    const xCenter = xp[0] + (xp[1] - xp[0]) * ratioX
-    const yCenter = yp[0] + (yp[1] - yp[0]) * ratioY
-    const xSpread = (xp[1] - xp[0]) * zoomFactor
-    const ySpread = (yp[1] - yp[0]) * zoomFactor
-
-    // 限制：不能完全超出 [0, 1]，最大放大到 view 的 5%
-    let newX0 = xCenter - xSpread * ratioX
-    let newX1 = xCenter + xSpread * (1 - ratioX)
-    let newY0 = yCenter - ySpread * ratioY
-    let newY1 = yCenter + ySpread * (1 - ratioY)
-
-    // 钳位到 [0, 1]
-    if (newX0 < 0) { newX1 -= newX0; newX0 = 0 }
-    if (newX1 > 1) { newX0 -= (newX1 - 1); newX1 = 1; newX0 = Math.max(0, newX0) }
-    if (newY0 < 0) { newY1 -= newY0; newY0 = 0 }
-    if (newY1 > 1) { newY0 -= (newY1 - 1); newY1 = 1; newY0 = Math.max(0, newY0) }
-
-    // 最小窗口大小 — 防止过度缩小无法恢复
-    if (newX1 - newX0 < 0.02) {
-      const mid = (newX0 + newX1) / 2
-      newX0 = Math.max(0, mid - 0.01)
-      newX1 = Math.min(1, mid + 0.01)
-    }
-    if (newY1 - newY0 < 0.02) {
-      const mid = (newY0 + newY1) / 2
-      newY0 = Math.max(0, mid - 0.01)
-      newY1 = Math.min(1, mid + 0.01)
-    }
-
-    setZoomViewport({ xPercent: [newX0, newX1], yPercent: [newY0, newY1] })
-  }, [zoomViewport])
-
-  // 拖拽平移
-  const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if (!e.shiftKey && e.button !== 1) return
-    e.preventDefault()
-    setIsPanning(true)
-    const cur = zoomViewport || { xPercent: [0, 1], yPercent: [0, 1] }
-    panStartRef.current = {
-      xPercent: [cur.xPercent[0], cur.xPercent[1]],
-      yPercent: [cur.yPercent[0], cur.yPercent[1]],
-      mx: e.clientX,
-      my: e.clientY,
-    }
-  }, [zoomViewport])
-
-  const handlePanMove = useCallback((e: MouseEvent) => {
-    if (!isPanning || !panStartRef.current) return
-    const chartEl = chartRef.current
-    if (!chartEl) return
-
-    const rect = chartEl.getBoundingClientRect()
-    const dx = e.clientX - panStartRef.current.mx
-    const dy = e.clientY - panStartRef.current.my
-
-    const margin = { left: 60, right: 20 }
-    const plotW = rect.width - margin.left - margin.right
-    const plotH = rect.height - 50
-
-    const px = panStartRef.current.xPercent
-    const py = panStartRef.current.yPercent
-
-    const panXPct = -(dx / plotW) * (px[1] - px[0])
-    const panYPct = (dy / plotH) * (py[1] - py[0])
-
-    let newX0 = px[0] + panXPct
-    let newX1 = px[1] + panXPct
-    let newY0 = py[0] + panYPct
-    let newY1 = py[1] + panYPct
-
-    // 钳位
-    if (newX0 < 0) { newX1 -= newX0; newX0 = 0 }
-    if (newX1 > 1) { newX0 -= (newX1 - 1); newX1 = 1; newX0 = Math.max(0, newX0) }
-    if (newY0 < 0) { newY1 -= newY0; newY0 = 0 }
-    if (newY1 > 1) { newY0 -= (newY1 - 1); newY1 = 1; newY0 = Math.max(0, newY0) }
-
-    setZoomViewport({ xPercent: [newX0, newX1], yPercent: [newY0, newY1] })
-  }, [isPanning])
-
-  const handlePanEnd = useCallback(() => {
-    setIsPanning(false)
-    panStartRef.current = null
-  }, [])
-
-  useEffect(() => {
-    if (!isPanning) return
-    document.addEventListener('mousemove', handlePanMove)
-    document.addEventListener('mouseup', handlePanEnd)
-    return () => {
-      document.removeEventListener('mousemove', handlePanMove)
-      document.removeEventListener('mouseup', handlePanEnd)
-    }
-  }, [isPanning, handlePanMove, handlePanEnd])
-
-  const handleExportPNG = useCallback(() => {
-    if (chartRef.current) {
-      const svgEl = chartRef.current.querySelector('svg')
-      if (svgEl) {
-        const svgData = new XMLSerializer().serializeToString(svgEl)
-        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' })
-        const url = URL.createObjectURL(svgBlob)
-        const img = new Image()
-        img.onload = () => {
-          const canvas = document.createElement('canvas')
-          canvas.width = svgEl.clientWidth * 2
-          canvas.height = svgEl.clientHeight * 2
-          const ctx = canvas.getContext('2d')
-          if (ctx) {
-            ctx.fillStyle = '#fff'
-            ctx.fillRect(0, 0, canvas.width, canvas.height)
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-            const pngUrl = canvas.toDataURL('image/png')
-            const a = document.createElement('a')
-            a.href = pngUrl
-            a.download = 'quadrant-chart.png'
-            a.click()
-            URL.revokeObjectURL(url)
-          }
-        }
-        img.src = url
-      }
-    }
-  }, [])
-
-  const CustomTooltip = (props: { active?: boolean; payload?: { payload: ScatterDataPoint }[] }) => {
-    if (props.active && props.payload?.[0]?.payload) {
-      const p = props.payload[0].payload
-      const isHighlighted = isHighlightedPoint(p.login)
-      return (
-        <Card size="small" style={{ minWidth: 180, border: isHighlighted ? '2px solid #ff4d4f' : undefined }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Avatar src={`https://avatars.githubusercontent.com/${p.login}`} size="small" icon={<GithubOutlined />} />
-            <Text strong>{p.login}</Text>
-            {isHighlighted && <Tag color="red">匹配</Tag>}
-          </div>
-          <Divider style={{ margin: '8px 0' }} />
-          <Text>贡献分数: {p.x.toFixed(1)}</Text>
-          <br />
-          <Text>{axisLabels[yAxisType] || 'Y轴'}: {p.y.toFixed(1)}</Text>
-          <br />
-          <Text>合并 PR: {p.z}</Text>
-          <br />
-          <Tag color={quadrantColors[p.quadrant]} style={{ marginTop: 4 }}>
-            {quadrantLabels[p.quadrant] || p.quadrant}
-          </Tag>
-        </Card>
-      )
-    }
-    return null
-  }
+  const quadCounts = quadrantData?.quadrant_counts ?? {}
 
   return (
     <Spin spinning={quadrantLoading}>
       <Row gutter={[16, 16]}>
-        {['INCENTIVE', 'IMPROVE', 'ENCOURAGE', 'REPLACE'].map(q => (
+        {quadOrder.map(q => (
           <Col span={6} key={q}>
             <Card size="small">
-              <Statistic title={quadrantLabels[q]} value={quadrantData?.quadrant_counts[q] ?? 0} valueStyle={{ color: quadrantColors[q] }} />
+              <Statistic title={quadrantLabels[q]} value={quadCounts[q] ?? 0} valueStyle={{ color: quadrantColors[q] }} />
             </Card>
           </Col>
         ))}
@@ -953,15 +1108,19 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
             title="四象限散点图"
             extra={
               <Space size="small" wrap>
+                <Radio.Group size="small" value={viewMode} onChange={e => setViewMode(e.target.value)}>
+                  <Radio.Button value="single">单图</Radio.Button>
+                  <Radio.Button value="quad">四分图</Radio.Button>
+                </Radio.Group>
                 <Select
                   size="small"
                   value={yAxisType}
-                  onChange={(v) => setYAxisType(v)}
+                  onChange={v => setYAxisType(v)}
                   options={axisOptions}
                   style={{ width: 110 }}
                 />
                 <Input
-                  placeholder="输入用户名模糊高亮"
+                  placeholder="输入用户名模糊搜索"
                   value={searchLogin}
                   onChange={e => setSearchLogin(e.target.value)}
                   allowClear
@@ -970,108 +1129,38 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
                   prefix={<SearchOutlined />}
                   onPressEnter={handleLocate}
                 />
-                {hasZoom ? (
-                  <Button size="small" danger onClick={handleResetZoom}>重置缩放</Button>
-                ) : null}
-                <Button size="small" onClick={handleExportPNG} icon={<DownloadOutlined />}>导出PNG</Button>
               </Space>
             }
+            bodyStyle={{ padding: '4px 8px 8px' }}
           >
-            <div
-              ref={chartRef}
-              onWheel={handleWheel}
-              onMouseDown={handlePanStart}
-              style={{
-                height: 490,
-                position: 'relative',
-                cursor: isPanning ? 'grabbing' : hasZoom ? 'grab' : 'default',
-              }}
-              onMouseLeave={() => {
-                if (isPanning) {
-                  setIsPanning(false)
-                  panStartRef.current = null
-                }
-              }}
-            >
-              {scatterData.length > 0 ? (
-                <>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart>
-                      <CartesianGrid />
-                      <XAxis type="number" dataKey="x" name="贡献分数" unit="分" domain={xDomain} allowDataOverflow={false} tickCount={6} tickFormatter={(v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1)} />
-                      <YAxis type="number" dataKey="y" name={axisLabels[yAxisType] || 'Y轴评分'} unit="次" domain={yDomain} allowDataOverflow={false} tickCount={6} tickFormatter={(v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1)} />
-                      <ZAxis type="number" dataKey="z" range={[50, 400]} name="PR数" />
-                      <ChartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#999' }} />
-
-                      {quadrantData?.quad_x != null && (
-                        <>
-                           <ReferenceLine x={quadrantData.quad_x} stroke="#999" strokeDasharray="4 4" label={{ value: `X=${quadrantData.quad_x.toFixed(0)}`, position: 'insideTopRight', fill: '#999' }} />
-                           <ReferenceLine y={quadrantData.quad_y} stroke="#999" strokeDasharray="4 4" label={{ value: `Y=${quadrantData.quad_y.toFixed(0)}`, position: 'insideTopRight', fill: '#999' }} />
-                        </>
-                      )}
-
-                      <Scatter
-                        data={scatterData}
-                        shape={(props: { cx?: number; cy?: number; payload?: ScatterDataPoint }) => {
-                          const { cx, cy, payload } = props
-                          if (cx == null || cy == null) return <circle cx={0} cy={0} r={0} />
-                          const isHighlighted = payload ? isHighlightedPoint(payload.login) : false
-                          return (
-                            <g
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                if (payload) handlePointClick(payload)
-                              }}
-                              onMouseDown={(e) => {
-                                // 阻止滚轮在SVG上触发浏览器的默认缩放行为
-                                e.stopPropagation()
-                              }}
-                            >
-                              <circle cx={cx} cy={cy} r={isHighlighted ? 16 : 10} fill="transparent" />
-                              <circle
-                                cx={cx}
-                                cy={cy}
-                                r={isHighlighted ? 8 : 5}
-                                fill={quadrantColors[payload?.quadrant ?? ''] || '#d9d9d9'}
-                                stroke={isHighlighted ? '#ff4d4f' : '#fff'}
-                                strokeWidth={isHighlighted ? 3 : 2}
-                                style={{ cursor: 'pointer' }}>
-                                  <title>{payload?.login}</title>
-                                </circle>
-                                {isHighlighted && (
-                                  <text x={cx} y={cy - 12} textAnchor="middle" fill="#ff4d4f" fontSize={11} fontWeight="bold">
-                                    {payload?.login}
-                                  </text>
-                                )}
-                            </g>
-                          )
-                        }}
-                       />
-
-                    </ScatterChart>
-                  </ResponsiveContainer>
-
-
-                </>
+            {scatterData.length > 0 ? (
+              viewMode === 'single' ? (
+                <SingleChart key="single" data={scatterData} yLabel={yLabel} quadX={quadX} quadY={quadY} highlightedLogins={highlightedLogins} height={700} />
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                  <Text type="secondary">暂无数据 — 先执行同步采集</Text>
-                </div>
-              )}
-            </div>
-            {hasZoom && (
-              <div style={{ marginTop: 4, padding: '6px 12px', background: '#f6f8fa', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  缩放范围: X {xDomain[0].toFixed(1)}~{xDomain[1].toFixed(1)}, Y {yDomain[0].toFixed(1)}~{yDomain[1].toFixed(1)}
-                </Text>
-                <Button type="link" size="small" danger onClick={handleResetZoom}>重置缩放</Button>
+                <Row gutter={[12, 12]}>
+                  {quadOrder.map((q, i) => (
+                    <Col span={12} key={q}>
+                      <QuadSubChart
+                        key={`${q}-${i}`}
+                        option={quadOptions[i]}
+                        title={quadrantLabels[q]}
+                        color={quadrantColors[q]}
+                        count={quadCounts[q] ?? 0}
+                      />
+                    </Col>
+                  ))}
+                </Row>
+              )
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
+                <Text type="secondary">暂无数据 — 先执行同步采集</Text>
               </div>
             )}
           </Card>
         </Col>
       </Row>
     </Spin>
-    )
+  )
 }
 
 type SortRule = { field: string; order: 'asc' | 'desc' }
@@ -1871,6 +1960,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [filterStatus, setFilterStatus] = useState<string | null>(null)
   const [detailRecord, setDetailRecord] = useState<SyncRecord | null>(null)
+  const [cancellingId, setCancellingId] = useState<number | null>(null)
 
   const loadHistory = async () => {
     setLoading(true)
@@ -1889,9 +1979,31 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
     }
   }
 
+  const handleCancel = async (recordId: number) => {
+    if (cancellingId) return
+    setCancellingId(recordId)
+    try {
+      await cancelSync(recordId)
+      message.success('同步任务已取消')
+      loadHistory()
+    } catch {
+      message.error('取消失败')
+    } finally {
+      setCancellingId(null)
+    }
+  }
+
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
+
   useEffect(() => {
     loadHistory()
-  }, [selectedRepo, filterStatus, pagination.current, pagination.pageSize])
+  }, [selectedRepo, filterStatus, pagination.current, pagination.pageSize, refreshTrigger])
+
+  useEffect(() => {
+    const handler = () => setRefreshTrigger(t => t + 1)
+    window.addEventListener('sync-history-refresh', handler)
+    return () => window.removeEventListener('sync-history-refresh', handler)
+  }, [])
 
   const statusConfig: Record<string, { color: string; label: string; icon: JSX.Element | null }> = {
     pending: { color: 'default', label: '等待中', icon: <ClockCircleOutlined /> },
@@ -1975,9 +2087,20 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
         const errors = typeof r.errors === 'string' ? (r.errors ? JSON.parse(r.errors) : []) : (r.errors || [])
         return (
           <Space size="small">
-            <a onClick={() => setDetailRecord(r)}>详情</a>
+            {errors.length > 0 && (
+              <Tag color="blue" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => setDetailRecord(r)}>
+                <EyeOutlined /> 查看错误
+              </Tag>
+            )}
+            {(r.status === 'running' || r.status === 'pending') && (
+              <Tag color="red" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => handleCancel(r.id)}>
+                <DeleteOutlined /> 终止
+              </Tag>
+            )}
             {(r.status === 'failed' || r.status === 'partial') && onRetry && (
-              <a onClick={() => onRetry(r.repo_name || undefined)}>重试</a>
+              <Tag color="orange" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => onRetry(r.repo_name || undefined)}>
+                <ReloadOutlined /> 重新同步
+              </Tag>
             )}
           </Space>
         )
@@ -2151,6 +2274,7 @@ function ContributorBoard() {
           setSyncModalOpen(false)
           setSyncLoading(false)
           window.dispatchEvent(new Event('settings-updated'))
+          window.dispatchEvent(new Event('sync-history-refresh'))
         }
       } catch { /* polling error, keep going */ }
     }, 2000)

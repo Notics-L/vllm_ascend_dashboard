@@ -353,6 +353,14 @@ export const getSyncStatus = async (recordId: number) => {
 }
 
 /**
+ * 取消/终止同步任务
+ */
+export const cancelSync = async (recordId: number) => {
+  const response = await api.post(`/contributor-board/sync/status/${recordId}/cancel`)
+  return response.data
+}
+
+/**
  * 获取同步历史记录
  */
 export const getSyncHistory = async (params?: {

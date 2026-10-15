@@ -1076,6 +1076,9 @@ class ContributorBoardService:
 
         async def progress_callback(pct: int, msg: str):
             await tracker.update_progress(pct, msg)
+            # 检查任务是否被取消
+            if await tracker.is_cancelled():
+                raise Exception("任务被用户取消")
             # 同时更新 ContributorSyncRecord
             try:
                 async with AsyncSessionLocal() as update_db:
