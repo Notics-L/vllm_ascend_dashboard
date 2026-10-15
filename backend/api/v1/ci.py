@@ -8,11 +8,16 @@ import io
 import json
 import logging
 import re
+import zipfile
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Response, status
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 from sqlalchemy import case, func, or_, select, text
 
 from api.deps import CurrentAdminUser, CurrentSuperAdminUser, CurrentUser, DbSession
@@ -54,6 +59,7 @@ from infrastructure.persistence.run_attempts import (
     filter_current_run_attempt,
     is_current_run_attempt,
 )
+from infrastructure.storage.failure_analysis_file_store import FailureAnalysisFileStore
 from tooling.ci_filters import build_workflow_time_filter
 from tooling.ci_version_snapshot import (
     get_version_snapshot,
@@ -638,6 +644,229 @@ def _serialize_nightly_test_case_export(record: NightlyTestCase) -> dict[str, An
             value = value.isoformat()
         payload[field] = value
     return payload
+
+
+def _nightly_export_branch(job: CIJob, run: CIResult) -> str:
+    """Use the persisted run branch, with the legacy job-name fallback."""
+    if run.branch and run.branch.strip():
+        return run.branch.strip()
+    match = re.match(r"^\S+\s+\(([^,]+),", job.job_name or "")
+    return match.group(1).strip() if match else "main"
+
+
+def _nightly_snapshot_matches_job(snapshot: NightlyTestCase, job: CIJob) -> bool:
+    """Match a YAML snapshot to GitHub's decorated Job name."""
+    job_name = job.job_name or ""
+    return (
+        snapshot.job_name == job_name
+        or snapshot.job_name in job_name
+        or bool(snapshot.test_model and snapshot.test_model in job_name)
+    )
+
+
+def _format_nightly_export_time(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_nightly_ai_analysis(analysis: JobFailureAnalysis | None) -> str:
+    if analysis is None or analysis.analysis_status not in {"completed", "reused"}:
+        return ""
+    parts = []
+    if analysis.problem_category:
+        parts.append(f"分类：{analysis.problem_category}")
+    if analysis.root_cause_summary:
+        parts.append(f"根因：{analysis.root_cause_summary}")
+    if analysis.improvement_measures_summary:
+        parts.append(f"建议：{analysis.improvement_measures_summary}")
+    return "\n".join(parts)
+
+
+def _xlsx_column_name(index: int) -> str:
+    result = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _build_nightly_runs_xlsx_legacy(rows: list[dict[str, str]]) -> bytes:
+    """Build a small dependency-free XLSX file for Nightly run exports.
+
+    Keeping the writer local avoids adding a production dependency solely for
+    one seven-column export.  Values are stored as inline strings so long job
+    names and AI summaries keep their original text exactly.
+    """
+    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 分析日志"]
+    column_widths = [22, 72, 42, 26, 65, 20, 76]
+    hyperlink_relationships: list[tuple[str, str]] = []
+    hyperlink_cells: list[tuple[str, str]] = []
+    rows_xml: list[str] = []
+
+    def cell(ref: str, value: str, *, style: int = 0) -> str:
+        attrs = f' r="{ref}"'
+        if style:
+            attrs += f' s="{style}"'
+        escaped = xml_escape(value or "")
+        return f'<c{attrs} t="inlineStr"><is><t xml:space="preserve">{escaped}</t></is></c>'
+
+    header_keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_analysis")
+    for row_index, values in enumerate([dict(zip(header_keys, headers, strict=True)), *rows], start=1):
+        cells = []
+        for column_index, key in enumerate(
+            header_keys,
+            start=1,
+        ):
+            ref = f"{_xlsx_column_name(column_index)}{row_index}"
+            value = str(values.get(key) or "")
+            relationship_id = None
+            style = 0
+            if row_index > 1 and key == "log_url" and value:
+                relationship_id = f"rId{len(hyperlink_relationships) + 1}"
+                hyperlink_relationships.append((relationship_id, value))
+                hyperlink_cells.append((ref, relationship_id))
+                style = 1
+            cells.append(cell(ref, value, style=style))
+        rows_xml.append(f'<row r="{row_index}">' + "".join(cells) + "</row>")
+
+    merge_cells: list[str] = []
+    start = 2
+    while start <= len(rows) + 1:
+        end = start
+        timestamp = rows[start - 2].get("time", "")
+        while end + 1 <= len(rows) + 1 and rows[end - 1].get("time", "") == timestamp:
+            end += 1
+        if timestamp and end > start:
+            merge_cells.append(f'<mergeCell ref="A{start}:A{end}"/>')
+        start = end + 1
+
+    columns_xml = "".join(
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(column_widths, start=1)
+    )
+    relationship_parts = []
+    for relationship_id, url in hyperlink_relationships:
+        escaped_url = xml_escape(url, {'"': "&quot;"})
+        relationship_parts.append(
+            f'<Relationship Id="{relationship_id}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" '
+            f'Target="{escaped_url}" TargetMode="External"/>'
+        )
+    relationships_xml = "".join(relationship_parts)
+    hyperlinks_xml = "".join(
+        f'<hyperlink ref="{ref}" r:id="{relationship_id}"/>'
+        for ref, relationship_id in hyperlink_cells
+    )
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<cols>{columns_xml}</cols><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" '
+        'topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        f'<sheetData>{"".join(rows_xml)}</sheetData>'
+    )
+    if merge_cells:
+        sheet_xml += f'<mergeCells count="{len(merge_cells)}">{"".join(merge_cells)}</mergeCells>'
+    if hyperlinks_xml:
+        sheet_xml += f'<hyperlinks>{hyperlinks_xml}</hyperlinks>'
+    sheet_xml += '</worksheet>'
+
+    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>'''
+    root_relationships = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="用例运行明细" sheetId="1" r:id="rId1"/></sheets></workbook>'''
+    workbook_relationships = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+    styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF1677FF"/><u/><name val="Calibri"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>'''
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_relationships)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
+        archive.writestr("xl/styles.xml", styles)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        if relationships_xml:
+            archive.writestr(
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                f"{relationships_xml}</Relationships>",
+            )
+    return output.getvalue()
+
+
+def _build_nightly_runs_xlsx(rows: list[dict[str, str]]) -> bytes:
+    """Build a standards-compliant XLSX report with openpyxl.
+
+    Do not handcraft SpreadsheetML here: Excel validates more than ZIP/XML
+    well-formedness, including relationship and schema ordering details.
+    """
+    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 分析日志"]
+    widths = [22, 72, 42, 26, 65, 20, 76]
+    keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_analysis")
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "用例运行明细"
+    worksheet.freeze_panes = "A2"
+    worksheet.append(headers)
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(vertical="center")
+
+    for row in rows:
+        worksheet.append([str(row.get(key) or "") for key in keys])
+        row_index = worksheet.max_row
+        log_url = str(row.get("log_url") or "")
+        if log_url:
+            log_cell = worksheet.cell(row=row_index, column=5)
+            log_cell.hyperlink = log_url
+            log_cell.style = "Hyperlink"
+        worksheet.cell(row=row_index, column=7).alignment = Alignment(wrap_text=True, vertical="top")
+
+    for index, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[get_column_letter(index)].width = width
+
+    start = 2
+    while start <= len(rows) + 1:
+        end = start
+        timestamp = str(rows[start - 2].get("time") or "")
+        while end + 1 <= len(rows) + 1 and str(rows[end - 1].get("time") or "") == timestamp:
+            end += 1
+        if timestamp and end > start:
+            worksheet.merge_cells(start_row=start, start_column=1, end_row=end, end_column=1)
+            worksheet.cell(row=start, column=1).alignment = Alignment(vertical="center")
+        start = end + 1
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 @router.get("/workflows", response_model=list[str])
@@ -3389,6 +3618,141 @@ async def export_nightly_test_cases(
         content=content,
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/nightly-test-cases/run-export")
+async def export_nightly_test_case_runs(
+    current_user: CurrentAdminUser,
+    db: DbSession,
+    format: str = Query("json", pattern="^(json|xlsx)$"),
+    scope: str = Query("filtered", pattern="^(filtered|all)$"),
+    start_date: str | None = Query(None, description="开始日期 YYYY-MM-DD（含）"),
+    end_date: str | None = Query(None, description="结束日期 YYYY-MM-DD（含）"),
+    source_branch: str | None = Query(None, description="来源分支"),
+    workflow_names: list[str] | None = Query(None, description="可重复传入的 Workflow 名称"),
+):
+    """Export executed Nightly cases, enriched from snapshots and failure analysis.
+
+    The legacy endpoint above deliberately remains an import-compatible
+    configuration snapshot export.  This endpoint is for the user-facing
+    run-history report, so it can include GitHub links and persisted AI
+    analysis without changing any database table.
+    """
+    del current_user
+    if start_date:
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date 格式须为 YYYY-MM-DD") from None
+    if end_date:
+        try:
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_date 格式须为 YYYY-MM-DD") from None
+
+    snapshots_stmt = select(NightlyTestCase).order_by(NightlyTestCase.report_date.desc())
+    if scope == "filtered":
+        if start_date:
+            snapshots_stmt = snapshots_stmt.where(NightlyTestCase.report_date >= start_date)
+        if end_date:
+            snapshots_stmt = snapshots_stmt.where(NightlyTestCase.report_date <= end_date)
+        if source_branch:
+            snapshots_stmt = snapshots_stmt.where(NightlyTestCase.source_branch == source_branch)
+        if workflow_names:
+            snapshots_stmt = snapshots_stmt.where(NightlyTestCase.workflow_name.in_(workflow_names))
+    snapshots = list((await db.execute(snapshots_stmt)).scalars().all())
+    if not snapshots:
+        rows: list[dict[str, str]] = []
+    else:
+        workflows = {item.workflow_name for item in snapshots}
+        jobs_stmt = (
+            select(CIJob, CIResult)
+            .join(CIResult, CIResult.run_id == CIJob.run_id)
+            .where(CIJob.workflow_name.in_(workflows))
+            .order_by(CIResult.started_at.asc(), CIJob.started_at.asc(), CIJob.id.asc())
+            .limit(10_000)
+        )
+        if scope == "filtered" and start_date:
+            jobs_stmt = jobs_stmt.where(CIResult.started_at >= datetime.fromisoformat(start_date))
+        if scope == "filtered" and end_date:
+            jobs_stmt = jobs_stmt.where(CIResult.started_at < datetime.fromisoformat(end_date) + timedelta(days=1))
+
+        jobs_and_runs = (await db.execute(jobs_stmt)).all()
+        snapshots_by_workflow: dict[str, list[NightlyTestCase]] = {}
+        for snapshot in snapshots:
+            snapshots_by_workflow.setdefault(snapshot.workflow_name, []).append(snapshot)
+
+        matched: list[tuple[CIJob, CIResult, NightlyTestCase]] = []
+        for job, run in jobs_and_runs:
+            if not is_current_run_attempt(job.data, extract_run_attempt(run.data)):
+                continue
+            branch = _nightly_export_branch(job, run)
+            branch_aliases = {branch, branch.replace("releases-", "releases/", 1)}
+            candidates = snapshots_by_workflow.get(job.workflow_name, [])
+            candidate = next(
+                (
+                    item
+                    for item in candidates
+                    if item.source_branch in branch_aliases and _nightly_snapshot_matches_job(item, job)
+                ),
+                None,
+            )
+            if candidate is not None:
+                matched.append((job, run, candidate))
+
+        analysis_by_job_id: dict[int, JobFailureAnalysis] = {}
+        job_ids = [job.job_id for job, _, _ in matched if job.job_id is not None]
+        if job_ids:
+            analyses = (
+                await db.execute(select(JobFailureAnalysis).where(JobFailureAnalysis.job_id.in_(job_ids)))
+            ).scalars().all()
+            analysis_by_job_id = {analysis.job_id: analysis for analysis in analyses}
+
+        ai_analysis_by_job_id: dict[int, str] = {}
+        file_store = FailureAnalysisFileStore()
+        for job_id, analysis in analysis_by_job_id.items():
+            report = None
+            if analysis.report_file_path:
+                report = await file_store.read_report_by_path(analysis.report_file_path)
+            ai_analysis_by_job_id[job_id] = report or _format_nightly_ai_analysis(analysis)
+
+        def coverage_label(job: CIJob, snapshot: NightlyTestCase) -> str:
+            deployment = snapshot.deployment_type or ""
+            deployment = deployment.replace("multi-node-2", "双机").replace("single-node", "单机")
+            return " / ".join(part for part in (job.hardware, deployment) if part)
+
+        rows = []
+        for job, run, snapshot in matched:
+            rows.append({
+                "time": _format_nightly_export_time(run.started_at or job.started_at),
+                "test_content": job.job_name,
+                "model": snapshot.test_model or "",
+                "coverage": coverage_label(job, snapshot),
+                # CIJob.logs_url is GitHub's authenticated API download URL.
+                # Exports must use the browser-facing Actions Job page instead.
+                "log_url": (
+                    f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}"
+                    f"/actions/runs/{job.run_id}/job/{job.job_id}"
+                    if job.job_id else ""
+                ),
+                "model_fo": snapshot.model_fo or "",
+                "ai_analysis": ai_analysis_by_job_id.get(job.job_id, ""),
+            }
+            )
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    if format == "xlsx":
+        return Response(
+            content=_build_nightly_runs_xlsx(rows),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="nightly_run_details_{timestamp}.xlsx"'},
+        )
+    content = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="nightly_run_details_{timestamp}.json"'},
     )
 
 

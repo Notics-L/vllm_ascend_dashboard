@@ -113,6 +113,29 @@ export interface ResourceDashboardParams {
   include_pods?: boolean
 }
 
+export interface NodeUtilizationBucket {
+  start: string
+  end: string
+  utilization: number | null
+  active_seconds: number
+  window_seconds: number
+  coverage: number
+}
+
+export interface NodeUtilizationHeatmap {
+  pool: string | null
+  start: string
+  end: string
+  bucket: string
+  overall_utilization: number
+  nodes: Array<{
+    cluster_id: number
+    cluster_name: string
+    node_name: string
+    buckets: NodeUtilizationBucket[]
+  }>
+}
+
 const buildParams = (params: ResourceDashboardParams) => {
   const searchParams = new URLSearchParams()
   params.cluster_ids?.forEach(id => searchParams.append('cluster_ids', String(id)))
@@ -138,6 +161,13 @@ export const getClusterSummary = async (clusterId: number) => {
 export const getResourceDashboard = async (params: ResourceDashboardParams = {}) => {
   const response = await api.get<ResourceDashboardResponse>('/resource-dashboard/summary', {
     params: buildParams(params),
+  })
+  return response.data
+}
+
+export const getNodeUtilizationHeatmap = async (pool?: string) => {
+  const response = await api.get<NodeUtilizationHeatmap>('/resource-dashboard/node-utilization-heatmap', {
+    params: pool ? { pool } : undefined,
   })
   return response.data
 }

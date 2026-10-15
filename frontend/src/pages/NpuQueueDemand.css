@@ -125,6 +125,76 @@
 .npu-demand-queue-table .ant-table-tbody > tr > td { background: transparent; }
 .npu-demand-queue-filter { display: flex; gap: 10px; margin: -2px 0 14px; }
 .npu-demand-queue-filter .ant-select { width: 180px; }
+
+.npu-machine-heatmap-wrap {
+  min-height: 260px;
+  padding: 18px 0 4px;
+}
+
+.npu-machine-heatmap-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.npu-machine-heatmap-summary > span {
+  color: #1677ff;
+  font-size: 24px;
+}
+
+.npu-machine-heatmap-summary .ant-typography {
+  color: #7a8596;
+  font-size: 14px;
+}
+
+.npu-machine-heatmap-scroll { overflow-x: auto; }
+
+.npu-machine-heatmap {
+  display: grid;
+  gap: 7px 10px;
+  min-width: 760px;
+  align-items: center;
+}
+
+.npu-machine-heatmap-date {
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+
+.npu-machine-heatmap-node {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.npu-machine-heatmap-node strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.npu-machine-heatmap-node span { color: #94a3b8; font-size: 11px; }
+
+.npu-machine-heatmap-cell {
+  height: 30px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 4px;
+  cursor: help;
+}
+
+.npu-machine-heatmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 18px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.npu-machine-heatmap-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.npu-machine-heatmap-legend i { width: 18px; height: 12px; border: 1px solid #d9d9d9; border-radius: 2px; }
 .npu-demand-cost-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 8px; }
 .npu-demand-cost-toggle { display: flex; align-items: center; gap: 20px; }
 .npu-demand-cost-toggle button { appearance: none; border: 0; outline: 0; background: transparent; color: #98a2b3; cursor: pointer; font: inherit; font-size: 14px; font-weight: 400; line-height: 1.45; padding: 0; }
@@ -136,6 +206,16 @@
 .npu-demand-cost-toggle button.is-active .npu-demand-scope-dot { background: currentColor; }
 .npu-demand-cost-toggle button:focus-visible .npu-demand-scope-dot { outline: 2px solid #b9c8ff; outline-offset: 3px; }
 .npu-demand-cost-view .recharts-label-list { display: none; }
+.npu-demand-tooltip {
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, .42);
+  border-radius: 6px;
+  background: rgba(71, 85, 105, .78);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .16);
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.6;
+}
 .npu-demand-detail-grid { display: grid; grid-template-columns: 110px 1fr; gap: 12px 16px; }
 
 @media (max-width: 767px) {

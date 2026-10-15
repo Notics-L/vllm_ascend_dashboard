@@ -11,12 +11,14 @@ import {
   Input,
   Form,
   message,
+  Dropdown,
 } from 'antd'
 import {
   PlusOutlined,
   EditOutlined,
   ReloadOutlined,
   DownloadOutlined,
+  DownOutlined,
 } from '@ant-design/icons'
 import {
   useNightlyTestCases,
@@ -24,7 +26,7 @@ import {
   useUpdateNightlyTestCase,
 } from '../hooks/useCI'
 import type { NightlyTestCase } from '../services/ci'
-import { exportNightlyTestCases } from '../services/ci'
+import { exportNightlyTestCaseRuns } from '../services/ci'
 import dayjs from 'dayjs'
 import {
   WorkflowDateFilter,
@@ -37,6 +39,7 @@ import {
 const { Text, Title } = Typography
 
 const WORKFLOW_OPTIONS = [
+  { label: '全部', value: '__all__' },
   { label: 'Nightly-A2', value: 'Nightly-A2' },
   { label: 'Nightly-A3', value: 'Nightly-A3' },
   { label: 'Nightly-310P', value: 'Nightly-310P' },
@@ -80,9 +83,7 @@ function NightlyTestCaseConfig() {
   const [currentDay, setCurrentDay] = useState(() => dayjs().format('YYYY-MM-DD'))
   const [selectedBranch, setSelectedBranch] = useState(() => savedPreferences.selectedBranch ?? 'main')
 
-  const [workflowFilter, setWorkflowFilter] = useState<string | undefined>(() => (
-    savedPreferences.workflowFilter === null ? undefined : savedPreferences.workflowFilter ?? 'Nightly-A3'
-  ))
+  const [workflowFilter, setWorkflowFilter] = useState(() => savedPreferences.workflowFilter ?? 'Nightly-A3')
   const [modalOpen, setModalOpen] = useState(false)
   const [editingRecord, setEditingRecord] = useState<NightlyTestCase | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -105,8 +106,14 @@ function NightlyTestCaseConfig() {
     start_date: dateRange?.[0]?.format('YYYY-MM-DD'),
     end_date: dateRange?.[1]?.format('YYYY-MM-DD'),
     source_branch: selectedBranch,
-    workflow_name: workflowFilter,
   })
+
+  const filteredTestCases = useMemo(
+    () => workflowFilter === '__all__'
+      ? testCases
+      : testCases?.filter((item) => item.workflow_name === workflowFilter),
+    [testCases, workflowFilter],
+  )
 
   useEffect(() => {
     window.localStorage.setItem(NIGHTLY_CONFIG_PREFERENCES_KEY, JSON.stringify({
@@ -118,7 +125,7 @@ function NightlyTestCaseConfig() {
           }
         : null,
       selectedBranch,
-      workflowFilter: workflowFilter ?? null,
+      workflowFilter,
     }))
   }, [customDateRange, dateFilterMode, selectedBranch, workflowFilter])
 
@@ -155,21 +162,23 @@ function NightlyTestCaseConfig() {
     }
   }
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'json' | 'xlsx') => {
     setExporting(true)
     try {
       const params = {
+        format,
+        scope: 'filtered' as const,
         start_date: dateRange?.[0]?.format('YYYY-MM-DD'),
         end_date: dateRange?.[1]?.format('YYYY-MM-DD'),
         source_branch: selectedBranch,
-        workflow_name: workflowFilter,
+        workflow_names: workflowFilter === '__all__' ? undefined : [workflowFilter],
       }
-      const blob = await exportNightlyTestCases(params)
+      const blob = await exportNightlyTestCaseRuns(params)
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       const branch = selectedBranch.replace(/[^\w.-]+/g, '_')
-      link.download = `nightly_test_cases_${branch}_${dayjs().format('YYYYMMDD_HHmmss')}.json`
+      link.download = `nightly_run_details_${branch}_${dayjs().format('YYYYMMDD_HHmmss')}.${format}`
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -270,12 +279,36 @@ function NightlyTestCaseConfig() {
           <Select
             value={workflowFilter}
             onChange={setWorkflowFilter}
-            allowClear
             placeholder="筛选 Workflow"
             options={WORKFLOW_OPTIONS}
-            style={{ width: 150 }}
+            maxTagCount="responsive"
+            style={{ width: 240 }}
           />
-          <Button icon={<DownloadOutlined />} loading={exporting} onClick={handleExport}>
+          {false && <Button>
+            全部 Workflow
+          </Button>}
+          <Dropdown
+            menu={{
+              items: false ? [
+                { key: 'filtered-json', label: '当前筛选 · 导出 JSON' },
+                { key: 'filtered-xlsx', label: '当前筛选 · 导出 Excel' },
+                { type: 'divider' },
+                { key: 'all-json', label: '全部记录 · 导出 JSON' },
+                { key: 'all-xlsx', label: '全部记录 · 导出 Excel' },
+              ] : [
+                { key: 'json', label: '导出 JSON' },
+                { key: 'xlsx', label: '导出 Excel' },
+              ],
+              onClick: ({ key }) => {
+                void handleExport(key as 'json' | 'xlsx')
+              },
+            }}
+          >
+            <Button icon={<DownloadOutlined />} loading={exporting}>
+              导出运行明细 <DownOutlined />
+            </Button>
+          </Dropdown>
+          <Button style={{ display: 'none' }}>
             导出 JSON
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
@@ -286,7 +319,7 @@ function NightlyTestCaseConfig() {
       <Card>
         <Table
           columns={columns}
-          dataSource={testCases}
+          dataSource={filteredTestCases}
           loading={isLoading}
           rowKey="id"
           pagination={{ pageSize: 20, showSizeChanger: false }}

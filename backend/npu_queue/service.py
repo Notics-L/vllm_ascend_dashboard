@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infrastructure.persistence.models import CINpuJobFact
+from infrastructure.github_run_metadata import build_run_metadata
+from infrastructure.persistence.models import CINpuJobFact, CIResult
 from npu_queue.snapshots import is_running, is_waiting, physical_queue_state, physical_queue_trend
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -69,6 +70,13 @@ def _queue_delay_dates(now: datetime) -> list[str]:
 
 async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
     facts = list((await db.scalars(select(CINpuJobFact).order_by(CINpuJobFact.queued_at.desc()))).all())
+    run_ids = {fact.run_id for fact in facts}
+    result_rows = []
+    if run_ids:
+        result_rows = list((await db.scalars(
+            select(CIResult).where(CIResult.run_id.in_(run_ids))
+        )).all())
+    results_by_run_id = {result.run_id: result for result in result_rows}
     now = datetime.now(UTC)
     queue_window_start, queue_window_end = _queue_delay_window(now)
     matched = [fact for fact in facts if fact.mapping_status == "matched" and fact.mapped_cards]
@@ -188,13 +196,47 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         if runtime_minutes is None or not fact.completed_at:
             continue
         card_hours = runtime_minutes * (fact.mapped_cards or 0) / 60
-        day = fact.completed_at.date().isoformat()
+        # Keep the PR-consumption completion date consistent with the Beijing
+        # calendar used by the seven-day queue-delay chart.
+        day = _beijing_time(fact.completed_at).date().isoformat()
         daily_usage[day]["cardHours"] += card_hours
         daily_usage[day]["jobs"] += 1
         if fact.conclusion != "success":
             daily_usage[day]["failedCardHours"] += card_hours
-        key = f"pr-{fact.pr_number}" if fact.pr_number else f"run-{fact.run_id}"
-        cost = pr_costs.setdefault(key, {"key": key, "title": fact.job_name or key, "branch": key, "cardHours": 0.0, "allCardHours": 0.0, "runs": set(), "successfulRuns": set()})
+        organization, _, repository = fact.repository.partition("/")
+        metadata = build_run_metadata(
+            organization=organization or None,
+            repository=repository or None,
+            workflow_run_id=fact.run_id,
+            workflow_ref=None,
+            job_display_name=fact.job_name,
+            ci_result=results_by_run_id.get(fact.run_id),
+            pr_number=fact.pr_number,
+        )
+        # Run-level aggregation keeps multiple jobs/occupancy records under one
+        # GitHub Actions Run and preserves its PR as metadata instead of merging
+        # distinct runs only because they belong to the same PR.
+        key = f"run-{fact.repository}-{fact.run_id}"
+        cost = pr_costs.setdefault(key, {
+            "key": key,
+            "title": fact.job_name or metadata["run_display_name"],
+            "branch": metadata["run_display_name"],
+            "repository": fact.repository,
+            "kind": "pr" if metadata["pr_number"] else "run",
+            "detailUrl": metadata["run_url"] or fact.run_url,
+            "workflowRunId": metadata["workflow_run_id"],
+            "workflowName": metadata["workflow_name"],
+            "runNumber": metadata["run_number"],
+            "runDisplayName": metadata["run_display_name"],
+            "workflowRef": metadata["workflow_ref"],
+            "prNumber": metadata["pr_number"],
+            "event": metadata["event"],
+            "triggerScope": metadata["trigger_scope"],
+            "cardHours": 0.0,
+            "allCardHours": 0.0,
+            "runs": set(),
+            "successfulRuns": set(),
+        })
         cost["allCardHours"] += card_hours
         cost["runs"].add(fact.run_id)
         if fact.conclusion == "success":
@@ -216,6 +258,19 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         "p90": _percentile(queue_window_samples, .9),
         "samples": len(queue_window_samples),
     }
+    completed_facts = [fact for fact in matched if fact.completed_at]
+    # Read runtime-configured sync settings only when the dashboard payload is
+    # requested; helper imports remain usable in isolated unit tests.
+    from infrastructure.core.config import settings
+
+    usage_period = {
+        "startDate": _beijing_time(min(fact.completed_at for fact in completed_facts)).date().isoformat()
+        if completed_facts else None,
+        "endDate": _beijing_time(max(fact.completed_at for fact in completed_facts)).date().isoformat()
+        if completed_facts else None,
+        "syncIntervalMinutes": settings.CI_SYNC_INTERVAL_MINUTES,
+        "initialLookbackDays": settings.CI_SYNC_DAYS_BACK,
+    }
     daily_usage_rows = [{"date": day, "cardHours": round(values["cardHours"], 2), "jobs": int(values["jobs"]), "failedCardHours": round(values["failedCardHours"], 2)} for day, values in sorted(daily_usage.items())]
     pr_cost_rows = [{**cost, "cardHours": round(cost["cardHours"], 2), "allCardHours": round(cost["allCardHours"], 2), "runs": len(cost["runs"]), "successfulRuns": len(cost["successfulRuns"])} for cost in pr_costs.values()]
     return {
@@ -223,5 +278,6 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         "trend": trend, "dailyQueue": daily_queue_rows, "queueDelaySummary": queue_delay_summary,
         "dailyUsage": daily_usage_rows, "queue": queue_rows,
         "prCosts": sorted(pr_cost_rows, key=lambda row: row["allCardHours"], reverse=True)[:15],
+        "usagePeriod": usage_period,
         "dataQuality": {"matched_jobs": len(matched), "unmatched_jobs": len(facts) - len(matched)},
     }

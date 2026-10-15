@@ -113,8 +113,13 @@ html { scroll-behavior: smooth; }
 .npu-occupancy-analysis-head { color: #737889; font-size: 13px; padding: 7px 0 10px; border-bottom: 1px solid #dfe3ea; }
 .npu-occupancy-analysis-group { border-bottom: 1px solid #edf0f4; }
 .npu-occupancy-analysis-row { min-height: 46px; font-size: 14px; }
-.npu-occupancy-analysis-task { display: grid; grid-template-columns: minmax(280px, 1fr) 110px 110px 180px; gap: 14px; padding: 7px 0 7px 20px; color: #747783; font-size: 12px; }
-.npu-occupancy-analysis-task > span:first-child { color: #45495a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.npu-occupancy-run-table { margin: 4px 0 6px 20px; border: 1px solid #eef0f5; border-radius: 8px; overflow: hidden; }
+.npu-occupancy-run-head, .npu-occupancy-analysis-task { display: grid; grid-template-columns: minmax(135px, 1fr) minmax(100px, .7fr) minmax(170px, 1.25fr) minmax(150px, 1.1fr) minmax(90px, .65fr) 82px 68px minmax(176px, 1.05fr); gap: 12px; align-items: center; }
+.npu-occupancy-run-head { padding: 8px 12px; background: #fafbfe; border-bottom: 1px solid #eef0f5; color: #737889; font-size: 12px; font-weight: 600; }
+.npu-occupancy-analysis-task { padding: 9px 12px; color: #747783; font-size: 12px; border-bottom: 1px solid #f0f1f4; }
+.npu-occupancy-analysis-task:last-child { border-bottom: 0; }
+.npu-occupancy-analysis-task > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.npu-occupancy-analysis-task > span:first-child { color: #45495a; }
 .npu-occupancy-task-identity { display: flex; gap: 20px; min-width: 0; }
 .npu-occupancy-task-identity span:first-child { flex: 0 0 auto; color: #5e6372; }
 .npu-occupancy-task-identity span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -176,8 +181,8 @@ html { scroll-behavior: smooth; }
   .npu-occupancy-analysis-mode { min-height: 32px; }
   .npu-occupancy-analysis-search { width: 100%; }
   .npu-occupancy-analysis-head, .npu-occupancy-analysis-row { grid-template-columns: minmax(160px, 1fr) 80px 80px 52px 24px; }
-  .npu-occupancy-analysis-task { grid-template-columns: minmax(160px, 1fr) 70px 90px; }
-  .npu-occupancy-analysis-task span:last-child { display: none; }
+  .npu-occupancy-run-head, .npu-occupancy-analysis-task { grid-template-columns: minmax(120px, 1fr) minmax(110px, .8fr) minmax(145px, 1fr) 70px 70px; }
+  .npu-occupancy-run-head span:nth-child(4), .npu-occupancy-run-head span:nth-child(5), .npu-occupancy-run-head span:nth-child(8), .npu-occupancy-analysis-task > span:nth-child(4), .npu-occupancy-analysis-task > span:nth-child(5), .npu-occupancy-analysis-task > span:nth-child(8) { display: none; }
   .npu-occupancy-drawer-head, .npu-occupancy-drawer-row { grid-template-columns: minmax(140px, 1fr) 68px 48px 24px; gap: 10px; }
   .npu-occupancy-drawer-task { grid-template-columns: minmax(140px, 1fr) 58px 1fr; gap: 8px; }
   .npu-occupancy-drawer-task > .ant-tag { display: none; }

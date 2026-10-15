@@ -51,7 +51,9 @@ services:
       DB_POOL_TIMEOUT: ${API_DB_POOL_TIMEOUT:-30}
       ENVIRONMENT: development
       DEBUG: "true"
-      AUTO_MIGRATE: "true"
+      # The dedicated migration service owns schema changes.  Keeping the API
+      # process out of DDL avoids racing demo seeding during `dev-setup.ps1`.
+      AUTO_MIGRATE: "false"
       DATA_DIR: /app/data
       LITELLM_PROXY_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}

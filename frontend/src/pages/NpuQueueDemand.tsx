@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import dayjs from "dayjs";
 import {
   Alert,
   Button,
-  Card,
   Col,
   Drawer,
   Progress,
@@ -11,6 +11,7 @@ import {
   Segmented,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
   Typography,
@@ -33,13 +34,18 @@ import {
 } from "recharts";
 import {
   getNpuQueueDashboard,
+  getNpuQueueTrend,
+  getNpuQueueTrendDetail,
   type QueueItem,
+  type QueueTrendPod,
   type QueueTrendPoint,
 } from "../services/npuQueue";
 import {
   getEnabledResourceClusters,
+  getNodeUtilizationHeatmap,
   getResourceDashboard,
 } from "../services/resourceDashboard";
+import { getNpuMetrics } from "../services/resourceMetrics";
 import "./NpuQueueDemand.css";
 
 const { Text } = Typography;
@@ -50,14 +56,23 @@ const comparablePoolName = (value: string) =>
     .toLowerCase()
     .replace(/^dev[-_]?/, "")
     .replace(/[^a-z0-9]/g, "");
+const heatColor = (value: number | null) => {
+  if (value === null) return "repeating-linear-gradient(135deg, #fff, #fff 4px, #e5e7eb 4px, #e5e7eb 6px)";
+  if (value === 0) return "#d9d9d9";
+  if (value <= 25) return "#eeeafd";
+  if (value <= 50) return "#c8bdf7";
+  if (value <= 75) return "#8068d9";
+  return "#211950";
+};
 export default function NpuQueueDemand() {
-  const [queueProject, setQueueProject] = useState("all");
   const [queuePools, setQueuePools] = useState<string[]>([]);
+  const [trendPool, setTrendPool] = useState("all");
   const [selectedPoint, setSelectedPoint] = useState<QueueTrendPoint | null>(
     null,
   );
   const [selectedQueue, setSelectedQueue] = useState<QueueItem | null>(null);
-  const [poolMode, setPoolMode] = useState<"current" | "usage">("current");
+  const [poolMode, setPoolMode] = useState<"current" | "usage" | "machines">("current");
+  const [sectionPool, setSectionPool] = useState("all");
   const [trendMode, setTrendMode] = useState<"current" | "history">("current");
   const [taskMode, setTaskMode] = useState<"queue" | "cost">("queue");
   const [costScopes, setCostScopes] = useState<Array<"actual" | "full">>([
@@ -74,11 +89,59 @@ export default function NpuQueueDemand() {
     queryFn: getEnabledResourceClusters,
     staleTime: 30_000,
   });
+  const selectedSectionCluster = clusterConfigQuery.data?.find(
+    (cluster) => cluster.name === sectionPool,
+  );
   const resourceQuery = useQuery({
     queryKey: ["npu-queue-physical-resource"],
     queryFn: () => getResourceDashboard({ include_pods: true }),
     staleTime: 30_000,
     refetchInterval: 30_000,
+  });
+  const sectionResourceQuery = useQuery({
+    queryKey: ["npu-pool-resource", sectionPool],
+    queryFn: () =>
+      getResourceDashboard({
+        include_pods: true,
+        cluster_ids: selectedSectionCluster ? [selectedSectionCluster.id] : undefined,
+      }),
+    enabled: sectionPool === "all" || Boolean(selectedSectionCluster),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+  const trendQuery = useQuery({
+    queryKey: ["npu-queue-trend", trendPool, trendMode],
+    queryFn: () =>
+      getNpuQueueTrend(
+        trendPool === "all" ? undefined : trendPool,
+        trendMode === "current" ? 24 : 168,
+      ),
+    refetchInterval: 30_000,
+  });
+  const trendDetailQuery = useQuery({
+    queryKey: ["npu-queue-trend-detail", selectedPoint?.capturedAt, trendPool],
+    queryFn: () => getNpuQueueTrendDetail(
+      selectedPoint!.capturedAt,
+      trendPool === "all" ? undefined : trendPool,
+    ),
+    enabled: Boolean(selectedPoint),
+  });
+  const usageQuery = useQuery({
+    queryKey: ["npu-pool-usage", sectionPool],
+    queryFn: () =>
+      getNpuMetrics({
+        cluster_ids: selectedSectionCluster ? [selectedSectionCluster.id] : undefined,
+        time_range: "7d",
+      }),
+    enabled:
+      poolMode === "usage" &&
+      (sectionPool === "all" || Boolean(selectedSectionCluster)),
+  });
+  const heatmapQuery = useQuery({
+    queryKey: ["npu-node-utilization-heatmap", sectionPool],
+    queryFn: () =>
+      getNodeUtilizationHeatmap(sectionPool === "all" ? undefined : sectionPool),
+    enabled: poolMode === "machines",
   });
 
   const data = useMemo(() => {
@@ -92,14 +155,42 @@ export default function NpuQueueDemand() {
         .slice(0, 10),
     };
   }, [queueQuery.data]);
-  const pools = data?.pools ?? [];
+  const pools = useMemo(() => data?.pools ?? [], [data?.pools]);
+  const todayQueueSamples = data?.dailyQueue[data.dailyQueue.length - 1]?.samples ?? 0;
+  const prCostByBranch = useMemo(
+    () => new Map((data?.prCosts ?? []).map((item) => [item.branch, item])),
+    [data?.prCosts],
+  );
   const trend = useMemo(
     () =>
-      (data?.trend ?? []).map((point) => ({
-        ...point,
-      })),
-    [data],
+      [...(trendQuery.data?.points ?? [])]
+        .sort((left, right) => dayjs(left.capturedAt).valueOf() - dayjs(right.capturedAt).valueOf())
+        .map((point) => ({
+          ...point,
+          timestamp: dayjs(point.capturedAt).format("MM-DD HH:mm"),
+        })),
+    [trendQuery.data?.points],
   );
+  const dailyPoolUsage = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const cluster of usageQuery.data?.clusters ?? []) {
+      const metrics = [...cluster.metrics].sort((left, right) =>
+        left.collected_at.localeCompare(right.collected_at),
+      );
+      metrics.forEach((metric, index) => {
+        const start = dayjs(metric.collected_at);
+        const next = metrics[index + 1]
+          ? dayjs(metrics[index + 1].collected_at)
+          : start.add(1, "minute");
+        const hours = Math.max(0, Math.min(6, next.diff(start, "second") / 3600));
+        const date = start.format("MM-DD");
+        totals.set(date, (totals.get(date) ?? 0) + metric.npu_used * hours);
+      });
+    }
+    return [...totals.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([date, cardHours]) => ({ date, cardHours: Math.round(cardHours * 10) / 10 }));
+  }, [usageQuery.data]);
   const totals = useMemo(
     () => ({
       waitingJobs: pools.reduce((sum, pool) => sum + pool.waitingJobs, 0),
@@ -115,23 +206,13 @@ export default function NpuQueueDemand() {
     () =>
       (data?.queue ?? []).filter(
         (item) =>
-          (queueProject === "all" || item.repository === queueProject) &&
           (queuePools.length === 0 ||
             queuePools.some(
               (poolKey) =>
                 pools.find((pool) => pool.key === poolKey)?.name === item.pool,
             )),
       ),
-    [data, queuePools, queueProject],
-  );
-  const queueProjects = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (data?.queue ?? []).map((item) => item.repository).filter(Boolean),
-        ),
-      ).sort(),
-    [data],
+    [data, queuePools, pools],
   );
   const pendingPods = useMemo(
     () =>
@@ -144,7 +225,7 @@ export default function NpuQueueDemand() {
   );
   const physicalRows = useMemo(
     () =>
-      (resourceQuery.data?.clusters ?? []).map((cluster) => {
+      (sectionResourceQuery.data?.clusters ?? []).map((cluster) => {
         const demand = pools.find(
           (pool) =>
             comparablePoolName(pool.name) ===
@@ -156,6 +237,11 @@ export default function NpuQueueDemand() {
           )?.npu_resource_name ?? "未配置资源名";
         const waitingCards = demand?.waitingCards ?? 0;
         const pods = cluster.executing_pods;
+        const pendingPodDetails = pods.filter((pod) => pod.phase === "Pending");
+        const pendingCardsFromDetails = pendingPodDetails.reduce(
+          (sum, pod) => sum + pod.requests.npu,
+          0,
+        );
         return {
           key: String(cluster.cluster_id),
           name: cluster.cluster_name,
@@ -170,8 +256,10 @@ export default function NpuQueueDemand() {
             ? Math.min(100, (waitingCards / cluster.total.npu) * 100)
             : 0,
           executingPods: cluster.executing_pods_count,
-          pendingPods: cluster.pending_pods_count ?? 0,
-          pendingCards: cluster.pending_npu ?? 0,
+          // Detail and collapsed summary must use one source. Older persisted
+          // responses may contain Pending pods without the newer count fields.
+          pendingPods: pendingPodDetails.length,
+          pendingCards: pendingCardsFromDetails,
           pods,
           queue: (data?.queue ?? []).filter(
             (item) =>
@@ -182,7 +270,7 @@ export default function NpuQueueDemand() {
           error: cluster.error,
         };
       }),
-    [clusterConfigQuery.data, data?.queue, pools, resourceQuery.data],
+    [clusterConfigQuery.data, data?.queue, pools, sectionResourceQuery.data],
   );
   const physicalCapacity = resourceQuery.data?.overall.total.npu ?? null;
   const physicalRunning = resourceQuery.data?.overall.used.npu ?? null;
@@ -273,8 +361,10 @@ export default function NpuQueueDemand() {
             aria-labelledby="npu-delay-title"
           >
             <div className="npu-demand-focus-heading">
-              <h3 id="npu-delay-title">Queue 延迟趋势</h3>
-              <Text type="secondary">最近 7 天</Text>
+              <h3 id="npu-delay-title">总延迟时长趋势</h3>
+              <Text type="secondary">
+                计算：GitHub Job 创建（created_at）至开始运行（started_at）；仅已上卡且等待不少于 2 分钟。
+              </Text>
             </div>
             <div className="npu-demand-delay-chart">
               <ResponsiveContainer width="100%" height="100%">
@@ -338,6 +428,7 @@ export default function NpuQueueDemand() {
               <span>
                 已上卡样本 <b>{number(data.queueDelaySummary.samples)} 个</b>
               </span>
+              {todayQueueSamples === 0 && <span>今日暂无已上卡样本</span>}
             </div>
           </section>
         </Col>
@@ -354,14 +445,34 @@ export default function NpuQueueDemand() {
               Kubernetes 实时资源快照；Pending Pod 单独展示为等待需求。
             </Text>
           </div>
-          <Segmented
-            value={poolMode}
-            onChange={(value) => setPoolMode(value as "current" | "usage")}
-            options={[
-              { label: "当前资源", value: "current" },
-              { label: "资源消耗", value: "usage" },
-            ]}
-          />
+          <Space wrap>
+            <Select
+              value={sectionPool}
+              style={{ minWidth: 180 }}
+              onChange={(value) => {
+                setSectionPool(value);
+                setExpandedPoolKeys([]);
+              }}
+              options={[
+                { value: "all", label: "全部资源池" },
+                ...(clusterConfigQuery.data ?? []).map((cluster) => ({
+                  value: cluster.name,
+                  label: cluster.name,
+                })),
+              ]}
+            />
+            <Segmented
+              value={poolMode}
+              onChange={(value) =>
+                setPoolMode(value as "current" | "usage" | "machines")
+              }
+              options={[
+                { label: "当前资源", value: "current" },
+                { label: "资源消耗", value: "usage" },
+                { label: "机器使用率", value: "machines" },
+              ]}
+            />
+          </Space>
         </div>
         {poolMode === "current" ? (
           <Table
@@ -369,9 +480,9 @@ export default function NpuQueueDemand() {
             className="npu-demand-pool-table"
             size="middle"
             pagination={false}
-            loading={resourceQuery.isLoading}
+            loading={sectionResourceQuery.isLoading}
             locale={{
-              emptyText: resourceQuery.isError
+              emptyText: sectionResourceQuery.isError
                 ? "Kubernetes 资源快照获取失败"
                 : "暂无已配置的 Kubernetes 资源池",
             }}
@@ -507,13 +618,20 @@ export default function NpuQueueDemand() {
               },
             ]}
           />
-        ) : (
+        ) : poolMode === "usage" ? (
           <div className="npu-demand-single-history">
             <h3>每日资源消耗（卡时）</h3>
-            <Text type="secondary">已结束 NPU Job 的累计卡时（含失败）</Text>
+            <Text type="secondary">基于 Kubernetes NPU 快照积分计算</Text>
+            {usageQuery.isLoading ? (
+              <Spin tip="正在计算资源消耗" />
+            ) : usageQuery.isError ? (
+              <Alert type="error" showIcon message="资源消耗加载失败" />
+            ) : dailyPoolUsage.length === 0 ? (
+              <Text type="secondary">所选资源池暂无资源消耗快照</Text>
+            ) : (
             <ResponsiveContainer width="100%" height={280}>
               <ComposedChart
-                data={data.dailyUsage}
+                data={dailyPoolUsage}
                 margin={{ top: 18, right: 18, left: -18, bottom: 0 }}
               >
                 <CartesianGrid
@@ -523,12 +641,6 @@ export default function NpuQueueDemand() {
                 />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} />
                 <YAxis yAxisId="left" tickLine={false} axisLine={false} />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tickLine={false}
-                  axisLine={false}
-                />
                 <Tooltip />
                 <Legend />
                 <Bar
@@ -538,16 +650,69 @@ export default function NpuQueueDemand() {
                   radius={[4, 4, 0, 0]}
                   name="卡时"
                 />
-                <Line
-                  yAxisId="right"
-                  type="monotone"
-                  dataKey="jobs"
-                  stroke="#1677ff"
-                  strokeWidth={2}
-                  name="已结束 NPU Job 数"
-                />
               </ComposedChart>
             </ResponsiveContainer>
+            )}
+          </div>
+        ) : (
+          <div className="npu-machine-heatmap-wrap">
+            <div className="npu-machine-heatmap-summary">
+              <strong>机器时间利用率</strong>
+              <span>{heatmapQuery.data?.overall_utilization ?? 0}%</span>
+              <Text type="secondary">最近 7 天</Text>
+            </div>
+            {heatmapQuery.isLoading ? (
+              <Spin tip="正在计算机器使用率" />
+            ) : heatmapQuery.isError ? (
+              <Alert type="error" showIcon message="机器使用率加载失败" />
+            ) : heatmapQuery.data?.nodes.length ? (
+              <div className="npu-machine-heatmap-scroll">
+                <div
+                  className="npu-machine-heatmap"
+                  style={{
+                    gridTemplateColumns: `180px repeat(${heatmapQuery.data.nodes[0].buckets.length}, minmax(76px, 1fr))`,
+                  }}
+                >
+                  <div />
+                  {heatmapQuery.data.nodes[0].buckets.map((bucket) => (
+                    <div className="npu-machine-heatmap-date" key={bucket.start}>
+                      {dayjs(bucket.start).format("MM/DD")}
+                    </div>
+                  ))}
+                  {heatmapQuery.data.nodes.flatMap((node) => [
+                    <div className="npu-machine-heatmap-node" key={`${node.cluster_id}/${node.node_name}/label`}>
+                      <strong>{node.node_name}</strong>
+                      <span>{node.cluster_name}</span>
+                    </div>,
+                    ...node.buckets.map((bucket) => (
+                      <div
+                        className="npu-machine-heatmap-cell"
+                        key={`${node.cluster_id}/${node.node_name}/${bucket.start}`}
+                        style={{ background: heatColor(bucket.utilization) }}
+                        title={`${node.cluster_name} / ${node.node_name}\n${dayjs(bucket.start).format("YYYY-MM-DD")}\n利用率：${bucket.utilization === null ? "无数据" : `${bucket.utilization}%`}\n活跃：${(bucket.active_seconds / 3600).toFixed(1)}h / ${(bucket.window_seconds / 3600).toFixed(1)}h\n采样覆盖：${Math.round(bucket.coverage * 100)}%`}
+                      />
+                    )),
+                  ])}
+                </div>
+              </div>
+            ) : (
+              <Text type="secondary">所选资源池暂无机器快照</Text>
+            )}
+            <div className="npu-machine-heatmap-legend">
+              {[
+                ["0%", 0],
+                ["0–25%", 20],
+                ["25–50%", 40],
+                ["50–75%", 60],
+                ["75–100%", 80],
+                ["无数据", null],
+              ].map(([label, value]) => (
+                <span key={String(label)}>
+                  <i style={{ background: heatColor(value as number | null) }} />
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </section>
@@ -560,17 +725,34 @@ export default function NpuQueueDemand() {
           <div>
             <h2 id="npu-running-trend-title">03 Queue / Running 趋势</h2>
             <Text type="secondary">
-              等待与运行均来自 Kubernetes 实时资源快照：Pending 与 Running Pod。
+              Kubernetes 口径采集 Pending / Running Pod 数与申请卡数。
             </Text>
           </div>
-          <Segmented
-            value={trendMode}
-            onChange={(value) => setTrendMode(value as "current" | "history")}
-            options={[
-              { label: "当前 / 近 24h", value: "current" },
-              { label: "历史", value: "history" },
-            ]}
-          />
+          <Space>
+            <Select
+              value={trendPool}
+              style={{ minWidth: 180 }}
+              onChange={(value) => {
+                setTrendPool(value);
+                setSelectedPoint(null);
+              }}
+              options={[
+                { value: "all", label: "全部资源池" },
+                ...(resourceQuery.data?.clusters ?? []).map((cluster) => ({
+                  value: cluster.cluster_name,
+                  label: cluster.cluster_name,
+                })),
+              ]}
+            />
+            <Segmented
+              value={trendMode}
+              onChange={(value) => setTrendMode(value as "current" | "history")}
+              options={[
+                { label: "当前 / 近 24h", value: "current" },
+                { label: "历史", value: "history" },
+              ]}
+            />
+          </Space>
         </div>
         {trendMode === "current" ? (
           <>
@@ -612,37 +794,47 @@ export default function NpuQueueDemand() {
           </>
         ) : (
           <div className="npu-demand-single-history">
-            <h3>每日队列时间</h3>
-            <Text type="secondary">已上卡样本的 Queue P50 / P90</Text>
             <ResponsiveContainer width="100%" height={280}>
               <LineChart
-                data={data.dailyQueue}
+                key={`${trendPool}:${trendMode}:${trend[0]?.capturedAt ?? "empty"}`}
+                data={trend}
                 margin={{ top: 18, right: 18, left: -18, bottom: 0 }}
+                onClick={(state: {
+                  activePayload?: Array<{ payload: QueueTrendPoint }>;
+                }) =>
+                  setSelectedPoint(state?.activePayload?.[0]?.payload ?? null)
+                }
               >
                 <CartesianGrid
                   strokeDasharray="3 3"
                   vertical={false}
                   stroke="#edf0f4"
                 />
-                <XAxis dataKey="date" tickLine={false} axisLine={false} />
-                <YAxis tickLine={false} axisLine={false} unit="m" />
-                <Tooltip formatter={(value: number) => `${value} min`} />
+                <XAxis dataKey="timestamp" tickLine={false} axisLine={false} minTickGap={32} />
+                <YAxis tickLine={false} axisLine={false} />
+                <Tooltip />
                 <Legend />
                 <Line
                   type="monotone"
-                  dataKey="p50"
-                  stroke="#3b82f6"
+                  dataKey="waitingCards"
+                  stroke="#cf1322"
                   strokeWidth={2.5}
                   dot={false}
-                  name="P50"
+                  animationBegin={0}
+                  animationDuration={500}
+                  animationEasing="linear"
+                  name="等待卡数"
                 />
                 <Line
                   type="monotone"
-                  dataKey="p90"
-                  stroke="#f59e0b"
+                  dataKey="runningCards"
+                  stroke="#1677ff"
                   strokeWidth={2.5}
                   dot={false}
-                  name="P90"
+                  animationBegin={0}
+                  animationDuration={500}
+                  animationEasing="linear"
+                  name="运行卡数"
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -663,24 +855,13 @@ export default function NpuQueueDemand() {
             onChange={(value) => setTaskMode(value as "queue" | "cost")}
             options={[
               { label: "当前排队", value: "queue" },
-              { label: "历史消耗", value: "cost" },
+              { label: "按 Run 消耗", value: "cost" },
             ]}
           />
         </div>
         {taskMode === "queue" ? (
           <>
             <div className="npu-demand-queue-filter">
-              <Select
-                value={queueProject}
-                onChange={setQueueProject}
-                options={[
-                  { value: "all", label: "全部命名空间" },
-                  ...queueProjects.map((repository) => ({
-                    value: repository,
-                    label: repository,
-                  })),
-                ]}
-              />
               <Select
                 mode="multiple"
                 allowClear
@@ -805,8 +986,7 @@ export default function NpuQueueDemand() {
           <div className="npu-demand-cost-view">
             <div className="npu-demand-cost-toolbar">
               <Text type="secondary">
-                按 CI runner 标签映射的卡数 × GitHub Actions
-                实际运行时长计算；可单独或同时显示两种口径。
+                按 GitHub Actions Run 聚合资源消耗；关联 PR 时一并展示。成功卡时仅统计成功 Job，总卡时包含成功、失败和取消的已完成 Job。
               </Text>
               <div className="npu-demand-cost-toggle">
                 <button
@@ -845,11 +1025,16 @@ export default function NpuQueueDemand() {
                 </button>
               </div>
             </div>
+            <Text type="secondary" style={{ display: "block", marginBottom: 10 }}>
+              {data.usagePeriod?.startDate
+                ? `数据范围：${data.usagePeriod.startDate} 至 ${data.usagePeriod.endDate}`
+                : "暂无已完成的匹配 CI Job。"}
+            </Text>
             <ResponsiveContainer width="100%" height={320}>
               <ComposedChart
                 layout="vertical"
                 data={data.prCosts}
-                margin={{ top: 8, right: 58, left: 154, bottom: 8 }}
+                margin={{ top: 8, right: 58, left: 12, bottom: 8 }}
                 barGap={1}
                 barCategoryGap="35%"
               >
@@ -873,21 +1058,27 @@ export default function NpuQueueDemand() {
                 <YAxis
                   type="category"
                   dataKey="branch"
-                  width={148}
+                  width={260}
                   tickLine={false}
                   axisLine={{ stroke: "#98a2b3" }}
-                  tick={{ fontSize: 12, fill: "#475467" }}
-                  tickFormatter={(value: string) =>
-                    value.length > 22 ? `${value.slice(0, 22)}…` : value
-                  }
+                  tick={({ x, y, payload }: { x: number; y: number; payload: { value: string } }) => {
+                    const record = prCostByBranch.get(payload.value);
+                    const text = <text x={x} y={y} textAnchor="end" fill={record?.detailUrl ? "#635bff" : "#475467"} fontSize={12}>{payload.value}</text>;
+                    return record?.detailUrl ? (
+                      <a href={record.detailUrl} target="_blank" rel="noreferrer">{text}</a>
+                    ) : text;
+                  }}
                 />
-                <Tooltip
-                  labelFormatter={(value) => `流水线：${value}`}
-                  formatter={(value: number, name: string) => [
-                    `${number(value)} 卡时`,
-                    name,
-                  ]}
-                />
+                <Tooltip content={({ active, payload }: any) => {
+                  const record = payload?.[0]?.payload;
+                  if (!active || !record) return null;
+                  return <div className="npu-demand-tooltip">
+                    <div>Run: {record.runDisplayName || record.branch}</div>
+                    {record.prNumber ? <div>PR: #{record.prNumber}</div> : record.event ? <div>Trigger: {record.event}</div> : <div>Ref: {record.triggerScope || "—"}</div>}
+                    <div>成功 Job 卡时: {number(record.cardHours)} 卡时</div>
+                    <div>全部 Job 尝试卡时: {number(record.allCardHours)} 卡时</div>
+                  </div>;
+                }} />
                 {costScopes.includes("actual") && (
                   <Bar
                     dataKey="cardHours"
@@ -935,36 +1126,55 @@ export default function NpuQueueDemand() {
       <Drawer
         title={
           selectedPoint
-            ? `队列时点明细 · ${selectedPoint.timestamp}`
+            ? `队列时点明细 · ${dayjs(
+                trendDetailQuery.data?.capturedAt ?? selectedPoint.capturedAt,
+              ).format("YYYY-MM-DD HH:mm")}`
             : "队列时点明细"
         }
         open={Boolean(selectedPoint)}
         onClose={() => setSelectedPoint(null)}
         width={760}
       >
-        {selectedPoint && (
+        {selectedPoint && trendDetailQuery.isLoading && (
+          <div style={{ padding: 48, textAlign: "center" }}>
+            <Spin tip="正在加载历史快照" />
+          </div>
+        )}
+        {selectedPoint && trendDetailQuery.isError && (
+          <Alert
+            type="error"
+            showIcon
+            message="历史快照加载失败"
+            description="该时点的 Kubernetes 资源快照不可用，请稍后重试。"
+          />
+        )}
+        {selectedPoint && trendDetailQuery.data && (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
             <Alert
               type="info"
               showIcon
-              message={`${selectedPoint.timestamp}：等待 ${selectedPoint.waitingCards} 卡 / ${selectedPoint.waitingJobs} Job；运行 ${selectedPoint.runningCards} 卡 / ${selectedPoint.runningJobs} Job`}
+              message={`${dayjs(trendDetailQuery.data.capturedAt).format("YYYY-MM-DD HH:mm")}：等待 ${trendDetailQuery.data.waitingCards} 卡 / ${trendDetailQuery.data.waitingJobs} Pod；运行 ${trendDetailQuery.data.runningCards} 卡 / ${trendDetailQuery.data.runningJobs} Pod`}
             />
-            <Table<QueueItem>
-              rowKey="key"
-              dataSource={queue}
+            <Table<QueueTrendPod>
+              rowKey={(pod) =>
+                `${pod.cluster_id}/${pod.namespace ?? ""}/${pod.name}`
+              }
+              dataSource={trendDetailQuery.data.pods}
               pagination={false}
               columns={[
-                { title: "Job", dataIndex: "job" },
-                { title: "资源池", dataIndex: "pool" },
+                { title: "Pod", dataIndex: "name" },
+                { title: "资源池", dataIndex: "cluster_name" },
+                { title: "命名空间", dataIndex: "namespace" },
                 {
                   title: "状态",
-                  render: (_, record) => (
-                    <Tag color={record.state === "short" ? "default" : "red"}>
-                      {record.state === "short" ? "短暂排队" : "排队中"}
+                  dataIndex: "phase",
+                  render: (value) => (
+                    <Tag color={value === "Pending" ? "warning" : "blue"}>
+                      {value}
                     </Tag>
                   ),
                 },
-                { title: "卡数", dataIndex: "cards", align: "right" },
+                { title: "卡数", dataIndex: "npu", align: "right" },
               ]}
             />
           </Space>
