@@ -52,25 +52,6 @@ import {
   ToolOutlined,
   TrophyOutlined,
 } from '@ant-design/icons'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Scatter,
-  ScatterChart,
-  Tooltip as ChartsTooltip,
-  XAxis,
-  YAxis,
-  ZAxis,
-} from 'recharts'
 import dayjs from 'dayjs'
 import {
   type BuildOptimizationStats,
@@ -278,6 +259,130 @@ function ModuleHotspotGrid({ modules, maxCount }: { modules: Array<{ name: strin
   )
 }
 
+function EChartsPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const inst = echarts.init(el)
+    inst.setOption({
+      tooltip: {
+        trigger: 'item',
+        formatter: '{b}: {c} 次 ({d}%)',
+      },
+      legend: {
+        type: 'scroll',
+        orient: 'vertical',
+        right: 10,
+        top: 'center',
+        textStyle: { fontSize: 12 },
+      },
+      series: [{
+        type: 'pie',
+        radius: ['40%', '70%'],
+        center: ['35%', '50%'],
+        avoidLabelOverlap: true,
+        itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+        label: { show: true, formatter: '{b}: {c}' },
+        emphasis: {
+          label: { show: true, fontSize: 14, fontWeight: 'bold' },
+        },
+        data: data.map((item, i) => ({
+          ...item,
+          itemStyle: { color: pieColors[i % pieColors.length] },
+        })),
+      }],
+    }, true)
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [data])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+function EChartsBarChart({ data }: { data: Array<{ date: string; merged_pr_count: number; code_additions: number }> }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const inst = echarts.init(el)
+    inst.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0, textStyle: { fontSize: 12 } },
+      grid: { left: 50, right: 16, top: 10, bottom: 30 },
+      xAxis: {
+        type: 'category',
+        data: data.map(d => d.date),
+        axisTick: { alignWithLabel: true },
+        axisLabel: { fontSize: 11 },
+      },
+      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+      series: [
+        { name: '合并 PR', type: 'bar', data: data.map(d => d.merged_pr_count), itemStyle: { color: '#5b46f5' } },
+        { name: '代码添加(行)', type: 'bar', data: data.map(d => d.code_additions), itemStyle: { color: '#52c41a' } },
+      ],
+    }, true)
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [data])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+function EChartsLineChart<T extends object>({
+  data,
+  series,
+}: {
+  data: T[];
+  series: Array<{ name: string; dataKey: string; color: string }>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const inst = echarts.init(el)
+    inst.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0, textStyle: { fontSize: 12 } },
+      grid: { left: 50, right: 16, top: 10, bottom: 30 },
+      xAxis: {
+        type: 'category',
+        data: (data as any).map((d: any) => d.date),
+        axisTick: { alignWithLabel: true },
+        axisLabel: { fontSize: 11 },
+      },
+      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+      series: series.map(s => ({
+        name: s.name,
+        type: 'line',
+        smooth: true,
+        lineStyle: { width: 2 },
+        data: (data as any).map((d: any) => d[s.dataKey]),
+        itemStyle: { color: s.color },
+      })),
+    }, true)
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [data, series])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
 function ClassificationTab({ selectedRepo }: { selectedRepo?: string }) {
   const [data, setData] = useState<ClassificationSummary | null>(null)
   const [loading, setLoading] = useState(false)
@@ -344,17 +449,7 @@ function ClassificationTab({ selectedRepo }: { selectedRepo?: string }) {
           <Card title="提交类型分布">
             <div style={{ height: 400 }}>
               {pieData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={150} label={({ name, value }) => `${name}: ${value}`}>
-                      {pieData.map((_entry, index) => (
-                        <Cell key={`cell-${index}`} fill={pieColors[index % pieColors.length]} />
-                      ))}
-                    </Pie>
-                    <ChartsTooltip formatter={(value: number) => `${value} 次`} />
-                    <Legend />
-                  </PieChart>
-                </ResponsiveContainer>
+                <EChartsPieChart data={pieData} />
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
                   <Text type="secondary">暂无数据</Text>
@@ -1883,17 +1978,7 @@ function ContributorDetailPage() {
           <Card title="提交量趋势">
             <div style={{ height: 300 }}>
               {trend?.commit_trend && trend.commit_trend.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={trend.commit_trend}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                    <YAxis />
-                    <ChartsTooltip />
-                    <Legend />
-                    <Bar dataKey="merged_pr_count" name="合并 PR" fill="#5b46f5" />
-                    <Bar dataKey="code_additions" name="代码添加(行)" fill="#52c41a" />
-                  </BarChart>
-                </ResponsiveContainer>
+                <EChartsBarChart data={trend.commit_trend} />
               ) : (
                 <Empty description="暂无趋势数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               )}
@@ -1905,17 +1990,13 @@ function ContributorDetailPage() {
           <Card title="Review 趋势">
             <div style={{ height: 300 }}>
               {trend?.review_trend && trend.review_trend.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trend.review_trend}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                    <YAxis />
-                    <ChartsTooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="review_count" name="Review 数" stroke="#1890ff" strokeWidth={2} />
-                    <Line type="monotone" dataKey="approval_count" name="Approval 数" stroke="#722ed1" strokeWidth={2} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <EChartsLineChart
+                  data={trend.review_trend}
+                  series={[
+                    { name: 'Review 数', dataKey: 'review_count', color: '#1890ff' },
+                    { name: 'Approval 数', dataKey: 'approval_count', color: '#722ed1' },
+                  ]}
+                />
               ) : (
                 <Empty description="暂无趋势数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               )}
@@ -1927,17 +2008,13 @@ function ContributorDetailPage() {
           <Card title="分数趋势 (贡献分数 vs 出错分数)">
             <div style={{ height: 300 }}>
               {trend?.score_trend && trend.score_trend.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trend.score_trend}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                    <YAxis />
-                    <ChartsTooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="contribution_score" name="贡献分数" stroke="#52c41a" strokeWidth={2} />
-                    <Line type="monotone" dataKey="error_score" name="出错分数" stroke="#ff4d4f" strokeWidth={2} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <EChartsLineChart
+                  data={trend.score_trend}
+                  series={[
+                    { name: '贡献分数', dataKey: 'contribution_score', color: '#52c41a' },
+                    { name: '出错分数', dataKey: 'error_score', color: '#ff4d4f' },
+                  ]}
+                />
               ) : (
                 <Empty description="暂无趋势数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               )}
