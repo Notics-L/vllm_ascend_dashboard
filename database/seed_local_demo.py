@@ -677,6 +677,29 @@ async def seed_clusters_and_resources(
         for sample in range(9):
             collected_at = now - timedelta(hours=sample * 3)
             current_used = min(total, used + ((sample + cluster_index) % 4) - 1.0)
+            executing_pods_count = 4 + sample % 3
+            cards_per_pod = round(current_used / executing_pods_count, 2)
+            snapshot_pods = []
+            assigned_cards = 0.0
+            for pod_index in range(executing_pods_count):
+                pod_cards = (
+                    round(current_used - assigned_cards, 2)
+                    if pod_index == executing_pods_count - 1
+                    else cards_per_pod
+                )
+                assigned_cards += pod_cards
+                snapshot_pods.append(
+                    {
+                        # Include the sample in the identity so clicking a
+                        # different historical point visibly loads that exact
+                        # persisted Pod snapshot instead of an invariant demo list.
+                        "name": f"demo-{hardware.lower()}-s{sample}-pod-{pod_index}",
+                        "namespace": "vllm-project",
+                        "phase": "Running",
+                        "npu": pod_cards,
+                        "pr_number": 120 + sample * 10 + pod_index,
+                    }
+                )
             await upsert(
                 db,
                 ResourceNpuMetrics,
@@ -687,18 +710,9 @@ async def seed_clusters_and_resources(
                     "npu_used": current_used,
                     "npu_available": total - current_used,
                     "npu_utilization": round(current_used / total * 100, 2),
-                    "executing_pods_count": 4 + sample % 3,
+                    "executing_pods_count": executing_pods_count,
                     "pr_count": 2 + sample % 4,
-                    "top_pods_json": [
-                        {
-                            "name": f"demo-{hardware.lower()}-pod-{pod_index}",
-                            "namespace": "vllm-project",
-                            "phase": "Running",
-                            "npu": 2 + pod_index,
-                            "pr_number": 120 + pod_index,
-                        }
-                        for pod_index in range(3)
-                    ],
+                    "top_pods_json": snapshot_pods,
                 },
             )
 

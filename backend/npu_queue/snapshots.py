@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,9 +75,18 @@ async def physical_queue_state(db: AsyncSession) -> tuple[dict[str, float | int]
     return physical_queue_state_from_metrics(rows)
 
 
-def physical_queue_state_from_metrics(rows: Iterable[ResourceNpuMetrics]) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
-    """Aggregate a single Kubernetes resource-metrics collection."""
+def _metrics_for_pool(
+    rows: Iterable[ResourceNpuMetrics], pool: str | None = None
+) -> list[ResourceNpuMetrics]:
     metrics = list(rows)
+    return metrics if not pool else [row for row in metrics if row.cluster_name == pool]
+
+
+def physical_queue_state_from_metrics(
+    rows: Iterable[ResourceNpuMetrics], pool: str | None = None
+) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
+    """Aggregate a single Kubernetes resource-metrics collection."""
+    metrics = _metrics_for_pool(rows, pool)
     pending = [
         {**pod, "cluster_id": row.cluster_id, "cluster_name": row.cluster_name}
         for row in metrics for pod in (row.top_pods_json or [])
@@ -91,20 +100,77 @@ def physical_queue_state_from_metrics(rows: Iterable[ResourceNpuMetrics]) -> tup
     }, pending)
 
 
-async def physical_queue_trend(db: AsyncSession, *, now: datetime, hours: int = 24) -> list[tuple[datetime, dict[str, float | int]]]:
+async def physical_queue_trend(
+    db: AsyncSession, *, now: datetime, hours: int = 24, pool: str | None = None
+) -> list[tuple[datetime, dict[str, float | int]]]:
     """Build Queue / Running history solely from Kubernetes resource snapshots."""
-    rows = list((await db.scalars(
-        select(ResourceNpuMetrics)
-        .where(ResourceNpuMetrics.collected_at >= now - timedelta(hours=hours))
-        .order_by(ResourceNpuMetrics.collected_at.asc())
-    )).all())
+    filters = [ResourceNpuMetrics.collected_at >= now - timedelta(hours=hours)]
+    if pool:
+        filters.append(ResourceNpuMetrics.cluster_name == pool)
+    rows = list(
+        (
+            await db.scalars(
+                select(ResourceNpuMetrics)
+                .where(*filters)
+                .order_by(ResourceNpuMetrics.collected_at.asc())
+            )
+        ).all()
+    )
     grouped: dict[datetime, list[ResourceNpuMetrics]] = {}
     for row in rows:
         grouped.setdefault(row.collected_at, []).append(row)
     return [
-        (captured_at, physical_queue_state_from_metrics(metrics)[0])
+        (captured_at, physical_queue_state_from_metrics(metrics, pool)[0])
         for captured_at, metrics in grouped.items()
     ]
+
+
+def physical_queue_detail_from_metrics(
+    rows: Iterable[ResourceNpuMetrics], pool: str | None = None
+) -> tuple[dict[str, float | int], list[dict[str, Any]]]:
+    """Build Pending/Running Pod detail from one persisted Kubernetes snapshot."""
+    metrics = _metrics_for_pool(rows, pool)
+    counts, _ = physical_queue_state_from_metrics(metrics)
+    pods = [
+        {
+            **pod,
+            "cluster_id": row.cluster_id,
+            "cluster_name": row.cluster_name,
+        }
+        for row in metrics
+        for pod in (row.top_pods_json or [])
+        if isinstance(pod, dict) and pod.get("phase") in {"Pending", "Running", "Unknown"}
+    ]
+    return counts, pods
+
+
+async def physical_queue_detail(
+    db: AsyncSession, *, captured_at: datetime, pool: str | None = None
+) -> tuple[datetime, dict[str, float | int], list[dict[str, Any]]] | None:
+    """Load the latest persisted snapshot at or before a selected chart point."""
+    lookup_time = captured_at.astimezone(UTC).replace(tzinfo=None)
+    filters = [ResourceNpuMetrics.collected_at <= lookup_time]
+    if pool:
+        filters.append(ResourceNpuMetrics.cluster_name == pool)
+    actual_time = await db.scalar(
+        select(func.max(ResourceNpuMetrics.collected_at)).where(*filters)
+    )
+    if actual_time is None:
+        return None
+    rows = list(
+        (
+            await db.scalars(
+                select(ResourceNpuMetrics).where(
+                    ResourceNpuMetrics.collected_at == actual_time,
+                    *([ResourceNpuMetrics.cluster_name == pool] if pool else []),
+                )
+            )
+        ).all()
+    )
+    counts, pods = physical_queue_detail_from_metrics(rows, pool)
+    if actual_time.tzinfo is None:
+        actual_time = actual_time.replace(tzinfo=UTC)
+    return actual_time, counts, pods
 
 
 async def collect_current_snapshot(db: AsyncSession, *, captured_at: datetime | None = None) -> CINpuQueueSnapshot:

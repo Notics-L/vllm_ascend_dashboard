@@ -551,6 +551,27 @@ export const exportNightlyTestCases = async (params?: {
   return response.data
 }
 
+export const exportNightlyTestCaseRuns = async (params: {
+  format: 'json' | 'xlsx'
+  scope: 'filtered' | 'all'
+  start_date?: string
+  end_date?: string
+  source_branch?: string
+  workflow_names?: string[]
+}): Promise<Blob> => {
+  const query = new URLSearchParams()
+  query.set('format', params.format)
+  query.set('scope', params.scope)
+  if (params.start_date) query.set('start_date', params.start_date)
+  if (params.end_date) query.set('end_date', params.end_date)
+  if (params.source_branch) query.set('source_branch', params.source_branch)
+  params.workflow_names?.forEach((name) => query.append('workflow_names', name))
+  const response = await api.get<Blob>(`/ci/nightly-test-cases/run-export?${query.toString()}`, {
+    responseType: 'blob',
+  })
+  return response.data
+}
+
 export const createNightlyTestCase = async (data: NightlyTestCaseCreate): Promise<NightlyTestCase> => {
   const response = await api.post<NightlyTestCase>('/ci/nightly-test-cases', data)
   return response.data

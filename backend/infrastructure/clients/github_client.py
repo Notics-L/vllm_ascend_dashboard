@@ -285,6 +285,14 @@ class GitHubClient:
         logger.info(f"Fetching workflow run {run_id}")
         return await self._request("GET", url)
 
+    async def get_repository_workflow_runs(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        """List recent runs for this repository, for local metadata backfills."""
+        result = await self._request(
+            "GET", f"/repos/{self.owner}/{self.repo}/actions/runs",
+            params={"page": page, "per_page": min(per_page, 100)},
+        )
+        return result.get("workflow_runs", [])
+
     async def get_job_list(self, run_id: int) -> list[dict[str, Any]]:
         """
         获取 workflow run 的 job 列表（支持分页，获取所有 jobs）

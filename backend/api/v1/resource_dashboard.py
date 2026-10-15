@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -18,9 +19,39 @@ from infrastructure.core.config import settings
 from infrastructure.persistence.models import KubernetesClusterConfig
 from npu_queue.replay import load_dashboard_replay
 from resource_dashboard.metrics_query import PersistedResourceMetricsService
+from resource_dashboard.node_utilization import query_node_utilization_heatmap
 from resource_dashboard.service import ResourceDashboardService
 
 router = APIRouter()
+
+
+@router.get("/node-utilization-heatmap")
+async def get_node_utilization_heatmap(
+    db: DbSession,
+    current_user: CurrentUser,
+    pool: str | None = None,
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    bucket_hours: int = Query(24, ge=1, le=168),
+):
+    end = end or datetime.now(UTC)
+    if start is None:
+        local_end = end.astimezone(UTC) + timedelta(hours=8)
+        local_start = local_end.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
+        start = local_start - timedelta(hours=8)
+    if start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(status_code=422, detail="start and end must include a timezone")
+    if start >= end:
+        raise HTTPException(status_code=422, detail="start must be earlier than end")
+    if end - start > timedelta(days=31):
+        raise HTTPException(status_code=422, detail="time window cannot exceed 31 days")
+    return await query_node_utilization_heatmap(
+        db,
+        start=start,
+        end=end,
+        pool=pool,
+        bucket_hours=bucket_hours,
+    )
 
 
 def _cluster_response(cluster: KubernetesClusterConfig) -> KubernetesClusterResponse:

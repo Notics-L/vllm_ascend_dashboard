@@ -33,6 +33,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "lizard>=1.17.0,<2.0.0",
     "markdown>=3.5",
+    "openpyxl>=3.1.5,<4",
     "matplotlib>=3.8",
     "weasyprint>=60.0",
     "smolagents[litellm]>=1.26.0,<2.0.0",

@@ -45,9 +45,26 @@ class NpuOccupancyOptionsResponse(BaseModel):
 
 class NpuOccupancyTask(BaseModel):
     env_id: str
+    organization: str | None = None
+    repository: str | None = None
     project: str
     pool: str
     workflow: str
+    job_id: str | None = None
+    job_name: str
+    workflow_run_id: int | None = None
+    workflow_name: str | None = None
+    workflow_file: str | None = None
+    run_display_title: str | None = None
+    run_number: int | None = None
+    run_display_name: str = "未知 Run"
+    workflow_ref: str | None = None
+    pr_number: int | None = None
+    event: str | None = None
+    trigger_scope: str | None = None
+    run_url: str | None = None
+    github_url: str | None = None
+    workflow_config_match: bool = False
     cards: int
     node_ip: str | None = None
     npu_list: str | None = None
@@ -56,11 +73,33 @@ class NpuOccupancyTask(BaseModel):
     effective_end: datetime
 
 
+class NpuOccupancyRun(BaseModel):
+    key: str
+    workflow_run_id: int | None = None
+    workflow_name: str | None = None
+    workflow_file: str | None = None
+    run_display_title: str | None = None
+    run_number: int | None = None
+    run_display_name: str
+    workflow_ref: str | None = None
+    pr_number: int | None = None
+    event: str | None = None
+    trigger_scope: str | None = None
+    run_url: str | None = None
+    github_url: str | None = None
+    workflow_config_match: bool = False
+    cards: int
+    task_count: int
+    created_at: datetime
+    effective_end: datetime
+    tasks: list[NpuOccupancyTask] = Field(default_factory=list)
+
+
 class NpuOccupancyDetailGroup(BaseModel):
     name: str
     occupied_cards: int
     task_count: int
-    tasks: list[NpuOccupancyTask] = Field(default_factory=list)
+    runs: list[NpuOccupancyRun] = Field(default_factory=list)
 
 
 class NpuOccupancyDetailsResponse(BaseModel):
@@ -77,7 +116,7 @@ class NpuOccupancyAnalysisGroup(BaseModel):
     peak_cards: int
     average_cards: float
     task_count: int
-    tasks: list[NpuOccupancyTask] = Field(default_factory=list)
+    runs: list[NpuOccupancyRun] = Field(default_factory=list)
 
 
 class NpuOccupancyAnalysisResponse(BaseModel):

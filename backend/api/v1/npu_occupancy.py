@@ -61,8 +61,8 @@ async def get_trend(
     end: datetime = Query(...),
 ):
     start, end = _validate_window(start, end)
-    envs, snapshot_at = await NpuOccupancyRepository().load_envs()
-    return NpuOccupancyService(envs=envs, snapshot_at=snapshot_at).trend(dimension=dimension, names=parse_names(names), start=start, end=end)
+    records, snapshot_at = await NpuOccupancyRepository().load_records()
+    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).trend(dimension=dimension, names=parse_names(names), start=start, end=end)
 
 
 @router.get("/details", response_model=NpuOccupancyDetailsResponse)
@@ -81,8 +81,8 @@ async def get_details(
     timestamp = timestamp.astimezone(UTC)
     if not start <= timestamp <= end:
         raise HTTPException(status_code=422, detail="timestamp must be within start and end")
-    envs, snapshot_at = await NpuOccupancyRepository().load_envs()
-    return NpuOccupancyService(envs=envs, snapshot_at=snapshot_at).details(dimension=dimension, names=parse_names(names), timestamp=timestamp, group_by=group_by, start=start, end=end)
+    records, snapshot_at = await NpuOccupancyRepository().load_records()
+    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).details(dimension=dimension, names=parse_names(names), timestamp=timestamp, group_by=group_by, start=start, end=end)
 
 
 @router.get("/analysis", response_model=NpuOccupancyAnalysisResponse)
@@ -95,7 +95,7 @@ async def get_analysis(
 ):
     """Range analysis; the curve drawer remains on the single-time details API."""
     start, end = _validate_window(start, end)
-    envs, snapshot_at = await NpuOccupancyRepository().load_envs()
-    return NpuOccupancyService(envs=envs, snapshot_at=snapshot_at).analysis(
+    records, snapshot_at = await NpuOccupancyRepository().load_records()
+    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).analysis(
         dimension=dimension, names=parse_names(names), start=start, end=end,
     )
