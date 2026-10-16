@@ -1,6 +1,7 @@
 """
 贡献者看板 Service 层
 """
+import asyncio
 import logging
 from datetime import date
 from typing import Any
@@ -20,6 +21,7 @@ from contracts.schemas.contributor_board import (
     ContributorRankingResponse,
     ContributorResponse,
     ContributorSyncHistoryResponse,
+    ContributorSyncSummary,
     ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
@@ -1042,6 +1044,7 @@ class ContributorBoardService:
     async def trigger_sync(
         db,
         since_date: date | None = None,
+        until_date: date | None = None,
         full_resync: bool = False,
         repo_name: str | None = None,
         trigger_source: str = "manual",
@@ -1086,11 +1089,27 @@ class ContributorBoardService:
         else:
             since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
 
+        until_dt: datetime | None = None
+        if until_date:
+            until_dt = datetime.combine(until_date, time(23, 59, 59), tzinfo=UTC)
+
+        # 同步类型判断
+        if full_resync:
+            sync_type = "full"
+        elif since_date and until_date:
+            sync_type = "range"
+        elif since_date:
+            sync_type = "incremental"
+        else:
+            sync_type = "full"
+
         # 创建 ContributorSyncRecord (pending 状态)
         record = ContributorSyncRecord(
             repo_name=repo_name,
+            sync_type=sync_type,
             status=TaskStatus.PENDING,
             since_date=since_date,
+            until_date=until_date,
             trigger_source=trigger_source,
             progress_percent=0,
             progress_message="任务已创建，等待执行",
@@ -1104,6 +1123,7 @@ class ContributorBoardService:
             "sync_record_id": record_id,
             "repo_name": repo_name,
             "since_date": since_date.isoformat() if since_date else None,
+            "until_date": until_date.isoformat() if until_date else None,
         }
 
         task_id = await BackgroundTaskTracker.create_and_run(
@@ -1137,12 +1157,17 @@ class ContributorBoardService:
         sync_record_id = task_params["sync_record_id"]
         repo_name = task_params.get("repo_name")
         since_date_str = task_params.get("since_date")
+        until_date_str = task_params.get("until_date")
 
         since_dt: datetime | None = None
         if since_date_str:
             since_dt = datetime.fromisoformat(since_date_str).replace(hour=0, minute=0, second=0, tzinfo=UTC)
         else:
             since_dt = datetime(2024, 1, 1, tzinfo=UTC)
+
+        until_dt: datetime | None = None
+        if until_date_str:
+            until_dt = datetime.fromisoformat(until_date_str).replace(hour=23, minute=59, second=59, tzinfo=UTC)
 
         # 更新 ContributorSyncRecord 为 running
         async with AsyncSessionLocal() as db:
@@ -1182,6 +1207,7 @@ class ContributorBoardService:
             logger.info("Starting sync_contributors for record %d", sync_record_id)
             result = await sync_contributors(
                 since_date=since_dt,
+                until_date=until_dt,
                 repo_name=repo_name,
                 progress_callback=progress_callback,
             )
@@ -1226,6 +1252,7 @@ class ContributorBoardService:
                         status=final_status,
                         contributors_synced=result.contributors_synced,
                         commits_classified=result.commits_classified,
+                        total_prs_scanned=result.total_prs_scanned,
                         build_plans_created=result.build_plans_created,
                         errors=errors_json,
                         duration_seconds=result.duration_seconds,
@@ -1263,6 +1290,53 @@ class ContributorBoardService:
                 await update_db.commit()
 
             raise
+
+    @staticmethod
+    async def get_sync_summary(db, repo_name: str | None = None) -> ContributorSyncSummary:
+        """获取同步统计摘要"""
+        filters = []
+        if repo_name:
+            filters.append(ContributorSyncRecord.repo_name == repo_name)
+
+        total = select(func.count(ContributorSyncRecord.id)).where(*filters) if filters else select(func.count(ContributorSyncRecord.id))
+        completed = select(func.count(ContributorSyncRecord.id)).where(*([ContributorSyncRecord.status == "completed"] + filters))
+        failed = select(func.count(ContributorSyncRecord.id)).where(*([ContributorSyncRecord.status == "failed"] + filters))
+        running = select(func.count(ContributorSyncRecord.id)).where(*([ContributorSyncRecord.status == "running"] + filters))
+
+        total_sum = select(func.coalesce(func.sum(ContributorSyncRecord.contributors_synced), 0)).where(*filters) if filters else select(func.coalesce(func.sum(ContributorSyncRecord.contributors_synced), 0))
+        commits_sum = select(func.coalesce(func.sum(ContributorSyncRecord.commits_classified), 0)).where(*filters) if filters else select(func.coalesce(func.sum(ContributorSyncRecord.commits_classified), 0))
+        build_sum = select(func.coalesce(func.sum(ContributorSyncRecord.build_plans_created), 0)).where(*filters) if filters else select(func.coalesce(func.sum(ContributorSyncRecord.build_plans_created), 0))
+        prs_sum = select(func.coalesce(func.sum(ContributorSyncRecord.total_prs_scanned), 0)).where(*filters) if filters else select(func.coalesce(func.sum(ContributorSyncRecord.total_prs_scanned), 0))
+
+        last_record = select(ContributorSyncRecord).order_by(ContributorSyncRecord.created_at.desc()).limit(1)
+        if repo_name:
+            last_record = last_record.where(ContributorSyncRecord.repo_name == repo_name)
+
+        results = await asyncio.gather(
+            db.execute(total),
+            db.execute(completed),
+            db.execute(failed),
+            db.execute(running),
+            db.execute(total_sum),
+            db.execute(commits_sum),
+            db.execute(build_sum),
+            db.execute(prs_sum),
+            db.execute(last_record),
+        )
+
+        last_rec = results[8].scalar_one_or_none()
+        return ContributorSyncSummary(
+            total_syncs=int(results[0].scalar() or 0),
+            completed_count=int(results[1].scalar() or 0),
+            failed_count=int(results[2].scalar() or 0),
+            running_count=int(results[3].scalar() or 0),
+            total_contributors=int(results[4].scalar() or 0),
+            total_commits=int(results[5].scalar() or 0),
+            total_build_plans=int(results[6].scalar() or 0),
+            total_prs_scanned=int(results[7].scalar() or 0),
+            last_sync_at=last_rec.synced_at if last_rec else None,
+            last_sync_status=last_rec.status if last_rec else None,
+        )
 
     @staticmethod
     async def get_sync_record(db, record_id: int) -> ContributorSyncRecordResponse | None:

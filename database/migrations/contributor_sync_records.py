@@ -81,6 +81,45 @@ async def run() -> dict[str, int]:
             except Exception:
                 pass
 
+        # Add until_date column
+        result = await db.execute(text("""
+            SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_sync_records' AND COLUMN_NAME = 'until_date'
+        """))
+        if int(result.scalar_one()) == 0:
+            try:
+                await db.execute(text("""
+                    ALTER TABLE contributor_sync_records ADD COLUMN until_date DATE NULL AFTER since_date
+                """))
+            except Exception:
+                pass
+
+        # Add sync_type column (full/incremental/range)
+        result = await db.execute(text("""
+            SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_sync_records' AND COLUMN_NAME = 'sync_type'
+        """))
+        if int(result.scalar_one()) == 0:
+            try:
+                await db.execute(text("""
+                    ALTER TABLE contributor_sync_records ADD COLUMN sync_type VARCHAR(20) NOT NULL DEFAULT 'full' AFTER repo_name
+                """))
+            except Exception:
+                pass
+
+        # Add total_prs_scanned column
+        result = await db.execute(text("""
+            SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_sync_records' AND COLUMN_NAME = 'total_prs_scanned'
+        """))
+        if int(result.scalar_one()) == 0:
+            try:
+                await db.execute(text("""
+                    ALTER TABLE contributor_sync_records ADD COLUMN total_prs_scanned INT DEFAULT 0 AFTER commits_classified
+                """))
+            except Exception:
+                pass
+
         # Add index if not exists
         try:
             await db.execute(text("""

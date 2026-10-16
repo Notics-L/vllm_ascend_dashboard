@@ -49,6 +49,7 @@ class SyncResult:
     contributors_synced: int = 0
     commits_classified: int = 0
     build_plans_created: int = 0
+    total_prs_scanned: int = 0
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0
     synced_at: datetime | None = None
@@ -83,6 +84,7 @@ class ContributorSyncCollector:
     async def collect(
         self,
         since: datetime | None = None,
+        until: datetime | None = None,
     ) -> SyncResult:
         start_time = datetime.now(UTC)
         result = SyncResult()
@@ -90,15 +92,20 @@ class ContributorSyncCollector:
         if since is None:
             since = datetime(2024, 1, 1, tzinfo=UTC)
 
+        if until is None:
+            until = datetime.now(UTC)
+
         logger.info(
-            "Starting contributor sync: %s/%s since=%s",
+            "Starting contributor sync: %s/%s since=%s until=%s",
             self.owner,
             self.repo,
             since.isoformat(),
+            until.isoformat(),
         )
 
         try:
-            prs = await self._fetch_prs(since)
+            prs = await self._fetch_prs(since, until)
+            result.total_prs_scanned = len(prs)
             logger.info("Fetched %d PRs for contributor sync", len(prs))
 
             if self.progress_callback:
@@ -172,14 +179,13 @@ class ContributorSyncCollector:
 
     # ── 私有方法：PR 拉取 ─────────────────────────────────────────
 
-    async def _fetch_prs(self, since: datetime) -> list[dict[str, Any]]:
-        now = datetime.now(UTC)
+    async def _fetch_prs(self, since: datetime, until: datetime) -> list[dict[str, Any]]:
         try:
             return await self.github.get_pull_requests_by_updated_range(
                 self.owner,
                 self.repo,
                 since,
-                now,
+                until,
                 max_items=None,
             )
         except GitHubRateLimitError:
@@ -997,6 +1003,7 @@ def _resolve_repos() -> list[tuple[str, str]]:
 
 async def sync_contributors(
     since_date: datetime | None = None,
+    until_date: datetime | None = None,
     repo_name: str | None = None,
     progress_callback=None,
 ) -> SyncResult:
@@ -1004,6 +1011,7 @@ async def sync_contributors(
 
     Args:
         since_date: 增量同步的起始时间，默认为 2024-01-01
+        until_date: 增量同步的截止时间，默认为当前时间
         repo_name: 指定仓库名（owner/repo），不传则同步所有仓库
         progress_callback: 异步回调 (percent: int, message: str) -> None
 
@@ -1054,7 +1062,7 @@ async def sync_contributors(
                             await progress_callback(global_pct, f"[{repo_key}] {msg}")
 
                     collector = ContributorSyncCollector(github_client, db, progress_callback=repo_progress)
-                    result = await collector.collect(since=since_date)
+                    result = await collector.collect(since=since_date, until=until_date)
         except Exception as e:
             logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
             result = SyncResult(errors=[f"Repo {repo_key}: {e}"])
@@ -1078,6 +1086,7 @@ async def sync_contributors(
             combined.contributors_synced += result.contributors_synced
             combined.commits_classified += result.commits_classified
             combined.build_plans_created += result.build_plans_created
+            combined.total_prs_scanned += result.total_prs_scanned
             combined.errors.extend(result.errors)
             if result.synced_at and (combined.synced_at is None or result.synced_at > combined.synced_at):
                 combined.synced_at = result.synced_at

@@ -310,10 +310,13 @@ export const getContributorTrend = async (
 export interface SyncRecord {
   id: number
   repo_name: string | null
+  sync_type: string
   status: string
   since_date: string | null
+  until_date: string | null
   contributors_synced: number
   commits_classified: number
+  total_prs_scanned: number
   build_plans_created: number
   errors: string[]
   duration_seconds: number
@@ -332,12 +335,14 @@ export interface SyncRecord {
 export const syncContributors = async (
   params?: {
     sinceDate?: string
+    untilDate?: string
     fullResync?: boolean
     repoName?: string
   }
 ) => {
   const body: Record<string, unknown> = {
     since_date: params?.sinceDate,
+    until_date: params?.untilDate,
     full_resync: params?.fullResync ?? false,
   }
   if (params?.repoName) body.repo_name = params.repoName
@@ -378,6 +383,29 @@ export const getSyncHistory = async (params?: {
   if (params?.status) queryParams.status = params.status
   const response = await api.get<{ records: SyncRecord[]; total: number }>('/contributor-board/sync/history', { params: queryParams })
   return response.data
+}
+
+/**
+ * 获取同步统计摘要
+ */
+export const getSyncSummary = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<SyncSummary>('/contributor-board/sync/summary', { params: queryParams })
+  return response.data
+}
+
+export interface SyncSummary {
+  total_syncs: number
+  completed_count: number
+  failed_count: number
+  running_count: number
+  total_contributors: number
+  total_commits: number
+  total_build_plans: number
+  total_prs_scanned: number
+  last_sync_at: string | null
+  last_sync_status: string | null
 }
 
 // ==================== 角色统计 ====================

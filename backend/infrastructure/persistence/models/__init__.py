@@ -1140,10 +1140,13 @@ class ContributorSyncRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     repo_name = Column(String(200), nullable=True, index=True)
+    sync_type = Column(String(20), nullable=False, default="full")
     status = Column(String(20), nullable=False, index=True)
     since_date = Column(Date)
+    until_date = Column(Date, nullable=True)
     contributors_synced = Column(Integer, default=0)
     commits_classified = Column(Integer, default=0)
+    total_prs_scanned = Column(Integer, default=0)
     build_plans_created = Column(Integer, default=0)
     errors = Column(JSON)
     duration_seconds = Column(Float, default=0)

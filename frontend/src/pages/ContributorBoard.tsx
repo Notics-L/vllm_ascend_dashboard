@@ -42,11 +42,13 @@ import {
   Typography,
 } from 'antd'
 import {
-  ClockCircleOutlined,
-  CodeOutlined,
-  CloudUploadOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
+   CalendarOutlined,
+   ClockCircleOutlined,
+   CodeOutlined,
+   CloudUploadOutlined,
+   CheckCircleOutlined,
+   CloseCircleOutlined,
+   ColumnHeightOutlined,
   DeleteOutlined,
   EyeOutlined,
   DownloadOutlined,
@@ -93,11 +95,13 @@ import {
   getSyncSchedule,
   updateSyncSchedule,
   type ContributorSyncScheduleConfig,
-  syncContributors,
-  type SyncRecord,
-  getSyncStatus,
-  getSyncHistory,
-  cancelSync,
+   syncContributors,
+   type SyncRecord,
+   type SyncSummary,
+   getSyncStatus,
+   getSyncHistory,
+   getSyncSummary,
+   cancelSync,
 } from '../services/contributorBoard'
 
 const { Title, Text } = Typography
@@ -1931,23 +1935,15 @@ function SettingsTab() {
   const [settings, setSettings] = useState<SettingsType | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [scheduleForm] = Form.useForm()
-  const [schedule, setSchedule] = useState<ContributorSyncScheduleConfig | null>(null)
-  const [scheduleSaving, setScheduleSaving] = useState(false)
-  const [cronModalOpen, setCronModalOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       setLoading(true)
       try {
-        const [settingsData, scheduleData] = await Promise.all([
-          getContributorBoardSettings(),
-          getSyncSchedule(),
-        ])
+        const settingsData = await getContributorBoardSettings()
         if (!cancelled) {
           setSettings(settingsData)
-          setSchedule(scheduleData)
           form.setFieldValue('y_axis_type', settingsData.quadrant_config.y_axis_type)
           form.setFieldValue('merged_pr_weight', settingsData.scoring_weights.merged_pr_weight)
           form.setFieldValue('code_line_weight', settingsData.scoring_weights.code_line_weight)
@@ -1957,9 +1953,6 @@ function SettingsTab() {
           form.setFieldValue('star_threshold', settingsData.role_thresholds.star_threshold)
           form.setFieldValue('active_threshold', settingsData.role_thresholds.active_threshold)
           form.setFieldValue('max_error_score', settingsData.role_thresholds.max_error_score)
-          scheduleForm.setFieldValue('scheduled_enabled', scheduleData.enabled)
-          scheduleForm.setFieldValue('scheduled_full_cron', scheduleData.full_cron)
-          scheduleForm.setFieldValue('scheduled_incremental_interval', scheduleData.incremental_interval_minutes)
         }
       } catch { /* ignore */ } finally {
         if (!cancelled) setLoading(false)
@@ -1967,7 +1960,7 @@ function SettingsTab() {
     }
     load()
     return () => { cancelled = true }
-  }, [form, scheduleForm])
+  }, [form])
 
   const handleSave = async () => {
     try {
@@ -1996,26 +1989,6 @@ function SettingsTab() {
       message.error('保存失败')
     } finally {
       setSaving(false)
-    }
-  }
-
-  const handleScheduleSave = async () => {
-    try {
-      const values = await scheduleForm.validateFields()
-      setScheduleSaving(true)
-      await updateSyncSchedule({
-        enabled: values.scheduled_enabled,
-        full_cron: values.scheduled_full_cron,
-        incremental_interval_minutes: values.scheduled_incremental_interval,
-      })
-      message.success('定时同步设置已保存，Scheduler 将在下次重载时生效')
-      window.dispatchEvent(new CustomEvent('settings-updated'))
-      const data = await getSyncSchedule()
-      setSchedule(data)
-    } catch (err) {
-      message.error('保存定时同步设置失败')
-    } finally {
-      setScheduleSaving(false)
     }
   }
 
@@ -2130,71 +2103,6 @@ function SettingsTab() {
           </Card>
         </Col>
       </Row>
-
-      {/* 定时同步设置 */}
-      <Row gutter={[20, 0]} style={{ marginTop: 20 }}>
-        <Col xs={24} md={12}>
-          <Card
-            title={<><ClockCircleOutlined style={{ marginRight: 6, color: '#722ed1' }} />定时同步设置</>}
-            extra={
-              <Button size="small" loading={scheduleSaving} onClick={handleScheduleSave}>
-                保存定时设置
-              </Button>
-            }
-            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}
-          >
-            <Form form={scheduleForm}>
-              <Form.Item name="scheduled_enabled" label="启用定时同步" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-              <Form.Item label="全量同步时间">
-                {(() => {
-                  const c = schedule?.full_cron || '0 2 * * *'
-                  const p = c.split(' ')
-                  if (p.length !== 5) return <Text>{c}</Text>
-                  const [min, hour, day, _month, dow] = p
-                  let display = ''
-                  if (dow !== '*') {
-                    const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-                    const days = dow.split(',').map(n => parseInt(n)).map(n => dayNames[n] || n).join('、')
-                    display = `每周${days} ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
-                  } else if (day !== '*') {
-                    display = `每月${day}日 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
-                  } else {
-                    display = `每天 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
-                  }
-                  return (
-                    <Space>
-                      <Text style={{ fontSize: 13 }}>{display}</Text>
-                      <Button type="link" size="small" onClick={() => setCronModalOpen(true)}>修改</Button>
-                    </Space>
-                  )
-                })()}
-              </Form.Item>
-              <Form.Item
-                name="scheduled_incremental_interval"
-                label="增量同步间隔"
-                tooltip="每多少分钟执行一次增量同步（30-1440 分钟）"
-                rules={[
-                  { required: true, message: '请输入增量同步间隔' }
-                ]}
-                extra={`当前: ${(schedule?.incremental_interval_minutes ?? 360) / 60} 小时`}
-              >
-                <InputNumber min={30} max={1440} step={30} style={{ width: '100%' }} addonAfter="分钟" />
-              </Form.Item>
-            </Form>
-          </Card>
-        </Col>
-      </Row>
-
-      <CronModal
-        open={cronModalOpen}
-        cron={schedule?.full_cron || '0 2 * * *'}
-        onChange={(newCron) => {
-          scheduleForm.setFieldValue('scheduled_full_cron', newCron)
-        }}
-        onClose={() => setCronModalOpen(false)}
-      />
     </Spin>
   )
 }
@@ -2395,10 +2303,246 @@ function ContributorDetailPage() {
 }
 
 /* ------------------------------------------------------------------ */
+/*                       手动同步 子组件                              */
+/* ------------------------------------------------------------------ */
+
+const { RangePicker } = DatePicker
+
+function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
+  const [syncMode, setSyncMode] = useState<'full' | 'incremental' | 'range'>('incremental')
+  const [singleDate, setSingleDate] = useState<dayjs.Dayjs | null>(null)
+  const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null)
+  const [targetRepo, setTargetRepo] = useState<string | undefined>(selectedRepo)
+  const [syncLoading, setSyncLoading] = useState(false)
+  const [currentRecord, setCurrentRecord] = useState<SyncRecord | null>(null)
+  const [syncProgress, setSyncProgress] = useState(0)
+  const [syncProgressMsg, setSyncProgressMsg] = useState('')
+  const [repos, setRepos] = useState<string[]>([])
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    setTargetRepo(selectedRepo)
+  }, [selectedRepo])
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const data = await getReposList()
+        setRepos(data.repos ?? [])
+      } catch { /* ignore */ }
+
+      // 检查是否有正在运行的同步任务，刷新后恢复进度条
+      try {
+        const history = await getSyncHistory({ limit: 1, offset: 0 })
+        const running = history.records?.find((r: SyncRecord) => r.status === 'running' || r.status === 'pending')
+        if (running) {
+          setCurrentRecord(running)
+          setSyncProgress(running.progress_percent)
+          setSyncProgressMsg(running.progress_message || '')
+          setSyncLoading(true)
+          startPollSync(running.id)
+        }
+      } catch { /* ignore */ }
+    }
+    init()
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+    }
+  }, [])
+
+  const startPollSync = (recordId: number) => {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const status = await getSyncStatus(recordId)
+        setCurrentRecord(status)
+        setSyncProgress(status.progress_percent)
+        setSyncProgressMsg(status.progress_message || '')
+        if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+          pollTimerRef.current = null
+          setSyncLoading(false)
+          message.success(status.status === 'completed' ? '同步完成' : '同步失败')
+          setCurrentRecord(null)
+          setSyncProgress(0)
+          setSyncProgressMsg('')
+          window.dispatchEvent(new Event('settings-updated'))
+          window.dispatchEvent(new Event('sync-history-refresh'))
+        }
+      } catch { /* polling error */ }
+    }, 2000)
+  }
+
+  const handleSync = async () => {
+    if (syncLoading) return
+    if (syncMode === 'incremental' && !singleDate) { message.warning('请选择起始日期'); return }
+    if (syncMode === 'range' && (!dateRange || !dateRange[0] || !dateRange[1])) { message.warning('请选择完整的时间范围'); return }
+
+    setSyncLoading(true)
+    try {
+      const result = await syncContributors({
+        fullResync: syncMode === 'full',
+        repoName: targetRepo || undefined,
+        sinceDate: syncMode === 'range' ? dateRange?.[0]?.format('YYYY-MM-DD') : singleDate?.format('YYYY-MM-DD'),
+        untilDate: syncMode === 'range' ? dateRange?.[1]?.format('YYYY-MM-DD') : undefined,
+      })
+      if (result.record_id) {
+        startPollSync(result.record_id)
+        message.success('同步已触发，后台执行中...')
+      } else { message.warning('同步触发失败'); setSyncLoading(false) }
+    } catch (err: unknown) {
+      const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '同步触发失败'
+      message.error(msg)
+      setSyncLoading(false)
+    }
+  }
+
+  const [cancelling, setCancelling] = useState(false)
+
+  const isRunning = currentRecord?.status === 'running' || currentRecord?.status === 'pending'
+
+  const handleCancel = async () => {
+    if (!currentRecord || cancelling) return
+    setCancelling(true)
+    try {
+      await cancelSync(currentRecord.id)
+      message.success('同步任务已取消')
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+      setSyncLoading(false)
+      setCurrentRecord(null)
+      setSyncProgress(0)
+      setSyncProgressMsg('')
+    } catch {
+      message.error('取消失败')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
+  const cardStyle = {
+    background: '#fff',
+    borderRadius: 12,
+    boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+    border: '1px solid #f0f0f0',
+  }
+
+  const itemCards = [
+    {
+      title: <><CloudUploadOutlined style={{ marginRight: 6, color: '#1890ff' }} />同步模式</>,
+      children: (
+        <Radio.Group
+          value={syncMode}
+          onChange={(e) => { if (!isRunning) setSyncMode(e.target.value) }}
+          disabled={isRunning}
+          optionType="button"
+          buttonStyle="solid"
+          size="middle"
+        >
+          <Radio.Button value="full">全量</Radio.Button>
+          <Radio.Button value="incremental">增量</Radio.Button>
+          <Radio.Button value="range">范围</Radio.Button>
+        </Radio.Group>
+      ),
+    },
+    {
+      title: <><CalendarOutlined style={{ marginRight: 6, color: '#52c41a' }} />{syncMode === 'incremental' ? '起始日期' : syncMode === 'full' ? '说明' : '时间范围'}</>,
+      children: syncMode === 'full' ? (
+        <Alert message="从 2024-01-01 开始拉取所有 PR 数据，耗时较长" type="info" showIcon style={{ fontSize: 13 }} />
+      ) : syncMode === 'incremental' ? (
+        <DatePicker
+          value={singleDate}
+          onChange={setSingleDate}
+          placeholder="选择起始日期"
+          style={{ width: 220 }}
+          disabledDate={(current) => current && current > dayjs().endOf('day')}
+        />
+      ) : (
+        <RangePicker
+          value={dateRange}
+          onChange={(dates) => setDateRange(dates as [dayjs.Dayjs, dayjs.Dayjs] | null)}
+          placeholder={['起始日期', '截止日期']}
+          style={{ width: 340 }}
+        />
+      ),
+    },
+    {
+      title: <><GithubOutlined style={{ marginRight: 6, color: '#722ed1' }} />目标仓库</>,
+      extra: (
+        <Button
+          type="primary"
+          icon={<CloudUploadOutlined />}
+          loading={syncLoading && !currentRecord}
+          disabled={isRunning}
+          onClick={handleSync}
+        >
+          {isRunning ? '同步中' : '开始'}
+        </Button>
+      ),
+      children: (
+        <Select
+          allowClear
+          placeholder="选择仓库（留空则同步全部）"
+          value={targetRepo}
+          onChange={setTargetRepo}
+          style={{ width: '100%' }}
+          options={repos.map(r => ({ label: r, value: r }))}
+          suffixIcon={<SearchOutlined />}
+        />
+      ),
+    },
+  ]
+
+  return (
+    <div>
+      <Row gutter={[16, 16]}>
+        {itemCards.map((card, i) => (
+          <Col xs={24} md={8} key={i}>
+            <Card size="small" title={card.title} extra={card.extra} style={cardStyle} bodyStyle={{ padding: '16px 20px' }}>
+              {card.children}
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      {(currentRecord && (currentRecord.status === 'running' || currentRecord.status === 'pending')) && (
+        <Card size="small" style={{ ...cardStyle, marginTop: 16 }} bodyStyle={{ padding: '16px 20px' }}
+          extra={
+            <Button danger size="small" icon={<StopOutlined />} loading={cancelling} onClick={handleCancel}>
+              终止同步
+            </Button>
+          }>
+          <Space style={{ marginBottom: 6 }}>
+            {currentRecord.status === 'running'
+              ? <Tag color="processing"><ClockCircleOutlined /> 执行中</Tag>
+              : <Tag color="default"><ClockCircleOutlined /> 等待中</Tag>}
+            {currentRecord.contributors_synced > 0 && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {currentRecord.contributors_synced} 贡献者 · {currentRecord.commits_classified} 提交
+              </Text>
+            )}
+          </Space>
+          <Progress
+            percent={Math.round(syncProgress)}
+            status="active"
+            strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+            size="small"
+          />
+          {syncProgressMsg && (
+            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{syncProgressMsg}</Text>
+          )}
+        </Card>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*                        同步记录历史 Tab                              */
 /* ------------------------------------------------------------------ */
 
-function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRetry?: (repoName?: string) => void }) {
+function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
+  const [retryingId, setRetryingId] = useState<number | null>(null)
   const [records, setRecords] = useState<SyncRecord[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -2406,6 +2550,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
   const [filterStatus, setFilterStatus] = useState<string | null>(null)
   const [detailRecord, setDetailRecord] = useState<SyncRecord | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
+  const [summary, setSummary] = useState<SyncSummary | null>(null)
 
   const loadHistory = async () => {
     setLoading(true)
@@ -2424,6 +2569,13 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
     }
   }
 
+  const loadSummary = async () => {
+    try {
+      const data = await getSyncSummary({ repo_name: selectedRepo || null })
+      setSummary(data)
+    } catch { /* ignore */ }
+  }
+
   const handleCancel = async (recordId: number) => {
     if (cancellingId) return
     setCancellingId(recordId)
@@ -2438,14 +2590,44 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
     }
   }
 
+  const handleRetry = async (r: SyncRecord) => {
+    if (retryingId) return
+    setRetryingId(r.id)
+    try {
+      const sinceDate = r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : undefined
+      const untilDate = r.until_date ? dayjs(r.until_date).format('YYYY-MM-DD') : undefined
+      const fullResync = r.sync_type === 'full'
+      const result = await syncContributors({
+        fullResync,
+        repoName: r.repo_name || undefined,
+        sinceDate,
+        untilDate,
+      })
+      if (result.record_id) {
+        message.success('重试已触发，后台执行中...')
+        loadHistory()
+      } else {
+        message.warning('重试触发失败')
+      }
+    } catch (err: unknown) {
+      const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '重试失败'
+      message.error(msg)
+    } finally {
+      setRetryingId(null)
+    }
+  }
+
   const [refreshTrigger, setRefreshTrigger] = useState(0)
 
   useEffect(() => {
     loadHistory()
+    loadSummary()
   }, [selectedRepo, filterStatus, pagination.current, pagination.pageSize, refreshTrigger])
 
   useEffect(() => {
-    const handler = () => setRefreshTrigger(t => t + 1)
+    const handler = () => {
+      setRefreshTrigger(t => t + 1)
+    }
     window.addEventListener('sync-history-refresh', handler)
     return () => window.removeEventListener('sync-history-refresh', handler)
   }, [])
@@ -2459,12 +2641,19 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
     cancelled: { color: 'orange', label: '已取消', icon: <StopOutlined /> },
   }
 
+  const syncTypeConfig: Record<string, { color: string; label: string; icon: JSX.Element }> = {
+    full: { color: 'blue', label: '全量', icon: <ReloadOutlined /> },
+    incremental: { color: 'green', label: '增量', icon: <CalendarOutlined /> },
+    range: { color: 'orange', label: '范围', icon: <ColumnHeightOutlined /> },
+  }
+
   const columns = [
     {
       title: 'ID',
       dataIndex: 'id',
       key: 'id',
       width: 60,
+      align: 'center' as const,
     },
     {
       title: '状态',
@@ -2477,11 +2666,21 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
       },
     },
     {
+      title: '同步类型',
+      dataIndex: 'sync_type',
+      key: 'sync_type',
+      width: 90,
+      render: (v: string) => {
+        const cfg = syncTypeConfig[v] || { color: 'default', label: v || '全量', icon: <ReloadOutlined /> }
+        return <Tag color={cfg.color} style={{ margin: 0 }}>{cfg.icon} {cfg.label}</Tag>
+      },
+    },
+    {
       title: '来源',
       dataIndex: 'trigger_source',
       key: 'trigger_source',
-      width: 100,
-      render: (v: string | undefined) => {
+      width: 90,
+      render: (v: string) => {
         const map: Record<string, { color: string; label: string }> = {
           manual: { color: 'blue', label: '手动' },
           scheduled_full: { color: 'cyan', label: '定时全量' },
@@ -2495,54 +2694,74 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
       title: '仓库',
       dataIndex: 'repo_name',
       key: 'repo_name',
-      width: 200,
+      width: 180,
       render: (v: string | null) => v || '全部仓库',
+    },
+    {
+      title: '时间范围',
+      key: 'date_range',
+      width: 200,
+      render: (_: unknown, r: SyncRecord) => {
+        if (r.sync_type === 'full') {
+          return '2024-01-01 ~ 至今'
+        }
+        if (r.until_date) {
+          return `${r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : '-'} ~ ${dayjs(r.until_date).format('YYYY-MM-DD')}`
+        }
+        return `${r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : '-'} ~ 至今`
+      },
     },
     {
       title: '进度',
       key: 'progress',
-      width: 180,
-      render: (_: unknown, record: SyncRecord) => (
+      width: 120,
+      render: (_: unknown, r: SyncRecord) => (
         <div>
-          <Progress percent={Math.round(record.progress_percent)} size="small" status={record.status === 'failed' ? 'exception' : record.status === 'cancelled' ? 'normal' : record.status === 'completed' ? 'success' : record.status === 'partial' ? 'normal' : 'active'} />
-          {record.progress_message && <div style={{ fontSize: 11, color: '#999' }}>{record.progress_message}</div>}
+          <Progress percent={Math.round(r.progress_percent)} size="small"
+            status={r.status === 'failed' ? 'exception' : r.status === 'cancelled' ? 'normal' : r.status === 'completed' ? 'success' : r.status === 'partial' ? 'normal' : 'active'} />
+          {r.progress_message && <div style={{ fontSize: 11, color: '#999' }}>{r.progress_message}</div>}
         </div>
       ),
+    },
+    {
+      title: 'PR数',
+      dataIndex: 'total_prs_scanned',
+      key: 'total_prs_scanned',
+      width: 70,
+      align: 'right' as const,
+      render: (v: number) => v || '-',
     },
     {
       title: '贡献者',
       dataIndex: 'contributors_synced',
       key: 'contributors_synced',
-      width: 90,
+      width: 80,
+      align: 'right' as const,
     },
     {
       title: '提交数',
       dataIndex: 'commits_classified',
-      key: 'commits_classed',
-      width: 90,
-    },
-    {
-      title: '构建计划',
-      dataIndex: 'build_plans_created',
-      key: 'build_plans_created',
-      width: 90,
+      key: 'commits_classified',
+      width: 80,
+      align: 'right' as const,
     },
     {
       title: '耗时',
       key: 'duration',
       width: 80,
-      render: (_: unknown, r: SyncRecord) => `${(r.duration_seconds / 60).toFixed(1)}min`,
+      align: 'right' as const,
+      render: (_: unknown, r: SyncRecord) => r.duration_seconds > 0 ? `${(r.duration_seconds / 60).toFixed(1)}min` : '-',
     },
     {
       title: '时间',
       key: 'created_at',
-      width: 170,
-      render: (_: unknown, r: SyncRecord) => dayjs(r.created_at).format('MM-DD HH:mm'),
+      width: 150,
+      render: (_: unknown, r: SyncRecord) => dayjs(r.created_at).format('YYYY-MM-DD HH:mm'),
     },
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 140,
       fixed: 'right' as const,
       render: (_: unknown, r: SyncRecord) => {
         const errors = typeof r.errors === 'string' ? (r.errors ? JSON.parse(r.errors) : []) : (r.errors || [])
@@ -2550,7 +2769,7 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
           <Space size="small">
             {errors.length > 0 && (
               <Tag color="blue" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => setDetailRecord(r)}>
-                <EyeOutlined /> 查看错误
+                <EyeOutlined /> 错误
               </Tag>
             )}
             {(r.status === 'running' || r.status === 'pending') && (
@@ -2558,9 +2777,9 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
                 <DeleteOutlined /> 终止
               </Tag>
             )}
-            {(r.status === 'failed' || r.status === 'partial') && onRetry && (
-              <Tag color="orange" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => onRetry(r.repo_name || undefined)}>
-                <ReloadOutlined /> 重新同步
+            {(r.status === 'failed' || r.status === 'partial') && (
+              <Tag color="orange" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }} onClick={() => handleRetry(r)}>
+                <ReloadOutlined /> 重试
               </Tag>
             )}
           </Space>
@@ -2571,8 +2790,54 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
 
   return (
     <div>
+      {/* 统计卡片 */}
+      {summary && (
+        <Row gutter={16} style={{ marginBottom: 20 }}>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="总同步次数" value={summary.total_syncs} suffix="次" valueStyle={{ color: '#1890ff' }} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="成功次数" value={summary.completed_count} suffix="次" valueStyle={{ color: '#52c41a' }} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="失败次数" value={summary.failed_count} suffix="次" valueStyle={{ color: summary.failed_count > 0 ? '#ff4d4f' : '#999' }} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="正在运行" value={summary.running_count} suffix="个" valueStyle={{ color: summary.running_count > 0 ? '#faad14' : '#999' }} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="扫描 PR 总计" value={summary.total_prs_scanned} precision={0} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="贡献者总计" value={summary.total_contributors} precision={0} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="提交总计" value={summary.total_commits} precision={0} />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <Statistic title="上次同步" value={summary.last_sync_at ? dayjs(summary.last_sync_at).fromNow() : '无记录'} valueStyle={{ fontSize: 13, color: summary.last_sync_status === 'completed' ? '#52c41a' : '#999' }} />
+            </Card>
+          </Col>
+        </Row>
+      )}
+
       <div style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
-        <Button onClick={loadHistory} icon={<ReloadOutlined />}>刷新</Button>
+        <Button onClick={() => { loadHistory(); loadSummary() }} icon={<ReloadOutlined />}>刷新</Button>
         <Select
           allowClear
           placeholder="状态过滤"
@@ -2609,13 +2874,8 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
         title={<><CloudUploadOutlined /> 同步记录详情</>}
         open={!!detailRecord}
         onCancel={() => setDetailRecord(null)}
-        footer={[
-          <Button key="close" onClick={() => setDetailRecord(null)}>关闭</Button>,
-          detailRecord && (detailRecord.status === 'failed' || detailRecord.status === 'partial') && onRetry ? (
-            <Button key="retry" type="primary" danger onClick={() => { setDetailRecord(null); onRetry(detailRecord.repo_name || undefined) }}>重新同步</Button>
-          ) : null,
-        ]}
-        width={640}
+        footer={[<Button key="close" onClick={() => setDetailRecord(null)}>关闭</Button>]}
+        width={700}
       >
         {detailRecord && (
           <div>
@@ -2626,8 +2886,29 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
                   return <Tag color={cfg.color}>{cfg.icon} {cfg.label}</Tag>
                 })()}
               </Descriptions.Item>
+              <Descriptions.Item label="同步类型">
+                {(() => {
+                  const cfg = syncTypeConfig[detailRecord.sync_type] || { color: 'default', label: detailRecord.sync_type || '全量', icon: <ReloadOutlined /> }
+                  return <Tag color={cfg.color}>{cfg.icon} {cfg.label}</Tag>
+                })()}
+              </Descriptions.Item>
               <Descriptions.Item label="仓库">
                 {detailRecord.repo_name || '全部仓库'}
+              </Descriptions.Item>
+              <Descriptions.Item label="来源">
+                {detailRecord.trigger_source === 'manual' ? <Tag color="blue">手动</Tag>
+                  : detailRecord.trigger_source === 'scheduled_full' ? <Tag color="cyan">定时全量</Tag>
+                  : detailRecord.trigger_source === 'scheduled_incremental' ? <Tag color="purple">定时增量</Tag>
+                  : detailRecord.trigger_source}
+              </Descriptions.Item>
+              <Descriptions.Item label="时间范围">
+                {detailRecord.sync_type === 'full' ? '2024-01-01 ~ 至今'
+                  : detailRecord.until_date
+                    ? `${detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '-'} ~ ${dayjs(detailRecord.until_date).format('YYYY-MM-DD')}`
+                    : `${detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '-'} ~ 至今`}
+              </Descriptions.Item>
+              <Descriptions.Item label="扫描 PR 数">
+                {detailRecord.total_prs_scanned || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
                 {dayjs(detailRecord.created_at).format('YYYY-MM-DD HH:mm:ss')}
@@ -2641,13 +2922,6 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
               <Descriptions.Item label="耗时">
                 {detailRecord.duration_seconds > 0 ? `${(detailRecord.duration_seconds / 60).toFixed(1)} min` : '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="进度">
-                <Progress percent={Math.round(detailRecord.progress_percent)} size="small"
-                  status={detailRecord.status === 'failed' ? 'exception' : detailRecord.status === 'cancelled' ? 'normal' : detailRecord.status === 'completed' ? 'success' : detailRecord.status === 'partial' ? 'normal' : 'active'} />
-              </Descriptions.Item>
-              <Descriptions.Item label="进度信息">
-                {detailRecord.progress_message || '无'}
-              </Descriptions.Item>
               <Descriptions.Item label="贡献者数">
                 {detailRecord.contributors_synced}
               </Descriptions.Item>
@@ -2657,8 +2931,9 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
               <Descriptions.Item label="构建计划数">
                 {detailRecord.build_plans_created}
               </Descriptions.Item>
-              <Descriptions.Item label="增量起始日期">
-                {detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '全量'}
+              <Descriptions.Item label="进度">
+                <Progress percent={Math.round(detailRecord.progress_percent)} size="small"
+                  status={detailRecord.status === 'failed' ? 'exception' : detailRecord.status === 'cancelled' ? 'normal' : detailRecord.status === 'completed' ? 'success' : detailRecord.status === 'partial' ? 'normal' : 'active'} />
               </Descriptions.Item>
             </Descriptions>
 
@@ -2686,125 +2961,233 @@ function SyncHistoryTab({ selectedRepo, onRetry }: { selectedRepo?: string; onRe
 }
 
 /* ------------------------------------------------------------------ */
+/*                       定时设置 子组件                              */
+/* ------------------------------------------------------------------ */
+
+function ScheduleSettingsPanel() {
+  const [scheduleForm] = Form.useForm()
+  const [schedule, setSchedule] = useState<ContributorSyncScheduleConfig | null>(null)
+  const [scheduleLoading, setScheduleLoading] = useState(true)
+  const [scheduleSaving, setScheduleSaving] = useState(false)
+  const [cronModalOpen, setCronModalOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setScheduleLoading(true)
+      try {
+        const data = await getSyncSchedule()
+        if (!cancelled) {
+          setSchedule(data)
+          scheduleForm.setFieldValue('scheduled_enabled', data.enabled)
+          scheduleForm.setFieldValue('scheduled_full_cron', data.full_cron)
+          scheduleForm.setFieldValue('scheduled_incremental_interval', data.incremental_interval_minutes)
+        }
+      } catch { /* ignore */ } finally {
+        if (!cancelled) setScheduleLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [scheduleForm])
+
+  const handleScheduleSave = async () => {
+    try {
+      const values = await scheduleForm.validateFields()
+      setScheduleSaving(true)
+      await updateSyncSchedule({
+        enabled: values.scheduled_enabled,
+        full_cron: values.scheduled_full_cron,
+        incremental_interval_minutes: values.scheduled_incremental_interval,
+      })
+      message.success('定时同步设置已保存，Scheduler 将在下次重载时生效')
+      window.dispatchEvent(new CustomEvent('settings-updated'))
+      const data = await getSyncSchedule()
+      setSchedule(data)
+    } catch (err) {
+      message.error('保存定时同步设置失败')
+    } finally {
+      setScheduleSaving(false)
+    }
+  }
+
+  const cardStyle = {
+    background: '#fff',
+    borderRadius: 12,
+    boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+    border: '1px solid #f0f0f0',
+  }
+
+  const cronToText = (expr: string) => {
+    const p = expr.split(' ')
+    if (p.length !== 5) return expr
+    const [min, hour, day, _month, dow] = p
+    if (dow !== '*') {
+      const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      const days = dow.split(',').map(n => parseInt(n)).map(n => dayNames[n] || n).join('、')
+      return `每周${days} ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+    }
+    if (day !== '*') return `每月${day}日 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+    return `每天 ${parseInt(hour)}:${parseInt(min).toString().padStart(2, '0')}`
+  }
+
+  return (
+    <Spin spinning={scheduleLoading}>
+      <Card size="small" style={cardStyle} bodyStyle={{ padding: '24px 32px' }}
+        title={
+          <Space>
+            <ClockCircleOutlined style={{ color: '#722ed1', fontSize: 18 }} />
+            <span style={{ fontWeight: 600 }}>定时同步设置</span>
+          </Space>
+        }
+        extra={
+          <Space>
+            <Form form={scheduleForm} style={{ marginBottom: 0 }}>
+              <Form.Item name="scheduled_enabled" valuePropName="checked" style={{ marginBottom: 0 }}>
+                <Switch size="small" checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+            </Form>
+            <Text type="secondary" style={{ fontSize: 12 }}>启用定时</Text>
+          </Space>
+        }
+      >
+        <Descriptions bordered size="small" column={1}
+          style={{ marginBottom: 0 }}
+        >
+          <Descriptions.Item label={
+            <Space><RocketOutlined style={{ color: '#fa8c16' }} /><span>全量同步时间</span></Space>
+          }>
+            <Space>
+              <Tag color="purple" style={{ padding: '4px 12px', fontSize: 13 }}>{cronToText(schedule?.full_cron || '0 2 * * *')}</Tag>
+              <Text type="secondary" style={{ fontSize: 11 }}>{schedule?.full_cron || '0 2 * * *'}</Text>
+              <Button type="link" size="small" onClick={() => setCronModalOpen(true)}>修改</Button>
+            </Space>
+          </Descriptions.Item>
+          <Descriptions.Item label={
+            <Space><ReloadOutlined style={{ color: '#13c2c2' }} /><span>增量同步间隔</span></Space>
+          }>
+            <Space>
+              <Form form={scheduleForm}>
+                <Form.Item name="scheduled_incremental_interval" style={{ marginBottom: 0, display: 'inline-block' }}>
+                  <InputNumber min={30} max={1440} step={30} style={{ width: 140 }} addonAfter="分钟" />
+                </Form.Item>
+              </Form>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                当前 {(schedule?.incremental_interval_minutes ?? 360) / 60} 小时
+              </Text>
+            </Space>
+          </Descriptions.Item>
+        </Descriptions>
+
+        <Divider style={{ margin: '16px 0' }} />
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            修改后需保存并等待下次 Scheduler 重载生效
+          </Text>
+          <Button type="primary" loading={scheduleSaving} onClick={handleScheduleSave}>
+            保存设置
+          </Button>
+        </div>
+      </Card>
+
+      <CronModal
+        open={cronModalOpen}
+        cron={schedule?.full_cron || '0 2 * * *'}
+        onChange={(newCron) => {
+          scheduleForm.setFieldValue('scheduled_full_cron', newCron)
+        }}
+        onClose={() => setCronModalOpen(false)}
+      />
+    </Spin>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*                          数据同步 Tab（含子Tab）                    */
+/* ------------------------------------------------------------------ */
+
+function SyncTab({ selectedRepo }: { selectedRepo?: string }) {
+  return (
+    <Card size="small" bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: '0 0 0 0' }}>
+      <Tabs
+        tabPosition="left"
+        items={[
+          {
+            key: 'manual',
+            label: <span><CloudUploadOutlined /> 手动同步</span>,
+            children: <ManualSyncPanel selectedRepo={selectedRepo} />,
+          },
+          {
+            key: 'history',
+            label: <span><ReloadOutlined /> 同步记录</span>,
+            children: <SyncHistoryTab selectedRepo={selectedRepo} />,
+          },
+          {
+            key: 'schedule',
+            label: <span><ClockCircleOutlined /> 定时设置</span>,
+            children: <ScheduleSettingsPanel />,
+          },
+        ]}
+      />
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*                           主页面组件                                */
 /* ------------------------------------------------------------------ */
 
 let _pollTimer: ReturnType<typeof setInterval> | null = null
 
 function ContributorBoard() {
-  const navigate = useNavigate()
-  const searchParams = new URLSearchParams(window.location.search)
-  const [activeTab, setActiveTab] = useState<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync_history' | 'settings'>(
-    (searchParams.get('tab') as any) || 'classification'
-  )
-  const [selectedRepo, setSelectedRepo] = useState<string | undefined>(
-    searchParams.get('repo') || undefined
-  )
-  const [repos, setRepos] = useState<string[]>([])
-  const [syncLoading, setSyncLoading] = useState(false)
-  const [syncModalOpen, setSyncModalOpen] = useState(false)
-  const [syncModalRepo, setSyncModalRepo] = useState<string | undefined>(undefined)
-  const [currentSyncRecord, setCurrentSyncRecord] = useState<SyncRecord | null>(null)
-  const [syncProgress, setSyncProgress] = useState(0)
-  const [syncProgressMsg, setSyncProgressMsg] = useState('')
-  const tabRef = useRef(activeTab)
+   const navigate = useNavigate()
+   const searchParams = new URLSearchParams(window.location.search)
+    const [activeTab, setActiveTab] = useState<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync' | 'settings'>(
+     (searchParams.get('tab') as any) || 'classification'
+    )
+   const [selectedRepo, setSelectedRepo] = useState<string | undefined>(
+     searchParams.get('repo') || undefined
+   )
+   const [repos, setRepos] = useState<string[]>([])
 
-  useEffect(() => {
-    tabRef.current = activeTab
-  }, [activeTab])
-
-  useEffect(() => {
-    updateUrlState(activeTab, selectedRepo)
-  }, [selectedRepo])
-
-  const updateUrlState = (tab?: string, repo?: string) => {
-    const params = new URLSearchParams()
-    if (tab && tab !== 'classification') params.set('tab', tab)
-    if (repo) params.set('repo', repo)
-    const query = params.toString()
-    navigate(`/contributor-board${query ? '?' + query : ''}`, { replace: true })
-  }
-
-  // 监听 SettingsTab 发出的配置更新事件
-  const [settingsRefreshTrigger, setSettingsRefreshTrigger] = useState(0)
-  useEffect(() => {
-    const handler = () => setSettingsRefreshTrigger(t => t + 1)
-    window.addEventListener('settings-updated', handler)
-    return () => window.removeEventListener('settings-updated', handler)
-  }, [])
-
-  useEffect(() => {
-    loadRepos()
-  }, [])
-
-  const loadRepos = async () => {
+   const loadRepos = async () => {
     try {
       const data = await getReposList()
       setRepos(data.repos ?? [])
     } catch { /* ignore */ }
   }
 
-  const startPollSync = (recordId: number) => {
-    if (_pollTimer) clearInterval(_pollTimer)
-    _pollTimer = setInterval(async () => {
-      try {
-        const status = await getSyncStatus(recordId)
-        setCurrentSyncRecord(status)
-        setSyncProgress(status.progress_percent)
-        setSyncProgressMsg(status.progress_message || '')
-        if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
-          if (_pollTimer) clearInterval(_pollTimer)
-          _pollTimer = null
-          message.success(status.status === 'completed' ? '同步完成' : '同步失败')
-          setSyncModalOpen(false)
-          setSyncLoading(false)
-          window.dispatchEvent(new Event('settings-updated'))
-          window.dispatchEvent(new Event('sync-history-refresh'))
-        }
-      } catch { /* polling error, keep going */ }
-    }, 2000)
-  }
+   const tabRef = useRef(activeTab)
+   const [settingsRefreshTrigger, setSettingsRefreshTrigger] = useState(0)
 
-  const handleOpenSyncModal = (repoName?: string) => {
-    setSyncModalRepo(repoName)
-    setSyncModalOpen(true)
-    setSyncProgress(0)
-    setSyncProgressMsg('')
-    setCurrentSyncRecord(null)
-  }
+   useEffect(() => {
+    tabRef.current = activeTab
+   }, [activeTab])
 
-  const handleSync = async () => {
-    setSyncLoading(true)
-    try {
-      const result = await syncContributors({
-        fullResync: false,
-        repoName: syncModalRepo || undefined,
-      })
-      if (result.record_id) {
-        startPollSync(result.record_id)
-        message.success('同步已触发，后台执行中...')
-      } else {
-        message.warning('同步触发失败，未返回任务 ID')
-        setSyncLoading(false)
-      }
-    } catch (err: unknown) {
-      const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '同步触发失败'
-      message.error(msg)
-      setSyncLoading(false)
-    }
-  }
+   useEffect(() => {
+    const handler = () => setSettingsRefreshTrigger(t => t + 1)
+    window.addEventListener('settings-updated', handler)
+    return () => window.removeEventListener('settings-updated', handler)
+   }, [])
 
-  const handleCloseSyncModal = () => {
-    setSyncModalOpen(false)
-    if (currentSyncRecord?.status === 'running' && _pollTimer) {
-      // Don't clear timer - keep polling in background
-    } else if (_pollTimer) {
-      clearInterval(_pollTimer)
-      _pollTimer = null
-    }
-  }
+   useEffect(() => {
+    loadRepos()
+   }, [])
 
-  const tabItems = [
+   const updateUrlState = (tab: string, repo: string | undefined) => {
+    const params = new URLSearchParams()
+    if (tab && tab !== 'classification') params.set('tab', tab)
+    if (repo) params.set('repo', repo)
+    const query = params.toString()
+    navigate(`/contributor-board${query ? '?' + query : ''}`, { replace: true })
+   }
+
+   useEffect(() => {
+    updateUrlState(activeTab, selectedRepo)
+   }, [selectedRepo])
+
+   const tabItems = [
     {
       key: 'classification',
       label: <><CodeOutlined /> 提交分类统计</>,
@@ -2826,78 +3209,44 @@ function ContributorBoard() {
       children: <RankingTab loading={false} selectedRepo={selectedRepo} />,
     },
     {
-      key: 'sync_history',
-      label: <><CloudUploadOutlined /> 同步记录</>,
-      children: <SyncHistoryTab selectedRepo={selectedRepo} onRetry={(repoName) => { handleOpenSyncModal(repoName) }} />,
+      key: 'sync',
+      label: <><CloudUploadOutlined /> 数据同步</>,
+      children: <SyncTab selectedRepo={selectedRepo} />,
     },
     {
       key: 'settings',
       label: <><ToolOutlined /> 分析设置</>,
       children: <SettingsTab />,
     },
-  ]
+   ]
 
-  const showSyncButtons = repos.length > 0
+    return (
+     <div className="stripe-project-page">
+       <div className="stripe-page-header">
+         <Title level={3} className="stripe-page-title">
+           <GithubOutlined className="stripe-page-icon" />
+           贡献者与提交分析
+         </Title>
+         <Text className="stripe-page-description">
+           vLLM Ascend 提交分类、构建优化与贡献者分析
+         </Text>
+       </div>
 
-  return (
-    <div className="stripe-project-page">
-      <div className="stripe-page-header">
-        <Title level={3} className="stripe-page-title">
-          <GithubOutlined className="stripe-page-icon" />
-          贡献者与提交分析
-        </Title>
-        <Text className="stripe-page-description">
-          vLLM Ascend 提交分类、构建优化与贡献者分析
-        </Text>
-      </div>
+       {repos.length > 0 && (
+         <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
+           <Select
+             allowClear
+             placeholder="选择仓库（影响所有 Tab）"
+             value={selectedRepo}
+             onChange={setSelectedRepo}
+             style={{ width: 260 }}
+             options={repos.map(r => ({ label: r, value: r }))}
+             suffixIcon={<SearchOutlined />}
+           />
+         </div>
+       )}
 
-      {showSyncButtons && (
-        <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
-          <Select
-            allowClear
-            placeholder="选择仓库（影响所有 Tab）"
-            value={selectedRepo}
-            onChange={setSelectedRepo}
-            style={{ width: 260 }}
-            options={repos.map(r => ({ label: r, value: r }))}
-            suffixIcon={<SearchOutlined />}
-          />
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  label: '同步全部仓库',
-                  key: '__all__',
-                  icon: <CloudUploadOutlined />,
-                  disabled: syncLoading,
-                },
-                ...repos.map(r => ({
-                  label: `同步 ${r}`,
-                  key: r,
-                  icon: <ReloadOutlined />,
-                  disabled: syncLoading,
-                })),
-              ],
-              onClick: ({ key }) => {
-                handleOpenSyncModal(key === '__all__' ? undefined : key)
-              },
-            }}
-            placement="bottomLeft"
-            trigger={['click']}
-          >
-            <Button
-              type="primary"
-              icon={<CloudUploadOutlined />}
-              loading={syncLoading}
-            >
-              同步数据
-              <span style={{ fontSize: 10 }}>▼</span>
-            </Button>
-          </Dropdown>
-        </div>
-      )}
-
-          <Tabs
+       <Tabs
         activeKey={activeTab}
         items={tabItems}
         destroyInactiveTabPane
@@ -2905,84 +3254,9 @@ function ContributorBoard() {
           setActiveTab(key as typeof activeTab)
           updateUrlState(key, selectedRepo)
         }}
-      />
-
-      <Modal
-        title="同步进度"
-        open={syncModalOpen}
-        onCancel={handleCloseSyncModal}
-        footer={[
-          <Button key="close" onClick={handleCloseSyncModal}>
-            关闭
-          </Button>,
-          !syncLoading && (currentSyncRecord?.status === 'completed' || currentSyncRecord?.status === 'failed' || currentSyncRecord?.status === 'partial' || currentSyncRecord?.status === 'cancelled' || !currentSyncRecord) && (
-            <Button key="sync" type="primary" icon={<CloudUploadOutlined />} loading={syncLoading} onClick={handleSync}>
-              同步
-            </Button>
-          ),
-        ]}
-        maskClosable={false}
-      >
-        <div style={{ padding: '12px 0' }}>
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="目标仓库">
-              {syncModalRepo || '全部仓库'}
-            </Descriptions.Item>
-            {currentSyncRecord && (
-              <>
-                <Descriptions.Item label="状态">
-                  {currentSyncRecord.status === 'pending' && <Tag color="default"><ClockCircleOutlined /> 等待中</Tag>}
-                  {currentSyncRecord.status === 'running' && <Tag color="processing"><ClockCircleOutlined /> 执行中</Tag>}
-                  {currentSyncRecord.status === 'completed' && <Tag color="success"><CheckCircleOutlined /> 成功</Tag>}
-                  {currentSyncRecord.status === 'failed' && <Tag color="error"><CloseCircleOutlined /> 失败</Tag>}
-                  {currentSyncRecord.status === 'partial' && <Tag color="warning"><FlagOutlined /> 部分成功</Tag>}
-                  {currentSyncRecord.status === 'cancelled' && <Tag color="orange"><StopOutlined /> 已取消</Tag>}
-                </Descriptions.Item>
-                <Descriptions.Item label="贡献者">
-                  {currentSyncRecord.contributors_synced}
-                </Descriptions.Item>
-                <Descriptions.Item label="提交数">
-                  {currentSyncRecord.commits_classified}
-                </Descriptions.Item>
-                <Descriptions.Item label="构建计划">
-                  {currentSyncRecord.build_plans_created}
-                </Descriptions.Item>
-                <Descriptions.Item label="耗时">
-                  {(currentSyncRecord.duration_seconds / 60).toFixed(1)} min
-                </Descriptions.Item>
-              </>
-            )}
-          </Descriptions>
-          <div style={{ marginTop: 16 }}>
-            <Progress
-              percent={Math.round(syncProgress)}
-              status={
-                currentSyncRecord?.status === 'failed' ? 'exception'
-                : currentSyncRecord?.status === 'cancelled' ? 'normal'
-                : currentSyncRecord?.status === 'completed' ? 'success'
-                : currentSyncRecord?.status === 'partial' ? 'normal'
-                : 'active'
-              }
-            />
-            {syncProgressMsg && (
-              <Text type="secondary" style={{ marginTop: 4, display: 'block' }}>
-                {syncProgressMsg}
-              </Text>
-            )}
-          </div>
-          {currentSyncRecord?.status === 'failed' && currentSyncRecord.errors && currentSyncRecord.errors.length > 0 && (
-            <Alert
-              style={{ marginTop: 12 }}
-              message="同步错误"
-              description={(Array.isArray(currentSyncRecord.errors) ? currentSyncRecord.errors : []).join('\n')}
-              type="error"
-              showIcon
-            />
-          )}
-        </div>
-      </Modal>
-    </div>
-  )
+       />
+     </div>
+   )
 }
 
 export { ContributorDetailPage }

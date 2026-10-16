@@ -30,6 +30,7 @@ from contracts.schemas.contributor_board import (
     ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
+    ContributorSyncSummary,
     ContributorSyncScheduleConfig,
     ContributorSyncScheduleUpdateRequest,
     ExtendedTrendResponse,
@@ -264,6 +265,7 @@ async def trigger_sync(
         return await service.trigger_sync(
             db=db,
             since_date=request.since_date,
+            until_date=request.until_date,
             full_resync=request.full_resync,
             repo_name=request.repo_name,
         )
@@ -298,6 +300,17 @@ async def get_sync_history(
     """获取同步历史记录（管理员可见）"""
     service = get_contributor_board_service()
     return await service.get_sync_history(db, limit=limit, offset=offset, repo_name=repo_name, status=status)
+
+
+@router.get("/sync/summary", response_model=ContributorSyncSummary)
+async def get_sync_summary(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    repo_name: str | None = Query(None),
+):
+    """获取同步统计摘要（管理员可见）"""
+    service = get_contributor_board_service()
+    return await service.get_sync_summary(db, repo_name=repo_name)
 
 
 @router.post("/sync/status/{record_id}/cancel")

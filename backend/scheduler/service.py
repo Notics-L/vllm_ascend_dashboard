@@ -15,7 +15,7 @@ from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
 from infrastructure.db.base import SessionLocal
 
-from backend.infrastructure.tasks.scheduler_config import SCHEDULER_RUNTIME_SETTING_MAP
+from infrastructure.tasks.scheduler_config import SCHEDULER_RUNTIME_SETTING_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -1461,38 +1461,82 @@ class DataSyncScheduler:
 
     @staticmethod
     async def _sync_contributors_job():
-        """每日全量贡献者同步任务 — 走 trigger_sync 创建记录"""
+        """每日贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
         from contributor_board.service import ContributorBoardService
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from sqlalchemy import select
 
         try:
-            logger.info("Starting scheduled contributor full sync")
+            logger.info("Starting scheduled contributor sync")
             async with AsyncSessionLocal() as db:
                 service = ContributorBoardService()
+
+                # 查询最近一次成功同步的时间，只同步之后的新增数据
+                from infrastructure.persistence.models import ContributorSyncRecord
+                stmt = (
+                    select(ContributorSyncRecord)
+                    .where(
+                        ContributorSyncRecord.status.in_(["completed", "partial"])
+                    )
+                    .order_by(ContributorSyncRecord.synced_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(stmt)
+                last_record = result.scalar_one_or_none()
+
+                if last_record and last_record.synced_at:
+                    since_date = last_record.synced_at.date()
+                    logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
+                else:
+                    since_date = None
+                    logger.info("No previous successful sync found, doing full sync from beginning")
+
                 resp = await service.trigger_sync(
                     db=db,
-                    since_date=(datetime.now(UTC) - timedelta(days=30)).date(),
+                    since_date=since_date,
                     full_resync=False,
                     repo_name=None,
                     trigger_source="scheduled_full",
                 )
-            logger.info("Scheduled full sync triggered, record_id=%s", resp.record_id)
+            logger.info("Scheduled sync triggered, record_id=%s", resp.record_id)
         except Exception as e:
-            logger.error("Scheduled contributor full sync failed: %s", e, exc_info=True)
+            logger.error("Scheduled contributor sync failed: %s", e, exc_info=True)
 
     @staticmethod
     async def _sync_contributors_incremental_job():
-        """增量贡献者同步任务 — 走 trigger_sync 创建记录"""
+        """增量贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
         from contributor_board.service import ContributorBoardService
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from sqlalchemy import select
 
         try:
             logger.info("Starting scheduled contributor incremental sync")
             async with AsyncSessionLocal() as db:
                 service = ContributorBoardService()
+
+                # 查询最近一次成功同步的时间
+                from infrastructure.persistence.models import ContributorSyncRecord
+                stmt = (
+                    select(ContributorSyncRecord)
+                    .where(
+                        ContributorSyncRecord.status.in_(["completed", "partial"])
+                    )
+                    .order_by(ContributorSyncRecord.synced_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(stmt)
+                last_record = result.scalar_one_or_none()
+
+                if last_record and last_record.synced_at:
+                    since_date = last_record.synced_at.date()
+                    logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
+                else:
+                    since_date = (datetime.now(UTC) - timedelta(days=1)).date()
+                    logger.info("No previous successful sync found, syncing since %s", since_date)
+
                 resp = await service.trigger_sync(
                     db=db,
-                    since_date=(datetime.now(UTC) - timedelta(hours=6)).date(),
+                    since_date=since_date,
                     full_resync=False,
                     repo_name=None,
                     trigger_source="scheduled_incremental",

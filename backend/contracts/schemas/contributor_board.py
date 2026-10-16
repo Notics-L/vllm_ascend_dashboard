@@ -332,6 +332,7 @@ class ContributorOverviewStats(BaseModel):
 
 class ContributorSyncRequest(BaseModel):
     since_date: date | None = Field(None, description="增量同步起始日期，不传则从 2024-01-01 全量采集")
+    until_date: date | None = Field(None, description="增量同步截止日期，不传则为当前时间")
     full_resync: bool = Field(False, description="是否全量重新评估")
     repo_name: str | None = Field(None, description="指定仓库名，不传则同步所有仓库")
 
@@ -351,10 +352,13 @@ class ContributorSyncRecordResponse(BaseModel):
 
     id: int
     repo_name: str | None = None
+    sync_type: str = ""
     status: str
     since_date: date | None = None
+    until_date: date | None = None
     contributors_synced: int = 0
     commits_classified: int = 0
+    total_prs_scanned: int = 0
     build_plans_created: int = 0
     errors: list[str] | None = None
     duration_seconds: float = 0
@@ -382,6 +386,20 @@ class ContributorSyncRecordResponse(BaseModel):
 class ContributorSyncHistoryResponse(BaseModel):
     records: list[ContributorSyncRecordResponse] = []
     total: int = 0
+
+
+class ContributorSyncSummary(BaseModel):
+    """同步统计摘要"""
+    total_syncs: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    running_count: int = 0
+    total_contributors: int = 0
+    total_commits: int = 0
+    total_build_plans: int = 0
+    total_prs_scanned: int = 0
+    last_sync_at: datetime | None = None
+    last_sync_status: str | None = None
 
 
 # ============ Role Stats ============
