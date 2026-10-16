@@ -52,7 +52,6 @@ const primaryNavigation: NavigationItem[] = [
     label: '研发交付',
     children: [
       { key: '/project', icon: <GithubOutlined />, label: '项目动态' },
-      { key: '/contributor-board', icon: <CodeOutlined />, label: '贡献者分析' },
       { key: '/pr-pipeline', icon: <PullRequestOutlined />, label: 'PR 流水线' },
       { key: '/ci', icon: <CheckCircleOutlined />, label: 'CI 运行' },
     ],
@@ -130,15 +129,32 @@ function Layout() {
   const location = useLocation()
   const { data: currentUser } = useCurrentUser()
   const hasAdminRole = currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
+  const isSuperAdmin = currentUser?.role === 'super_admin'
 
   useEffect(() => {
     localStorage.setItem('navigation_collapsed', String(collapsed))
   }, [collapsed])
 
-  const navigationItems = useMemo(
-    () => (hasAdminRole ? [...primaryNavigation, adminNavigation] : primaryNavigation),
-    [hasAdminRole],
-  )
+  const navigationItems = useMemo(() => {
+    const items = hasAdminRole ? [...primaryNavigation, adminNavigation] : primaryNavigation
+    if (isSuperAdmin) {
+      return [
+        ...items.map((item: NavigationItem) => {
+          if (item?.type === 'group' && item.label === '研发交付') {
+            return {
+              ...item,
+              children: [
+                ...item.children as any[],
+                { key: '/contributor-board', icon: <CodeOutlined />, label: '贡献者分析' },
+              ],
+            }
+          }
+          return item
+        }),
+      ]
+    }
+    return items
+  }, [hasAdminRole, isSuperAdmin])
   const selectedKey = getSelectedNavigation(location.pathname)
   const currentPage = routeMeta.find((item) => location.pathname.startsWith(item.prefix)) || {
     title: '运营总览',

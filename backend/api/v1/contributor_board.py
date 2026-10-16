@@ -12,7 +12,7 @@ class BuildPlanFilterOptions(BaseModel):
     commit_types: list[str]
     build_types: list[str]
 
-from api.deps import CurrentAdminUser, CurrentUser, DbSession
+from api.deps import CurrentSuperAdminUser, DbSession
 from infrastructure.persistence.models import ContributorSyncRecord
 from contracts.schemas.contributor_board import (
     BuildOptimizationStats,
@@ -198,7 +198,7 @@ async def get_contributor(
 @router.get("/quadrant", response_model=QuadrantDataResponse)
 async def get_quadrant_data(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
     y_axis_type: str | None = Query(None, description="Y轴指标(不传则读取设置)"),
 ):
@@ -214,7 +214,7 @@ async def get_quadrant_data(
 @router.get("/ranking", response_model=ContributorRankingResponse)
 async def get_ranking(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     role_type: str = Query("developer", description="角色类型: developer/reviewer/maintainer"),
     repo_name: str | None = Query(None, description="仓库名过滤"),
     sort_by: str | None = Query(None, description="排序字段"),
@@ -252,7 +252,7 @@ async def get_contributor_trend(
 async def trigger_sync(
     request: ContributorSyncRequest,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
 ):
     """手动触发贡献者数据采集（管理员可见）
 
@@ -277,7 +277,7 @@ async def trigger_sync(
 async def get_sync_status(
     record_id: int,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
 ):
     """获取同步任务状态（管理员可见）"""
     service = get_contributor_board_service()
@@ -291,7 +291,7 @@ async def get_sync_status(
 @router.get("/sync/history", response_model=ContributorSyncHistoryResponse)
 async def get_sync_history(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
     status: str | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
@@ -305,7 +305,7 @@ async def get_sync_history(
 @router.get("/sync/summary", response_model=ContributorSyncSummary)
 async def get_sync_summary(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
 ):
     """获取同步统计摘要（管理员可见）"""
@@ -317,7 +317,7 @@ async def get_sync_summary(
 async def cancel_sync(
     record_id: int,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
 ):
     """取消/终止正在运行的同步任务（管理员可见）"""
     from datetime import UTC, datetime
@@ -367,7 +367,7 @@ async def cancel_sync(
 @router.get("/stats/roles", response_model=RoleStats)
 async def get_role_stats(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
 ):
     """获取角色维度统计（管理员可见）"""
@@ -380,7 +380,7 @@ async def get_role_stats(
 @router.get("/stats/module_hotspot", response_model=ModuleHotspotResponse)
 async def get_module_hotspot(
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
     period_start: date | None = Query(None),
     period_end: date | None = Query(None),
@@ -396,7 +396,7 @@ async def get_module_hotspot(
 async def get_role_ranking(
     role_type: str,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
     limit: int = Query(10, ge=1, le=100),
 ):
