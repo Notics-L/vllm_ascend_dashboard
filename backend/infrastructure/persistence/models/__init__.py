@@ -1111,6 +1111,7 @@ class ImageBuildPlan(Base):
     estimated_saving_percent = Column(Float, default=0)
     actual_execution = Column(Boolean, default=False)
     reasoning = Column(String(500))
+    files_changed = Column(JSON)
     repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 

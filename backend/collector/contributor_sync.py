@@ -712,6 +712,7 @@ class ContributorSyncCollector:
             existing.build_type = build_type
             existing.estimated_saving_percent = saving_pct
             existing.reasoning = reasoning
+            existing.files_changed = files_changed or []
             existing.created_at = pr_created
             existing.actual_execution = False
             existing.repo_name = f"{self.owner}/{self.repo}"
@@ -727,6 +728,7 @@ class ContributorSyncCollector:
                 estimated_saving_percent=saving_pct,
                 actual_execution=False,
                 reasoning=reasoning,
+                files_changed=files_changed or [],
                 repo_name=f"{self.owner}/{self.repo}",
                 created_at=pr_created,
             ))

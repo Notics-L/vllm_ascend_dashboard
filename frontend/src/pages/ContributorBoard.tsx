@@ -503,7 +503,9 @@ function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
   const [filterCommitType, setFilterCommitType] = useState<string | undefined>(undefined)
   const [filterBuildType, setFilterBuildType] = useState<string | undefined>(undefined)
   const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
-    const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
+  const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
+
   // 加载统计数据
   useEffect(() => {
     let cancelled = false
@@ -633,9 +635,93 @@ function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
       title: '推理说明',
       dataIndex: 'reasoning',
       key: 'reasoning',
-      ellipsis: true,
-      width: 300,
-      render: (text: string | null) => text || '-',
+      width: 400,
+      render: (text: string | null, record: BuildPlan) => {
+        const prKey = record.pr_number
+        const files = record.files_changed || []
+        const fileCount = files.length
+        const expanded = expandedRows.has(prKey)
+
+        const toggleExpand = () => {
+          setExpandedRows(prev => {
+            const next = new Set(prev)
+            if (next.has(prKey)) next.delete(prKey)
+            else next.add(prKey)
+            return next
+          })
+        }
+
+        const fileChangeColors: Record<string, string> = {
+          'vllm_ascend/': '#1a7f37',
+          'csrc/': '#1a7f37',
+          'test': '#6e42a0',
+          'docs/': '#57606a',
+          '.github/': '#57606a',
+        }
+
+        const getFileColor = (f: string) => {
+          for (const [pattern, color] of Object.entries(fileChangeColors)) {
+            if (f.includes(pattern)) return color
+          }
+          return '#1a7f37'
+        }
+
+        return (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ flex: 1 }}>
+                {text ? (text.length > 50 ? text.slice(0, 50) + '...' : text) : '-'}
+              </span>
+              {fileCount > 0 && (
+                <Tag
+                  color="success"
+                  style={{
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    margin: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                  }}
+                  onClick={toggleExpand}
+                >
+                  <span style={{ fontSize: 10 }}>{expanded ? '▼' : '▶'}</span>
+                  {fileCount} 文件
+                </Tag>
+              )}
+            </div>
+            {expanded && fileCount > 0 && (
+              <div style={{ marginTop: 6, padding: '8px 10px', background: '#f6f8fa', borderRadius: 6, fontSize: 12 }}>
+                {files.map((f: string, i: number) => {
+                  const parts = f.split('/')
+                  const fileName = parts[parts.length - 1]
+                  const dir = parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : ''
+                  return (
+                    <div key={i} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '3px 0',
+                      gap: 6,
+                      borderBottom: i < files.length - 1 ? '1px solid #e8e8e8' : 'none',
+                    }}>
+                      <span style={{
+                        display: 'inline-block',
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: getFileColor(f),
+                        flexShrink: 0,
+                      }} />
+                      <span style={{ color: '#656d76', fontSize: 11 }}>{dir}</span>
+                      <Text strong style={{ fontSize: 12 }}>{fileName}</Text>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      },
     },
     {
       title: '创建时间',
@@ -830,10 +916,12 @@ function SingleChart({
           const login = raw.login
           const quadrant = raw.quadrant
           if (!login) return ''
+          const isMatch = highlightedLogins.has(login)
           return `
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
               <img src="https://avatars.githubusercontent.com/${login}" style="width:20px;height:20px;border-radius:50%;" />
               <strong>${login}</strong>
+              ${isMatch ? '<span style="background:#faad14;border:1px solid #fa8c16;color:#fff;padding:1px 8px;border-radius:4px;font-size:12px;font-weight:bold;margin-left:6px;">匹配</span>' : ''}
             </div>
             <div style="border-top:1px solid #eee;padding-top:6px;">
               贡献分数: <b>${xVal.toFixed(1)}</b><br/>
@@ -1052,10 +1140,12 @@ function buildScatterOption(
         const login = raw.login
         const quadrant = raw.quadrant
         if (!login) return ''
+        const isMatch = highlightedLogins.has(login)
         return `
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
             <img src="https://avatars.githubusercontent.com/${login}" style="width:20px;height:20px;border-radius:50%;" />
             <strong>${login}</strong>
+            ${isMatch ? '<span style="background:#faad14;border:1px solid #fa8c16;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:bold;">匹配</span>' : ''}
           </div>
           <div style="border-top:1px solid #eee;padding-top:6px;">
             贡献分数: <b>${xVal.toFixed(1)}</b><br/>

@@ -155,6 +155,7 @@ class BuildPlanResponse(BaseModel):
     estimated_saving_percent: float = 0
     actual_execution: bool = False
     reasoning: str | None = Field(None, description="决策原因")
+    files_changed: list[str] | None = Field(None, description="变更文件列表")
     created_at: datetime | None = None
 
 

@@ -58,6 +58,7 @@ export interface BuildPlan {
   estimated_saving_percent: number
   actual_execution: boolean
   reasoning: string | null
+  files_changed: string[] | null
   created_at: string | null
 }
 

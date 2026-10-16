@@ -41,6 +41,7 @@ from database.migrations.contributor_metrics_add_commit_count import run as migr
 from database.migrations.contributor_board_repo_name import run as migrate_contributor_board_repo_name
 from database.migrations.contributor_sync_records import run as migrate_contributor_sync_records
 from database.migrations.image_build_plans_reasoning import run as migrate_image_build_plans_reasoning
+from database.migrations.image_build_plans_files_changed import run as migrate_image_build_plans_files_changed
 from database.migrations.test_board_data import run as migrate_test_board_data
 from infrastructure.db.base import SessionLocal, engine
 
@@ -77,13 +78,14 @@ async def migrate() -> None:
     contributor_board_repo_name_result = await migrate_contributor_board_repo_name()
     contributor_sync_records_result = await migrate_contributor_sync_records()
     build_plan_reasoning_result = await migrate_image_build_plans_reasoning()
+    build_plan_files_changed_result = await migrate_image_build_plans_files_changed()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s repo_name=%s sync_records=%s build_plan_reasoning=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s repo_name=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s",
         users_after,
         permission_result,
         test_board_result,
@@ -94,6 +96,7 @@ async def migrate() -> None:
         contributor_board_repo_name_result,
         contributor_sync_records_result,
         build_plan_reasoning_result,
+        build_plan_files_changed_result,
     )
 
 
