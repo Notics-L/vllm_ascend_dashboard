@@ -34,6 +34,9 @@ from database.migrations.github_workflow_run_metadata import (
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
 from database.migrations.npu_occupancy import run as migrate_npu_occupancy
+from database.migrations.npu_occupancy_current_snapshot import (
+    run as migrate_npu_occupancy_current_snapshot,
+)
 from database.migrations.process_runtime import run as migrate_process_runtime
 from database.migrations.resource_metrics_query_indexes import (
     run as migrate_resource_metrics_query_indexes,
@@ -64,6 +67,7 @@ async def migrate() -> None:
     await migrate_phase_a()
     await migrate_process_runtime()
     await migrate_npu_occupancy()
+    await migrate_npu_occupancy_current_snapshot()
     await migrate_github_workflow_run_metadata()
     await migrate_resource_metrics_query_indexes()
     await migrate_ci_npu_facts()

@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -17,6 +18,7 @@ from infrastructure.db.base import SessionLocal
 from infrastructure.github_run_metadata import workflow_file_from_ref
 from infrastructure.persistence.models import CIJob, CIResult, PullRequest, WorkflowConfig
 from resource_dashboard.npu_occupancy_client import NpuOccupancyClient
+from resource_dashboard.npu_occupancy_config import resolve_pool
 from resource_dashboard.npu_occupancy_service import (
     OccupancyRecord,
     enrich_records_with_runs,
@@ -50,12 +52,33 @@ class NpuOccupancyRepository:
     # Reads are served from the same persisted snapshot until a successful sync
     # publishes a newer snapshot.  This avoids parsing ~90k raw JSON rows for
     # each concurrently requested trend, analysis, and details endpoint.
-    _records_cache: ClassVar[tuple[datetime, list[OccupancyRecord]] | None] = None
+    # Keyed by snapshot + window + pool selection.  TTL keeps this cache
+    # bounded even if a scheduler is unavailable and its snapshot never moves.
+    _records_cache: ClassVar[dict[tuple[datetime, datetime, datetime, tuple[str, ...]], tuple[float, list[OccupancyRecord], list[OccupancyRecord] | None]]] = {}
     _records_cache_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     _metadata_backfill_task: ClassVar[asyncio.Task[None] | None] = None
 
+    @staticmethod
+    def _indexed_env_values(env: dict, snapshot_at: datetime) -> dict[str, object]:
+        """Build indexed columns from the same normalization rules as page reads."""
+        records = normalize_records([env], snapshot_at)
+        if records:
+            record = records[0]
+            return {
+                "pool": record.pool,
+                "effective_start_at": record.created_at,
+                "effective_end_at": record.effective_end,
+            }
+        cluster = str(env.get("cluster") or "")
+        pool = resolve_pool(cluster)
+        return {
+            "pool": pool.name if pool else f"未配置:{cluster or '未知资源池'}",
+            "effective_start_at": parse_timestamp(env.get("created_at")),
+            "effective_end_at": parse_timestamp(env.get("expires_at")),
+        }
+
     async def _backfill_workflow_metadata(self, records: list[OccupancyRecord]) -> None:
-        """Persist missing GitHub Run metadata during sync, never during page reads."""
+        """Persist missing GitHub Run metadata for unique Run IDs in the background."""
         candidates = {
             record.workflow_run_id: (record.organization, record.repository)
             for record in records
@@ -69,9 +92,9 @@ class NpuOccupancyRepository:
         async with SessionLocal() as db:
             cached = set((await db.scalars(query, {"run_ids": list(candidates)})).all())
         pending = [(run_id, organization, repository) for run_id, (organization, repository) in candidates.items() if run_id not in cached]
-        # GitHub returns runs newest-first.  Work through our candidates in the
-        # same order so the next bounded batch advances instead of repeatedly
-        # scanning for old runs that are outside the configured page window.
+        # Bound work by unique workflow_run_id, never by occupancy row. Direct
+        # run lookups also work for older runs that are no longer in GitHub's
+        # most recent list pages.
         pending.sort(key=lambda item: item[0], reverse=True)
         pending = pending[:settings.NPU_OCCUPANCY_METADATA_BACKFILL_BATCH_SIZE]
         by_repository: dict[tuple[str, str], set[int]] = {}
@@ -99,42 +122,41 @@ class NpuOccupancyRepository:
 
         async def fetch_repository(organization: str, repository: str, wanted: set[int]) -> None:
             client = GitHubClient(settings.GITHUB_TOKEN, owner=organization, repo=repository)
-            try:
-                for page in range(1, settings.NPU_OCCUPANCY_METADATA_BACKFILL_MAX_PAGES_PER_REPOSITORY + 1):
+
+            async def fetch_one(run_id: int) -> None:
+                try:
                     async with request_limiter:
-                        runs = await client.get_repository_workflow_runs(page=page)
-                    matched = [run for run in runs if int(run.get("id") or 0) in wanted]
-                    for run in matched:
-                        run_id = int(run["id"])
-                        await persist(run_id, organization, repository, run)
-                        wanted.discard(run_id)
-                    if not wanted or len(runs) < 100:
-                        break
-                # Cache misses as well: without this, runs outside the bounded
-                # page window would trigger the same expensive scan on every
-                # scheduled sync.
-                if wanted:
-                    error = LookupError(
-                        f"workflow run was not found in the first "
-                        f"{settings.NPU_OCCUPANCY_METADATA_BACKFILL_MAX_PAGES_PER_REPOSITORY} pages"
+                        run = await client.get_workflow_run(run_id)
+                    await persist(run_id, organization, repository, run)
+                except Exception as exc:
+                    logger.warning(
+                        "NPU occupancy workflow metadata lookup failed for run %s in %s/%s: %s",
+                        run_id, organization, repository, exc,
                     )
-                    logger.info(
-                        "NPU occupancy workflow metadata not found for %d runs in %s/%s",
-                        len(wanted), organization, repository,
-                    )
-                    for run_id in wanted:
-                        await persist(run_id, organization, repository, None, error)
+                    await persist(run_id, organization, repository, None, exc)
+
+            try:
+                await asyncio.gather(*(fetch_one(run_id) for run_id in wanted))
             except Exception as exc:
                 logger.warning("NPU occupancy workflow metadata backfill failed for %s/%s: %s", organization, repository, exc)
-                for run_id in wanted:
-                    await persist(run_id, organization, repository, None, exc)
             finally:
                 await client.close()
 
         if pending:
             logger.info("Backfilling GitHub workflow metadata for %d occupancy runs across %d repositories", len(pending), len(by_repository))
             await asyncio.gather(*(fetch_repository(organization, repository, wanted) for (organization, repository), wanted in by_repository.items()))
-            type(self)._records_cache = None
+            type(self)._records_cache.clear()
+
+    def _schedule_workflow_metadata_backfill(self, records: list[OccupancyRecord]) -> None:
+        """Schedule one de-duplicated metadata batch without delaying page reads."""
+        if not settings.GITHUB_TOKEN or not any(record.workflow_run_id for record in records):
+            return
+        task = type(self)._metadata_backfill_task
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(self._backfill_workflow_metadata(records))
+        task.add_done_callback(self._report_backfill_result)
+        type(self)._metadata_backfill_task = task
 
     @staticmethod
     def _report_backfill_result(task: asyncio.Task[None]) -> None:
@@ -197,11 +219,20 @@ class NpuOccupancyRepository:
                     if not env_id:
                         continue
                     revision = parse_timestamp(env.get("updated_at") or env.get("expires_at") or env.get("created_at")) or snapshot_at
+                    indexed = self._indexed_env_values(env, snapshot_at)
                     await db.execute(text("""
-                        INSERT INTO npu_occupancy_raw_envs (env_id, source_updated_at, payload, created_at, updated_at)
-                        VALUES (:env_id, :revision, CAST(:payload AS JSON), UTC_TIMESTAMP(), UTC_TIMESTAMP())
-                        ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=UTC_TIMESTAMP()
-                    """), {"env_id": env_id, "revision": revision, "payload": json.dumps(env, default=str)})
+                        INSERT INTO npu_occupancy_raw_envs
+                            (env_id, source_updated_at, pool, effective_start_at, effective_end_at, payload, created_at, updated_at)
+                        VALUES
+                            (:env_id, :revision, :pool, :effective_start_at, :effective_end_at,
+                             CAST(:payload AS JSON), UTC_TIMESTAMP(), UTC_TIMESTAMP())
+                        ON DUPLICATE KEY UPDATE
+                            source_updated_at=VALUES(source_updated_at),
+                            pool=VALUES(pool),
+                            effective_start_at=VALUES(effective_start_at),
+                            effective_end_at=VALUES(effective_end_at),
+                            payload=VALUES(payload), updated_at=UTC_TIMESTAMP()
+                    """), {"env_id": env_id, "revision": revision, "payload": json.dumps(env, default=str), **indexed})
                 await db.execute(text("""
                     UPDATE npu_occupancy_sync_state
                     SET status='ready', last_successful_sync=UTC_TIMESTAMP(), last_snapshot_at=:snapshot,
@@ -209,11 +240,6 @@ class NpuOccupancyRepository:
                     WHERE id=1 AND active_task_id=:task
                 """), {"snapshot": snapshot_at, "task": task_id})
                 await db.commit()
-                # Include the entire persisted current snapshot, not only the
-                # upstream lookback window, so old occupancy rows are also
-                # backfilled in bounded batches.
-                persisted_envs, _ = await self.load_envs()
-                records = normalize_records(persisted_envs, snapshot_at)
                 task = type(self)._metadata_backfill_task
                 should_start_backfill = task is None or task.done()
                 run_ids = {record.workflow_run_id for record in records if record.workflow_run_id}
@@ -253,12 +279,10 @@ class NpuOccupancyRepository:
                     # this exact run and must beat a collector-normalized name.
                     result_map.update({row["run_id"]: SimpleNamespace(**row) for row in metadata_rows})
                     records = enrich_records_with_runs(records, result_map, {job.job_id: job for job in jobs}, {pr.pr_number: pr.title for pr in prs}, {(configured_repo[0], configured_repo[1], workflow.workflow_file): workflow.workflow_name for workflow in workflows}, workflow_names_by_run_id)
-            # Keep the just-persisted snapshot hot for normal page reads.
-            type(self)._records_cache = (snapshot_at, records)
+            # A new durable snapshot invalidates every bounded read cache.
+            type(self)._records_cache.clear()
             if should_start_backfill:
-                task = asyncio.create_task(self._backfill_workflow_metadata(records))
-                task.add_done_callback(self._report_backfill_result)
-                type(self)._metadata_backfill_task = task
+                self._schedule_workflow_metadata_backfill(records)
             return {"status": "ready", "count": len(envs), "snapshot_at": snapshot_at}
         except Exception as exc:
             logger.exception("NPU occupancy sync failed (task=%s)", task_id)
@@ -270,27 +294,31 @@ class NpuOccupancyRepository:
                 await db.commit()
             raise
 
-    async def load_envs(self) -> tuple[list[dict], datetime | None]:
+    async def load_envs(
+        self, *, start: datetime, end: datetime, pools: list[str] | None = None,
+    ) -> tuple[list[dict], datetime | None]:
+        """Use indexed time overlap filtering; no historical revision scan."""
+        params: dict[str, object] = {"start": start, "end": end}
+        query = """
+            SELECT payload FROM npu_occupancy_raw_envs
+            WHERE effective_start_at < :end AND effective_end_at > :start
+        """
+        if pools:
+            query += " AND pool IN :pools"
+            params["pools"] = pools
+            statement = text(query).bindparams(bindparam("pools", expanding=True))
+        else:
+            statement = text(query)
         async with SessionLocal() as db:
             state = (await db.execute(text("SELECT last_snapshot_at FROM npu_occupancy_sync_state WHERE id=1"))).mappings().first()
-            rows = (await db.execute(text("""
-                SELECT current.payload
-                FROM npu_occupancy_raw_envs AS current
-                INNER JOIN (
-                    SELECT env_id, MAX(source_updated_at) AS source_updated_at
-                    FROM npu_occupancy_raw_envs
-                    GROUP BY env_id
-                ) AS latest
-                    ON latest.env_id = current.env_id
-                   AND latest.source_updated_at = current.source_updated_at
-            """))).mappings().all()
+            rows = (await db.execute(statement, params)).mappings().all()
         envs = [json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"] for row in rows]
         snapshot_at = state["last_snapshot_at"] if state else None
         if snapshot_at is not None and snapshot_at.tzinfo is None:
             snapshot_at = snapshot_at.replace(tzinfo=UTC)
         return envs, snapshot_at
 
-    async def load_records(self) -> tuple[list[OccupancyRecord], datetime | None]:
+    async def _load_records_legacy(self) -> tuple[list[OccupancyRecord], datetime | None]:
         """Load and normalize the current persisted snapshot at most once."""
         async with SessionLocal() as db:
             state = (await db.execute(text("SELECT last_snapshot_at FROM npu_occupancy_sync_state WHERE id=1"))).mappings().first()
@@ -349,3 +377,69 @@ class NpuOccupancyRepository:
             if loaded_snapshot_at is not None:
                 type(self)._records_cache = (loaded_snapshot_at, records)
             return records, loaded_snapshot_at
+
+    async def _enrich_records(self, records: list[OccupancyRecord]) -> list[OccupancyRecord]:
+        """Batch-enrich only records already narrowed to the requested window."""
+        run_ids = {record.workflow_run_id for record in records if record.workflow_run_id}
+        job_ids = {int(record.job_id) for record in records if record.job_id and record.job_id.isdigit()}
+        pr_numbers = {record.pr_number for record in records if record.pr_number}
+        workflow_files = {workflow_file_from_ref(record.workflow_ref) for record in records if workflow_file_from_ref(record.workflow_ref)}
+        if not (run_ids or job_ids or pr_numbers or workflow_files):
+            return records
+        async with SessionLocal() as db:
+            results = list((await db.scalars(select(CIResult).where(CIResult.run_id.in_(run_ids)))).all()) if run_ids else []
+            metadata_rows = (await db.execute(text("""
+                SELECT run_id, workflow_name, display_title, run_number, event, html_url
+                FROM github_workflow_run_metadata WHERE fetch_status='success' AND run_id IN :run_ids
+            """).bindparams(bindparam("run_ids", expanding=True)), {"run_ids": list(run_ids)})).mappings().all() if run_ids else []
+            job_conditions = []
+            if job_ids:
+                job_conditions.append(CIJob.job_id.in_(job_ids))
+            if run_ids:
+                job_conditions.append(CIJob.run_id.in_(run_ids))
+            jobs = list((await db.scalars(select(CIJob).where(or_(*job_conditions)))).all()) if job_conditions else []
+            prs = list((await db.scalars(select(PullRequest).where(PullRequest.pr_number.in_(pr_numbers)))).all()) if pr_numbers else []
+            workflows = list((await db.scalars(select(WorkflowConfig).where(WorkflowConfig.workflow_file.in_(workflow_files)))).all()) if workflow_files else []
+        configured_repo = ((settings.GITHUB_OWNER or "").lower(), (settings.GITHUB_REPO or "").lower())
+        workflow_names_by_run_id = {run_id: next(iter(names)) for run_id, names in _workflow_names_by_run_id(jobs).items() if len(names) == 1}
+        result_map = {result.run_id: result for result in results}
+        result_map.update({row["run_id"]: SimpleNamespace(**row) for row in metadata_rows})
+        return enrich_records_with_runs(records, result_map, {job.job_id: job for job in jobs}, {pr.pr_number: pr.title for pr in prs}, {(configured_repo[0], configured_repo[1], workflow.workflow_file): workflow.workflow_name for workflow in workflows}, workflow_names_by_run_id)
+
+    async def load_records(
+        self, *, start: datetime, end: datetime, pools: list[str] | None = None, enrich: bool = False,
+    ) -> tuple[list[OccupancyRecord], datetime | None]:
+        """Read a cached time window; trend reads avoid CI/PR/Workflow joins."""
+        async with SessionLocal() as db:
+            state = (await db.execute(text("SELECT last_snapshot_at FROM npu_occupancy_sync_state WHERE id=1"))).mappings().first()
+        snapshot_at = state["last_snapshot_at"] if state else None
+        if snapshot_at is not None and snapshot_at.tzinfo is None:
+            snapshot_at = snapshot_at.replace(tzinfo=UTC)
+        if snapshot_at is None:
+            return [], None
+        key = (snapshot_at, start, end, tuple(sorted(pools or [])))
+        cached = type(self)._records_cache.get(key)
+        if cached and monotonic() - cached[0] < settings.NPU_OCCUPANCY_RECORDS_CACHE_TTL_SECONDS:
+            result = cached[2] if enrich and cached[2] is not None else cached[1]
+            if enrich:
+                self._schedule_workflow_metadata_backfill(result)
+            return result, snapshot_at
+        async with self._records_cache_lock:
+            cached = type(self)._records_cache.get(key)
+            if cached and monotonic() - cached[0] < settings.NPU_OCCUPANCY_RECORDS_CACHE_TTL_SECONDS:
+                if enrich and cached[2] is None:
+                    enriched = await self._enrich_records(cached[1])
+                    type(self)._records_cache[key] = (cached[0], cached[1], enriched)
+                    self._schedule_workflow_metadata_backfill(enriched)
+                    return enriched, snapshot_at
+                result = cached[2] if enrich and cached[2] is not None else cached[1]
+                if enrich:
+                    self._schedule_workflow_metadata_backfill(result)
+                return result, snapshot_at
+            envs, loaded_snapshot_at = await self.load_envs(start=start, end=end, pools=pools)
+            records = normalize_records(envs, loaded_snapshot_at or snapshot_at)
+            enriched = await self._enrich_records(records) if enrich else None
+            type(self)._records_cache[key] = (monotonic(), records, enriched)
+            if enrich and enriched is not None:
+                self._schedule_workflow_metadata_backfill(enriched)
+            return (enriched if enrich else records), loaded_snapshot_at

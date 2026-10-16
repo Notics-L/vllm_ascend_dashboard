@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     NPU_OCCUPANCY_METADATA_BACKFILL_BATCH_SIZE: int = 500
     NPU_OCCUPANCY_METADATA_BACKFILL_CONCURRENCY: int = 10
     NPU_OCCUPANCY_METADATA_BACKFILL_MAX_PAGES_PER_REPOSITORY: int = 60
+    # Page reads reuse a bounded window cache.  It is deliberately short: a
+    # successful sync invalidates it immediately, while repeated page opens do
+    # not repeatedly parse the same persisted JSON snapshot.
+    NPU_OCCUPANCY_RECORDS_CACHE_TTL_SECONDS: int = 60
 
     # CORS 配置
     # 生产环境应明确指定允许的域名，不要使用 "*"

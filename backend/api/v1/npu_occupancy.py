@@ -33,6 +33,10 @@ def _upstream_error(exc: NpuOccupancyUpstreamError) -> HTTPException:
     return HTTPException(status_code=503, detail=str(exc))
 
 
+def _pool_filter(dimension: str, names: list[str]) -> list[str] | None:
+    return names if dimension == "pool" and names else None
+
+
 @router.post("/refresh")
 async def refresh_snapshot(
     current_user: CurrentUser,
@@ -61,8 +65,11 @@ async def get_trend(
     end: datetime = Query(...),
 ):
     start, end = _validate_window(start, end)
-    records, snapshot_at = await NpuOccupancyRepository().load_records()
-    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).trend(dimension=dimension, names=parse_names(names), start=start, end=end)
+    selected_names = parse_names(names)
+    records, snapshot_at = await NpuOccupancyRepository().load_records(
+        start=start, end=end, pools=_pool_filter(dimension, selected_names), enrich=False,
+    )
+    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).trend(dimension=dimension, names=selected_names, start=start, end=end)
 
 
 @router.get("/details", response_model=NpuOccupancyDetailsResponse)
@@ -81,8 +88,11 @@ async def get_details(
     timestamp = timestamp.astimezone(UTC)
     if not start <= timestamp <= end:
         raise HTTPException(status_code=422, detail="timestamp must be within start and end")
-    records, snapshot_at = await NpuOccupancyRepository().load_records()
-    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).details(dimension=dimension, names=parse_names(names), timestamp=timestamp, group_by=group_by, start=start, end=end)
+    selected_names = parse_names(names)
+    records, snapshot_at = await NpuOccupancyRepository().load_records(
+        start=start, end=end, pools=_pool_filter(dimension, selected_names), enrich=True,
+    )
+    return NpuOccupancyService(records=records, snapshot_at=snapshot_at).details(dimension=dimension, names=selected_names, timestamp=timestamp, group_by=group_by, start=start, end=end)
 
 
 @router.get("/analysis", response_model=NpuOccupancyAnalysisResponse)
@@ -95,7 +105,10 @@ async def get_analysis(
 ):
     """Range analysis; the curve drawer remains on the single-time details API."""
     start, end = _validate_window(start, end)
-    records, snapshot_at = await NpuOccupancyRepository().load_records()
+    selected_names = parse_names(names)
+    records, snapshot_at = await NpuOccupancyRepository().load_records(
+        start=start, end=end, pools=_pool_filter(dimension, selected_names), enrich=True,
+    )
     return NpuOccupancyService(records=records, snapshot_at=snapshot_at).analysis(
-        dimension=dimension, names=parse_names(names), start=start, end=end,
+        dimension=dimension, names=selected_names, start=start, end=end,
     )

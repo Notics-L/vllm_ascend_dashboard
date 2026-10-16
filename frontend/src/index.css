@@ -113,6 +113,16 @@ html { scroll-behavior: smooth; }
 .npu-occupancy-analysis-head { color: #737889; font-size: 13px; padding: 7px 0 10px; border-bottom: 1px solid #dfe3ea; }
 .npu-occupancy-analysis-group { border-bottom: 1px solid #edf0f4; }
 .npu-occupancy-analysis-row { min-height: 46px; font-size: 14px; }
+.npu-occupancy-analysis-group:has(.npu-occupancy-run-table) .npu-occupancy-analysis-row {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: #fff;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, .08);
+}
+.npu-occupancy-analysis-groups-v2 { display: none; }
+.npu-occupancy-analysis-card,
+.npu-occupancy-analysis-card .ant-card-body { overflow: visible; }
 .npu-occupancy-run-table { margin: 4px 0 6px 20px; border: 1px solid #eef0f5; border-radius: 8px; overflow: hidden; }
 .npu-occupancy-run-head, .npu-occupancy-analysis-task { display: grid; grid-template-columns: minmax(135px, 1fr) minmax(100px, .7fr) minmax(170px, 1.25fr) minmax(150px, 1.1fr) minmax(90px, .65fr) 82px 68px minmax(176px, 1.05fr); gap: 12px; align-items: center; }
 .npu-occupancy-run-head { padding: 8px 12px; background: #fafbfe; border-bottom: 1px solid #eef0f5; color: #737889; font-size: 12px; font-weight: 600; }

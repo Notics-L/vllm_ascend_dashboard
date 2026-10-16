@@ -68,7 +68,12 @@ def _queue_delay_dates(now: datetime) -> list[str]:
     return [(first_day + timedelta(days=offset)).isoformat() for offset in range(7)]
 
 
-async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
+async def build_dashboard(
+    db: AsyncSession,
+    *,
+    consumption_pool: str | None = None,
+    consumption_days: int = 7,
+) -> dict[str, Any]:
     facts = list((await db.scalars(select(CINpuJobFact).order_by(CINpuJobFact.queued_at.desc()))).all())
     run_ids = {fact.run_id for fact in facts}
     result_rows = []
@@ -78,6 +83,7 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         )).all())
     results_by_run_id = {result.run_id: result for result in result_rows}
     now = datetime.now(UTC)
+    consumption_start = now - timedelta(days=consumption_days)
     queue_window_start, queue_window_end = _queue_delay_window(now)
     matched = [fact for fact in facts if fact.mapping_status == "matched" and fact.mapped_cards]
     pools: dict[str, list[CINpuJobFact]] = defaultdict(list)
@@ -195,6 +201,17 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         runtime_minutes = _minutes(fact.started_at, fact.completed_at)
         if runtime_minutes is None or not fact.completed_at:
             continue
+        completed_at = (
+            fact.completed_at.replace(tzinfo=UTC)
+            if fact.completed_at.tzinfo is None
+            else fact.completed_at.astimezone(UTC)
+        )
+        # Consumption is a separate view: filter before aggregation, rather
+        # than returning all historical Run data for the browser to trim.
+        if completed_at < consumption_start:
+            continue
+        if consumption_pool and fact.pool != consumption_pool:
+            continue
         card_hours = runtime_minutes * (fact.mapped_cards or 0) / 60
         # Keep the PR-consumption completion date consistent with the Beijing
         # calendar used by the seven-day queue-delay chart.
@@ -258,7 +275,16 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         "p90": _percentile(queue_window_samples, .9),
         "samples": len(queue_window_samples),
     }
-    completed_facts = [fact for fact in matched if fact.completed_at]
+    completed_facts = [
+        fact
+        for fact in matched
+        if fact.completed_at
+        and (
+            (fact.completed_at.replace(tzinfo=UTC) if fact.completed_at.tzinfo is None else fact.completed_at.astimezone(UTC))
+            >= consumption_start
+        )
+        and (not consumption_pool or fact.pool == consumption_pool)
+    ]
     # Read runtime-configured sync settings only when the dashboard payload is
     # requested; helper imports remain usable in isolated unit tests.
     from infrastructure.core.config import settings
@@ -277,7 +303,7 @@ async def build_dashboard(db: AsyncSession) -> dict[str, Any]:
         "generatedAt": now.isoformat(), "pools": sorted(pool_rows, key=lambda row: row["name"]),
         "trend": trend, "dailyQueue": daily_queue_rows, "queueDelaySummary": queue_delay_summary,
         "dailyUsage": daily_usage_rows, "queue": queue_rows,
-        "prCosts": sorted(pr_cost_rows, key=lambda row: row["allCardHours"], reverse=True)[:15],
+        "prCosts": sorted(pr_cost_rows, key=lambda row: row["allCardHours"], reverse=True)[:10],
         "usagePeriod": usage_period,
         "dataQuality": {"matched_jobs": len(matched), "unmatched_jobs": len(facts) - len(matched)},
     }

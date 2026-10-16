@@ -78,6 +78,23 @@
   border-top: 1px solid #e7ebf0;
   padding: 23px 6px 4px;
 }
+.npu-demand-section-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+  animation: npu-demand-section-enter-forward .6s cubic-bezier(.16, 1, .3, 1);
+}
+.npu-demand-section-scroll.is-backward { animation-name: npu-demand-section-enter-backward; }
+.npu-demand-section-scroll > * { min-width: 760px; }
+.npu-demand-section-scroll > .ant-table-wrapper { min-width: 1080px; }
+@keyframes npu-demand-section-enter-forward {
+  from { opacity: .35; transform: translateX(-28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes npu-demand-section-enter-backward {
+  from { opacity: .35; transform: translateX(28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
 
 .npu-demand-section-heading { margin-bottom: 18px; }
 .npu-demand-section-heading .ant-typography { font-size: 13px; }
@@ -97,6 +114,10 @@
 .npu-demand-utilization span { color: #667085; font-size: 13px; }
 .npu-demand-waiting-demand { margin-top: 8px; }
 .npu-demand-waiting-demand .ant-progress { margin-bottom: 0; }
+.npu-demand-machine-summary { display: flex; align-items: center; gap: 9px; min-width: 0; color: #667085; font-size: 12px; }
+.npu-demand-machine-summary > span { flex: 0 0 auto; }
+.npu-demand-machine-squares { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.npu-demand-machine-squares i { display: block; width: 10px; height: 10px; border: 1px solid rgba(15, 23, 42, .08); border-radius: 2px; }
 .npu-demand-pool-expand { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #5425a7; cursor: pointer; font-size: 14px; transition: background .18s ease, transform .18s ease; }
 .npu-demand-pool-expand:hover { background: #f2edff; }
 .npu-demand-pool-expand:focus-visible { outline: 2px solid #b9a5f7; outline-offset: 2px; }
@@ -196,6 +217,8 @@
 .npu-machine-heatmap-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .npu-machine-heatmap-legend i { width: 18px; height: 12px; border: 1px solid #d9d9d9; border-radius: 2px; }
 .npu-demand-cost-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 8px; }
+.npu-demand-cost-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
+.npu-demand-cost-filter .ant-typography { font-size: 12px; }
 .npu-demand-cost-toggle { display: flex; align-items: center; gap: 20px; }
 .npu-demand-cost-toggle button { appearance: none; border: 0; outline: 0; background: transparent; color: #98a2b3; cursor: pointer; font: inherit; font-size: 14px; font-weight: 400; line-height: 1.45; padding: 0; }
 .npu-demand-cost-toggle button.npu-demand-scope-actual { color: #1677ff; }
@@ -230,6 +253,8 @@
   .npu-demand-history-grid { grid-template-columns: 1fr; gap: 24px; }
   .npu-demand-history-chart + .npu-demand-history-chart { border-left: 0; border-top: 1px solid #edf0f4; padding: 20px 0 0; }
   .npu-demand-cost-toolbar { align-items: flex-start; flex-direction: column; }
+  .npu-demand-cost-filter { align-items: flex-start; flex-direction: column; }
+  .npu-demand-section-scroll > * { min-width: 620px; }
   .npu-demand-pool-details { grid-template-columns: 1fr; gap: 20px; }
   .npu-demand-pod-row { grid-template-columns: minmax(120px, 1fr) 1fr; }
   .npu-demand-queue-filter { flex-wrap: wrap; }

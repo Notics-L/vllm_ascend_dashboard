@@ -60,8 +60,8 @@ export type NpuQueueDashboard = {
   dataQuality: { matched_jobs: number; unmatched_jobs: number }
 }
 
-export async function getNpuQueueDashboard() {
-  const response = await api.get<NpuQueueDashboard>('/npu-queue/dashboard')
+export async function getNpuQueueDashboard(params?: { consumption_pool?: string; consumption_days?: 1 | 7 }) {
+  const response = await api.get<NpuQueueDashboard>('/npu-queue/dashboard', { params })
   return response.data
 }
 
