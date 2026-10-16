@@ -38,6 +38,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Timeline,
   Tooltip,
   Typography,
 } from 'antd'
@@ -77,8 +78,18 @@ import {
   getBuildPlans,
   getClassificationSummary,
   getContributorDetail,
+  getContributorDistribution,
+  getContributorHeatmap,
   getContributorPolicy,
+  getContributorTimeline,
   getExtendedTrend,
+  type ContributorHeatmap as HeatmapType,
+  type ContributorDistribution as DistributionType,
+  type ContributorTimeline as TimelineType,
+  type HeatmapDataPoint,
+  type ModuleDistributionItem,
+  type TypeDistributionItem,
+  type TimelineCommitItem,
   getModuleHotspot,
   getQuadrantData,
   getRanking,
@@ -94,19 +105,36 @@ import {
   updateScoringWeights,
   updateRoleThresholds,
   recalculateScores,
+  getActiveScoringVersion,
+  listScoringVersions,
+  listScoreSnapshots,
+  listScoreAuditLogs,
+  createScoringVersion,
+  applyScoringVersion,
+  rollbackScoringVersion,
+  compareScoringVersions,
+    calculateAutoWeights,
+    aiAnalyzeWeights,
+    exportExcel,
+    exportPdf,
+    generateAIReport,
+   type ScoringVersion,
+  type VersionCompareResult,
+  type ScoreSnapshot,
+  type ScoreUpdateAudit,
   getSyncSchedule,
   updateSyncSchedule,
   type ContributorSyncScheduleConfig,
-   syncContributors,
-   type SyncRecord,
-   type SyncSummary,
-   getSyncStatus,
-   getSyncHistory,
-   getSyncSummary,
-   cancelSync,
+    syncContributors,
+    type SyncRecord,
+    type SyncSummary,
+    getSyncStatus,
+    getSyncHistory,
+    getSyncSummary,
+    cancelSync,
 } from '../services/contributorBoard'
 
-const { Title, Text } = Typography
+const { Title, Text, Paragraph } = Typography
 
 /* ------------------------------------------------------------------ */
 /*                             颜色映射                                 */
@@ -168,6 +196,45 @@ const quadrantColors: Record<string, string> = {
   IMPROVE: '#faad14',
   ENCOURAGE: '#1890ff',
   REPLACE: '#ff4d4f',
+}
+
+// 提交类型映射（用于 Timeline 和类型分布图表）
+const classificationLabels: Record<string, string> = {
+  BugFix: 'Bug 修复',
+  Feature: '新功能',
+  Performance: '性能优化',
+  Revert: '回滚',
+  CI: 'CI/CD',
+  Doc: '文档',
+  Test: '测试',
+  Refactor: '重构',
+  Misc: '其他',
+}
+
+const classificationColors: Record<string, string> = {
+  BugFix: 'red',
+  Feature: 'green',
+  Performance: 'blue',
+  Revert: 'volcano',
+  CI: 'orange',
+  Doc: 'cyan',
+  Test: 'purple',
+  Refactor: 'magenta',
+  Misc: 'default',
+}
+
+const chartColors = ['#5b46f5', '#52c41a', '#ff4d4f', '#1890ff', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#d9d9d9']
+
+const weightLabels: Record<string, string> = {
+  merged_pr_weight: 'PR 合并',
+  code_line_weight: '代码行',
+  review_weight: 'Review',
+  approval_weight: 'Approval',
+  core_module_weight: '核心模块',
+  files_changed_weight: '变更文件',
+  bugfix_weight: 'Bug 修复',
+  feature_weight: '新功能',
+  active_duration_weight: '活跃时长',
 }
 
 const quadrantRoleLabels: Record<string, string> = {
@@ -401,6 +468,153 @@ function EChartsLineChart<T extends object>({
   }, [data, series])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+/** 贡献活动热力图（类似 GitHub 贡献格子） */
+function ContributorHeatmapChart({ data }: { data: HeatmapDataPoint[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const inst = echarts.init(el)
+
+    // 构建周×日的二维数据
+    const weekDays = ['一', '二', '三', '四', '五', '六', '日']
+    // 按 ISO 周分组
+    const weekMap: Record<string, Record<number, number>> = {}
+    for (const d of data) {
+      const dt = new Date(d.date)
+      // ISO week: Monday as first day
+      const isoWeek = getISOWeek(dt)
+      const key = `${dt.getFullYear()}-W${String(isoWeek).padStart(2, '0')}`
+      if (!weekMap[key]) weekMap[key] = {}
+      weekMap[key][d.weekDay] = d.commit_count
+    }
+    const weeks = Object.keys(weekMap).sort()
+
+    // 构建 heatmap 数据：[weekIndex, weekDay, count]
+    const heatmapData: [number, number, number][] = []
+    weeks.forEach((wk, wi) => {
+      for (let wd = 0; wd < 7; wd++) {
+        heatmapData.push([wi, wd, weekMap[wk][wd] || 0])
+      }
+    })
+
+    inst.setOption({
+      tooltip: {
+        formatter: (params: any) => {
+          const wi = params.data[0]
+          const wd = params.data[1]
+          const cnt = params.data[2]
+          return `${weeks[wi]}<br/>星期${weekDays[wd]}: ${cnt} 次提交`
+        },
+      },
+      grid: { left: 10, right: 30, top: 10, bottom: 30 },
+      xAxis: {
+        type: 'category',
+        data: weeks,
+        splitArea: { show: false },
+        axisLabel: {
+          fontSize: 10,
+          formatter: (val: string) => val.split('-W')[1],
+          rotate: 0,
+        },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      yAxis: {
+        type: 'category',
+        data: weekDays,
+        splitArea: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      visualMap: {
+        min: 0,
+        max: Math.max(...heatmapData.map(d => d[2]), 1),
+        calculable: false,
+        orient: 'horizontal',
+        left: 'center',
+        bottom: 0,
+        show: true,
+        inRange: {
+          color: ['#f0f0f0', '#d9f7be', '#a0d911', '#62b209', '#216500'],
+        },
+        textStyle: { fontSize: 10 },
+      },
+      series: [{
+        type: 'heatmap',
+        data: heatmapData,
+        label: { show: false },
+        emphasis: {
+          itemStyle: { borderColor: '#5b46f5', borderWidth: 2 },
+        },
+      }],
+    }, true)
+
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [data])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+/** 提交类型柱状图 */
+function CommitTypeBarChart({ data }: { data: TypeDistributionItem[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const inst = echarts.init(el)
+    inst.setOption({
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      grid: { left: 50, right: 16, top: 10, bottom: 40 },
+      xAxis: {
+        type: 'category',
+        data: data.map(d => classificationLabels[d.commit_type] || d.commit_type),
+        axisTick: { alignWithLabel: true },
+        axisLabel: { fontSize: 11, rotate: 30 },
+      },
+      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+      series: [{
+        type: 'bar',
+        data: data.map((d, i) => ({
+          value: d.count,
+          itemStyle: { color: chartColors[i % chartColors.length] },
+        })),
+        barMaxWidth: 50,
+        label: {
+          show: true,
+          position: 'top',
+          fontSize: 11,
+          formatter: (params: any) => params.value,
+        },
+      }],
+    }, true)
+    const onResize = () => inst.resize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      inst.dispose()
+    }
+  }, [data])
+
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+// ISO 周工具函数
+function getISOWeek(date: Date): number {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  const dayNum = d.getUTCDay() || 7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
 }
 
 function ClassificationTab({ selectedRepo }: { selectedRepo?: string }) {
@@ -2270,6 +2484,582 @@ function SettingsTab() {
 }
 
 /* ------------------------------------------------------------------ */
+/*                     分析设置 — 权重版本管理                        */
+/* ------------------------------------------------------------------ */
+
+function ContributorBoardSettingsPage() {
+  const [activeSubTab, setActiveSubTab] = useState('current')
+  const [activeVersion, setActiveVersion] = useState<ScoringVersion | null>(null)
+  const [versions, setVersions] = useState<ScoringVersion[]>([])
+  const [versionsTotal, setVersionsTotal] = useState(0)
+  const [snapshots, setSnapshots] = useState<ScoreSnapshot[]>([])
+  const [snapshotsTotal, setSnapshotsTotal] = useState(0)
+  const [audits, setAudits] = useState<ScoreUpdateAudit[]>([])
+  const [auditsTotal, setAuditsTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [calculating, setCalculating] = useState(false)
+  const [aiCalculating, setAiCalculating] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [applying, setApplying] = useState<number | null>(null)
+  const [settings, setSettings] = useState<SettingsType | null>(null)
+  const [selectedForCompare, setSelectedForCompare] = useState<number | null>(null)
+  const [comparingVersion, setComparingVersion] = useState<number | null>(null)
+  const [compareResult, setCompareResult] = useState<VersionCompareResult | null>(null)
+  const [selectedSnapshot, setSelectedSnapshot] = useState<ScoreSnapshot | null>(null)
+  const [aiReporting, setAiReporting] = useState(false)
+  const [aiReport, setAiReport] = useState<any>(null)
+
+  useEffect(() => {
+    loadAll().then()
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('settings-updated', loadAll)
+    return () => window.removeEventListener('settings-updated', loadAll)
+  }, [])
+
+  const loadAll = async () => {
+    try {
+      const [av, vs, ss, au, st] = await Promise.all([
+        getActiveScoringVersion().catch(() => null),
+        listScoringVersions().catch(() => ({ versions: [], total: 0 })),
+        listScoreSnapshots().catch(() => ({ snapshots: [], total: 0 })),
+        listScoreAuditLogs().catch(() => ({ audits: [], total: 0 })),
+        getContributorBoardSettings().catch(() => null),
+      ])
+      setActiveVersion(av)
+      setVersions(vs.versions)
+      setVersionsTotal(vs.total)
+      setSnapshots(ss.snapshots)
+      setSnapshotsTotal(ss.total)
+      setAudits(au.audits)
+      setAuditsTotal(au.total)
+      setSettings(st)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleAutoWeights = async () => {
+    try {
+      setCalculating(true)
+      const result = await calculateAutoWeights()
+      message.success(`自动算权完成 (置信度: ${result.confidence.toFixed(2)})，已创建新版本`)
+      await loadAll()
+    } catch {
+      message.error('自动算权失败')
+    } finally {
+      setCalculating(false)
+    }
+  }
+
+  const handleAIWeights = async () => {
+    try {
+      setAiCalculating(true)
+      const result = await aiAnalyzeWeights()
+      message.success(`AI 评权完成，已创建新版本 ${result.version} (模型: ${result.ai_model || '默认'})`)
+      await loadAll()
+    } catch (e: any) {
+      const msg = e.response?.data?.msg || 'AI 评权失败，请检查 LLM 配置'
+      message.error(msg)
+    } finally {
+       setAiCalculating(false)
+    }
+  }
+
+  const handleGenerateAIReport = async () => {
+    try {
+      setAiReporting(true)
+      setAiReport(null)
+      const report = await generateAIReport()
+      setAiReport(report)
+      message.success(`AI 综合分析报告生成成功 (模型: ${report.ai_model}, 涵盖 ${report.periods_count} 个周期)`)
+    } catch (e: any) {
+      const msg = e.response?.data?.detail || 'AI 报告生成失败，请检查 LLM 配置'
+      message.error(msg)
+    } finally {
+      setAiReporting(false)
+    }
+  }
+
+  const handleExport = async (format: 'excel' | 'pdf') => {
+    try {
+      setExporting(true)
+      const snapId = selectedSnapshot?.id || undefined
+      let blob: Blob, filename: string
+      if (format === 'excel') {
+        blob = await exportExcel(snapId)
+        filename = `contributor_report_${new Date().toISOString().slice(0, 10)}.xlsx`
+      } else {
+        blob = await exportPdf(snapId)
+        filename = `contributor_report_${new Date().toISOString().slice(0, 10)}.pdf`
+      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success(`报告导出成功 (${format.toUpperCase()})`)
+    } catch {
+      message.error('导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleApply = async (versionId: number) => {
+    try {
+      setApplying(versionId)
+      await applyScoringVersion(versionId)
+      message.success('版本应用成功，已重新计算所有分数')
+      await loadAll()
+    } catch {
+      message.error('应用失败')
+    } finally {
+      setApplying(null)
+    }
+  }
+
+  const handleRollback = async (versionId: number) => {
+    try {
+      setApplying(versionId)
+      await rollbackScoringVersion(versionId)
+      message.success('回滚成功，已重新计算所有分数')
+      await loadAll()
+    } catch {
+      message.error('回滚失败')
+    } finally {
+      setApplying(null)
+    }
+  }
+
+  const handleRecalculate = async () => {
+    try {
+      await recalculateScores()
+      message.success('分数重算完成')
+      await loadAll()
+    } catch {
+      message.error('重算失败')
+    }
+  }
+
+  const handleCompare = async () => {
+    if (!selectedForCompare || !comparingVersion || selectedForCompare === comparingVersion) return
+    try {
+      const result = await compareScoringVersions(selectedForCompare, comparingVersion)
+      setCompareResult(result)
+    } catch {
+      message.error('对比失败')
+    }
+  }
+
+  const handleSaveWeights = async () => {
+    try {
+      if (!settings) return
+      await createScoringVersion({
+        method: 'manual',
+        weights: { ...settings.scoring_weights } as Record<string, number>,
+        description: '手动调整权重',
+        apply_immediately: true,
+      })
+      message.success('权重修改已保存为新版版本并应用')
+      await loadAll()
+    } catch {
+      message.error('保存失败')
+    }
+  }
+
+  if (loading) return <Spin size="large" />
+
+  return (
+    <Spin tip="加载中" spinning={calculating}>
+      <Title level={4} style={{ marginBottom: 16 }}>
+        <SettingOutlined style={{ marginRight: 8, color: '#5b46f5' }} />
+        贡献者分析设置
+      </Title>
+
+      <Tabs activeKey={activeSubTab} onChange={setActiveSubTab}>
+        {/* Tab 1: 当前权重 */}
+        <Tabs.TabPane tab="当前权重" key="current">
+          <Row gutter={[20, 16]}>
+            <Col xs={24} md={12}>
+              <Card title="生效版本信息" size="small">
+                {activeVersion ? (
+                  <Descriptions column={1} size="small" bordered>
+                    <Descriptions.Item label="版本">{activeVersion.version}</Descriptions.Item>
+                    <Descriptions.Item label="确定方式">
+                      <Tag color={activeVersion.method === 'auto' ? 'blue' : activeVersion.method === 'ai' ? 'purple' : 'default'}>
+                        {activeVersion.method === 'auto' ? '📊 自动算权' : activeVersion.method === 'ai' ? '🤖 AI 评权' : '✏️ 手动设置'}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="置信度">
+                      {activeVersion.confidence_score ? (
+                        <Progress percent={Math.round(activeVersion.confidence_score * 100)} size="small" />
+                      ) : <Text type="secondary">N/A</Text>}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="操作人">{activeVersion.activated_by || 'N/A'}</Descriptions.Item>
+                    <Descriptions.Item label="生效时间">{activeVersion.activated_at ? new Date(activeVersion.activated_at).toLocaleString('zh-CN') : 'N/A'}</Descriptions.Item>
+                    <Descriptions.Item label="说明">{activeVersion.description || '-'}</Descriptions.Item>
+                  </Descriptions>
+                ) : (
+                  <Empty description="暂无生效版本" />
+                )}
+              </Card>
+            </Col>
+             <Col xs={24} md={12}>
+               <Card title="权重配置" size="small">
+                 {activeVersion ? (
+                   <Descriptions column={2} size="small">
+                     {Object.entries(activeVersion.weights).map(([key, value]) => (
+                       <Descriptions.Item key={key} label={weightLabels[key] || key}>
+                         {typeof value === 'number' ? value.toFixed(4) : value}
+                       </Descriptions.Item>
+                     ))}
+                   </Descriptions>
+                 ) : <Empty />}
+               </Card>
+            </Col>
+          </Row>
+
+          <Row gutter={16} style={{ marginTop: 16 }}>
+            <Col span={12}>
+              <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+                <Space>
+                  <Button type="primary" onClick={handleAutoWeights} loading={calculating}>
+                    自动算权
+                  </Button>
+                  <Button onClick={handleAIWeights} loading={aiCalculating} style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none', color: '#fff' }}>
+                    AI 评权
+                  </Button>
+                  <Button onClick={handleRecalculate} danger ghost>
+                    仅重算分数
+                  </Button>
+                  <Button onClick={handleGenerateAIReport} loading={aiReporting} type="primary" ghost style={{ borderColor: '#722ed1', color: '#722ed1' }}>
+                    AI 综合报告
+                  </Button>
+                </Space>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                  自动算权基于熵权法，AI 评权调用大模型分析数据分布，AI 综合报告生成多周期决策分析
+                </div>
+              </Card>
+            </Col>
+            <Col span={12}>
+              <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
+                <Space>
+                  <Text strong>当前版本</Text>
+                  <Tag color="green">{activeVersion?.version || 'N/A'}</Tag>
+                  {activeVersion?.method === 'auto' && <Tag>自动算权</Tag>}
+                  {activeVersion?.method === 'manual' && <Tag color="blue">手动设置</Tag>}
+                  {activeVersion?.method === 'ai' && <Tag color="orange">AI 评权</Tag>}
+                </Space>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                  {activeVersion?.activated_at ? `生效于 ${activeVersion.activated_at.slice(0, 10)}` : '尚未生效'}
+                </div>
+              </Card>
+            </Col>
+          </Row>
+
+          {settings && (
+            <Card title="手动调整权重" extra={<Text type="secondary" style={{ fontSize: 12 }}>* 手动模式使用倍数量纲，自动/AI 模式权重归一化（和为1）</Text>} size="small" style={{ marginTop: 16 }}>
+              <Row gutter={[16, 16]}>
+                {[
+                  { key: 'merged_pr_weight' as const, label: 'PR 合并权重', min: 0, max: 30, step: 1 },
+                  { key: 'code_line_weight' as const, label: '代码行权重', min: 0, max: 5, step: 0.1 },
+                  { key: 'review_weight' as const, label: 'Review 权重', min: 0, max: 15, step: 0.5 },
+                  { key: 'approval_weight' as const, label: 'Approval 权重', min: 0, max: 15, step: 0.5 },
+                  { key: 'core_module_weight' as const, label: '核心模块权重', min: 0, max: 20, step: 1 },
+                ].map(dw => (
+                  <Col span={12} key={dw.key}>
+                    <div style={{ marginBottom: 4 }}>
+                      <Text style={{ fontWeight: 500 }}>{dw.label}</Text>
+                      <Text strong style={{ marginLeft: 8, fontSize: 14 }}>
+                        {settings.scoring_weights[dw.key]}
+                      </Text>
+                    </div>
+                    <Slider value={settings.scoring_weights[dw.key]} min={dw.min} max={dw.max} step={dw.step}
+                      onChange={v => { settings.scoring_weights[dw.key] = v; setSettings({ ...settings }) }}
+                      tooltip={{ formatter: (val) => `${val}` }} />
+                  </Col>
+                ))}
+              </Row>
+              <div style={{ marginTop: 12, textAlign: 'center' }}>
+                <Button type="primary" size="large" onClick={handleSaveWeights}>
+                  保存修改 — 创建新版本
+                </Button>
+                <Text style={{ marginLeft: 16, color: '#999', fontSize: 12 }}>
+                  保存后将创建新的权重版本，需手动生效后才会应用到评分
+                </Text>
+              </div>
+            </Card>
+          )}
+        </Tabs.TabPane>
+
+        {/* Tab 2: 版本历史 */}
+        <Tabs.TabPane tab="版本历史" key="versions">
+          <div style={{ marginBottom: 12 }}>
+            <Select value={selectedForCompare} placeholder="选择基准版本" allowClear style={{ width: 180, marginRight: 8 }}
+              onChange={v => setSelectedForCompare(v)}>
+              {versions.map(v => <Select.Option key={v.id} value={v.id}>{v.version} ({v.method})</Select.Option>)}
+            </Select>
+            <Select value={comparingVersion} placeholder="选择对比版本" allowClear style={{ width: 180, marginRight: 8 }}
+              onChange={v => setComparingVersion(v)}>
+              {versions.map(v => <Select.Option key={v.id} value={v.id}>{v.version} ({v.method})</Select.Option>)}
+            </Select>
+            <Button onClick={handleCompare}>对比</Button>
+          </div>
+
+          {compareResult && (
+            <Card title={`对比: ${compareResult.version_a.version} vs ${compareResult.version_b.version}`} size="small" style={{ marginBottom: 16 }}
+              extra={<Button size="small" onClick={() => setCompareResult(null)}>关闭</Button>}>
+              <Descriptions column={4} size="small" bordered>
+                {Object.entries(compareResult.weight_diff).map(([key, diff]) => (
+                  <Descriptions.Item key={key} label={key}>
+                    {diff.from} → {diff.to} ({diff.change_pct > 0 ? '+' : ''}{diff.change_pct}%)
+                  </Descriptions.Item>
+                ))}
+              </Descriptions>
+              {compareResult.score_impact?.quadrant_changes && compareResult.score_impact.quadrant_changes.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <Text strong>象限变动 ({compareResult.score_impact.quadrant_changes.length} 人):</Text>
+                  <div style={{ marginTop: 4 }}>
+                    {compareResult.score_impact.quadrant_changes.map((c: any, i: number) => (
+                      <Tag key={i}>{c.login}: {c.from} → {c.to}</Tag>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          )}
+
+          <Timeline
+            items={versions.map(v => ({
+              color: v.status === 'active' ? 'green' : 'gray',
+              children: (
+                <div>
+                  <Space>
+                    <Text strong>{v.version}</Text>
+                    <Tag color={v.status === 'active' ? 'green' : v.status === 'draft' ? 'orange' : 'default'}>{v.status}</Tag>
+                    <Tag color={v.method === 'auto' ? 'blue' : v.method === 'ai' ? 'purple' : 'default'}>
+                      {v.method}
+                    </Tag>
+                    {v.confidence_score != null && <Text type="secondary">置信度: {v.confidence_score.toFixed(2)}</Text>}
+                  </Space>
+                  <div style={{ marginTop: 4, marginBottom: 4 }}>
+                    <Text type="secondary">{v.created_by}</Text>
+                    <Text type="secondary" style={{ marginLeft: 8 }}>{new Date(v.created_at).toLocaleString('zh-CN')}</Text>
+                    {v.description && <Text style={{ marginLeft: 8 }}>{v.description}</Text>}
+                  </div>
+                  <Space size="small">
+                    {v.status !== 'active' && (
+                      <Button size="small" onClick={() => handleRollback(v.id)} loading={applying === v.id}>
+                        {v.status === 'draft' ? '应用' : '回滚'}
+                      </Button>
+                    )}
+                  </Space>
+                  {v.ai_response && (
+                    <div style={{ marginTop: 8, padding: 8, background: '#f5f5f5', borderRadius: 4 }}>
+                      <Text strong>AI 分析:</Text>
+                      <pre style={{ margin: '8px 0', fontSize: 12, whiteSpace: 'pre-wrap' }}>{v.ai_response}</pre>
+                    </div>
+                  )}
+                </div>
+              ),
+            }))}
+          />
+        </Tabs.TabPane>
+
+        {/* Tab 3: 分数快照 */}
+        <Tabs.TabPane tab="分数快照" key="snapshots">
+          <div style={{ marginBottom: 12 }}>
+            <Space>
+              <Button size="small" onClick={() => handleExport('excel')} loading={exporting}>
+                导出 Excel
+              </Button>
+              <Button size="small" onClick={() => handleExport('pdf')} loading={exporting}>
+                导出 PDF
+              </Button>
+            </Space>
+          </div>
+          <Table
+            dataSource={snapshots}
+            rowKey="id"
+            size="small"
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            columns={[
+              { title: 'ID', dataIndex: 'id', width: 60 },
+              { title: '日期', dataIndex: 'snapshot_date', width: 120 },
+              { title: '贡献者数', dataIndex: 'contributor_count', width: 100 },
+              { title: '均值', render: (r: ScoreSnapshot) => r.statistics?.score_mean?.toFixed?.(1) || '-', width: 80 },
+              { title: '操作人', dataIndex: 'created_by', width: 100 },
+              {
+                title: '操作',
+                render: (r: ScoreSnapshot) => (
+                  <Button size="small" onClick={() => setSelectedSnapshot(r)}>查看</Button>
+                ),
+              },
+            ]}
+          />
+          {selectedSnapshot && (
+            <Card title={`快照 ${selectedSnapshot.snapshot_date}`} size="small" style={{ marginTop: 16 }}
+              extra={<Button size="small" onClick={() => setSelectedSnapshot(null)}>关闭</Button>}>
+              <Descriptions column={3} size="small" bordered>
+                <Descriptions.Item label="贡献者数">{selectedSnapshot.contributor_count}</Descriptions.Item>
+                <Descriptions.Item label="分数均值">
+                  {selectedSnapshot.statistics?.score_mean?.toFixed(1)}
+                </Descriptions.Item>
+                <Descriptions.Item label="四象限分布">
+                  {selectedSnapshot.statistics?.quadrant_distribution &&
+                    Object.entries(selectedSnapshot.statistics.quadrant_distribution as Record<string, number>).map(([k, v]) => (
+                      <Tag key={k} color={quadrantColors[k] || 'default'}>
+                        {quadrantLabels[k] || k}: {v}
+                      </Tag>
+                    ))
+                  }
+                </Descriptions.Item>
+              </Descriptions>
+              <Divider />
+              <Table
+                dataSource={selectedSnapshot.scores}
+                rowKey="login"
+                size="small"
+                pagination={{ pageSize: 10 }}
+                columns={[
+                  { title: '用户', dataIndex: 'login' },
+                  { title: '分数', dataIndex: 'score', sorter: (a: any, b: any) => a.score - b.score },
+                  { title: '错误分', dataIndex: 'error_score' },
+                  { title: '象限', dataIndex: 'quadrant', render: (q: string) => <Tag color={quadrantColors[q]}>{quadrantLabels[q] || q}</Tag> },
+                ]}
+              />
+            </Card>
+          )}
+        </Tabs.TabPane>
+
+        {/* Tab 4: 审计日志 */}
+        <Tabs.TabPane tab="审计日志" key="audit">
+          <Table
+            dataSource={audits}
+            rowKey="id"
+            size="small"
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            columns={[
+              { title: 'ID', dataIndex: 'id', width: 60 },
+              { title: '操作', dataIndex: 'action', width: 180, render: (a: string) => {
+                  const map: Record<string, {color: string, label: string}> = {
+                    'create_version': {color: 'blue', label: '创建版本'},
+                    'apply_version': {color: 'green', label: '应用版本'},
+                    'rollback_version': {color: 'orange', label: '回滚版本'},
+                    'generate_snapshot': {color: 'purple', label: '生成快照'},
+                  }
+                  const info = map[a] || {color: 'default', label: a}
+                  return <Tag color={info.color}>{info.label}</Tag>
+                }},
+              { title: '操作人', dataIndex: 'created_by', width: 100 },
+              { title: '详情', dataIndex: 'summary', ellipsis: true },
+              {
+                title: '最大变动',
+                dataIndex: 'max_weight_shift',
+                width: 100,
+                render: (v: number | null) => v != null
+                  ? <Tag color={v > 30 ? 'red' : v > 15 ? 'orange' : 'green'}>{v.toFixed(1)}%</Tag>
+                  : '-',
+              },
+              { title: '时间', dataIndex: 'created_at', render: (v: string) => new Date(v).toLocaleString('zh-CN'), width: 180 },
+            ]}
+          />
+        </Tabs.TabPane>
+
+        {/* Tab 5: AI 综合报告 */}
+        <Tabs.TabPane tab="AI 综合报告" key="ai-report">
+          <Card>
+            <div style={{ textAlign: 'center', padding: '20px 0' }}>
+              <Button type="primary" onClick={handleGenerateAIReport} loading={aiReporting} size="large"
+                style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
+                生成 AI 综合分析报告
+              </Button>
+              <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                基于多周期四象限数据，调用大模型生成团队健康度分析和决策建议
+              </div>
+            </div>
+          </Card>
+
+          {aiReport && (
+            <div style={{ marginTop: 16 }}>
+              <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
+                <Descriptions.Item label="模型">
+                  <Tag color="purple">{aiReport.ai_model || 'N/A'}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="分析周期数">
+                  {aiReport.periods_count}
+                </Descriptions.Item>
+                <Descriptions.Item label="贡献者总数">
+                  {aiReport.total_contributors}
+                </Descriptions.Item>
+                <Descriptions.Item label="风险等级">
+                  {aiReport.risk_level === 'high' && <Tag color="red">高风险</Tag>}
+                  {aiReport.risk_level === 'medium' && <Tag color="orange">中等风险</Tag>}
+                  {aiReport.risk_level === 'low' && <Tag color="green">低风险</Tag>}
+                </Descriptions.Item>
+                <Descriptions.Item label="生成时间">
+                  {aiReport.generated_at ? new Date(aiReport.generated_at).toLocaleString('zh-CN') : 'N/A'}
+                </Descriptions.Item>
+              </Descriptions>
+
+              <Alert
+                message="Executive Summary"
+                description={aiReport.executive_summary}
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+
+              <Row gutter={[16, 16]}>
+                <Col span={12}>
+                  <Card title="团队健康度分析" size="small">
+                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.team_health}</Paragraph>
+                  </Card>
+                </Col>
+                <Col span={12}>
+                  <Card title="核心贡献者稳定性" size="small">
+                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.core_contributors}</Paragraph>
+                  </Card>
+                </Col>
+                <Col span={12}>
+                  <Card title="新增贡献者融入分析" size="small">
+                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.new_contributors}</Paragraph>
+                  </Card>
+                </Col>
+                <Col span={12}>
+                  <Card title="需要关注的问题" size="small">
+                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.improvement_areas}</Paragraph>
+                  </Card>
+                </Col>
+              </Row>
+
+              {aiReport.recommendations && aiReport.recommendations.length > 0 && (
+                <Card title="决策建议" style={{ marginTop: 16 }} size="small">
+                  {aiReport.recommendations.map((rec: string, i: number) => (
+                    <div key={i} style={{ padding: '8px 12px', background: '#f5f0ff', borderRadius: 6, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <div style={{
+                        width: 24, height: 24, borderRadius: '50%',
+                        background: 'linear-gradient(135deg, #722ed1, #b745d3)',
+                        color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 12, fontWeight: 'bold', flexShrink: 0
+                      }}>{i + 1}</div>
+                      <Text style={{ fontSize: 13 }}>{rec}</Text>
+                    </div>
+                  ))}
+                </Card>
+              )}
+            </div>
+          )}
+        </Tabs.TabPane>
+      </Tabs>
+    </Spin>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*                          贡献者详情页                              */
 /* ------------------------------------------------------------------ */
 
@@ -2282,6 +3072,12 @@ function ContributorDetailPage() {
   const [loading, setLoading] = useState(true)
   const [policy, setPolicy] = useState<PolicyResult | null>(null)
   const [trend, setTrend] = useState<ExtendedTrend | null>(null)
+  const [heatmap, setHeatmap] = useState<HeatmapType | null>(null)
+  const [distribution, setDistribution] = useState<DistributionType | null>(null)
+  const [timeline, setTimeline] = useState<TimelineType | null>(null)
+  const [heatmapLoading, setHeatmapLoading] = useState(false)
+  const [distLoading, setDistLoading] = useState(false)
+  const [timelineLoading, setTimelineLoading] = useState(false)
 
   useEffect(() => {
     try {
@@ -2307,6 +3103,36 @@ function ContributorDetailPage() {
       message.error('加载贡献者详情失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadHeatmap = async () => {
+    if (!login) return
+    setHeatmapLoading(true)
+    try {
+      setHeatmap(await getContributorHeatmap(login))
+    } catch { /* ignore */ } finally {
+      setHeatmapLoading(false)
+    }
+  }
+
+  const loadDistribution = async () => {
+    if (!login) return
+    setDistLoading(true)
+    try {
+      setDistribution(await getContributorDistribution(login))
+    } catch { /* ignore */ } finally {
+      setDistLoading(false)
+    }
+  }
+
+  const loadTimeline = async () => {
+    if (!login) return
+    setTimelineLoading(true)
+    try {
+      setTimeline(await getContributorTimeline(login))
+    } catch { /* ignore */ } finally {
+      setTimelineLoading(false)
     }
   }
 
@@ -2460,6 +3286,95 @@ function ContributorDetailPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* ===== 贡献活动热力图 ===== */}
+      <Card
+        title="贡献活动热力图"
+        extra={<Button size="small" onClick={loadHeatmap} loading={heatmapLoading}>加载热力图</Button>}
+        style={{ marginTop: 16 }}
+      >
+        <div style={{ height: 260 }}>
+          {heatmap?.heatmap_data && heatmap.heatmap_data.length > 0 ? (
+            <ContributorHeatmapChart data={heatmap.heatmap_data} />
+          ) : (
+            <Empty description="暂无热力图数据，请点击右上角加载" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          )}
+        </div>
+      </Card>
+
+      {/* ===== 模块分布 + 提交类型分布 ===== */}
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col span={12}>
+          <Card
+            title="模块贡献分布"
+            extra={<Button size="small" onClick={loadDistribution} loading={distLoading}>加载分布</Button>}
+          >
+            <div style={{ height: 350 }}>
+              {distribution?.modules && distribution.modules.length > 0 ? (
+                <EChartsPieChart
+                  data={distribution.modules.map(m => ({
+                    name: m.module,
+                    value: m.commit_count,
+                  }))}
+                />
+              ) : (
+                <Empty description="暂无模块分布数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
+            </div>
+          </Card>
+        </Col>
+
+        <Col span={12}>
+          <Card title="提交类型分布">
+            <div style={{ height: 350 }}>
+              {distribution?.type_distribution && distribution.type_distribution.length > 0 ? (
+                <CommitTypeBarChart data={distribution.type_distribution} />
+              ) : (
+                <Empty description="暂无类型分布数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ===== 贡献时间线 ===== */}
+      <Card
+        title="最近提交活动 (Timeline)"
+        extra={<Button size="small" onClick={loadTimeline} loading={timelineLoading}>加载时间线</Button>}
+        style={{ marginTop: 16 }}
+      >
+        {timeline?.commits && timeline.commits.length > 0 ? (
+          <Timeline
+            mode="left"
+            items={timeline.commits.map(c => ({
+              color: classificationColors[c.classification] || 'gray',
+              children: (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <Tag color={classificationColors[c.classification] || 'default'}>
+                      {classificationLabels[c.classification] || c.classification}
+                    </Tag>
+                    {c.module && <Tag>{c.module}</Tag>}
+                    <Text code style={{ fontSize: 12 }}>{c.commit_hash.slice(0, 8)}</Text>
+                  </div>
+                  <Text strong>{c.message}</Text>
+                  <div style={{ marginTop: 4 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {c.committed_at
+                        ? `${dayjs(c.committed_at).format('YYYY-MM-DD HH:mm')} · `
+                        : ''}
+                      {c.files_changed > 0 && `${c.files_changed} files · `}
+                      +{c.code_additions}/-{c.code_deletions}
+                    </Text>
+                  </div>
+                </div>
+              ),
+            }))}
+          />
+        ) : (
+          <Empty description="暂无时间线数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
+      </Card>
     </div>
   )
 }
@@ -3379,7 +4294,7 @@ function ContributorBoard() {
     {
       key: 'settings',
       label: <><ToolOutlined /> 分析设置</>,
-      children: <SettingsTab />,
+      children: <ContributorBoardSettingsPage />,
     },
    ]
 

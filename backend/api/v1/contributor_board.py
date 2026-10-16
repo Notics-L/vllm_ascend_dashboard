@@ -21,10 +21,13 @@ from contracts.schemas.contributor_board import (
     BuildPlanResponse,
     ClassificationSummary,
     ContributorDetailResponse,
+    ContributorDistributionResponse,
+    ContributorHeatmapResponse,
     ContributorListFilter,
     ContributorListResponse,
     ContributorOverviewStats,
     ContributorRankingResponse,
+    ContributorTimelineResponse,
     ContributorTrendResponse,
     ContributorSyncHistoryResponse,
     ContributorSyncRecordResponse,
@@ -550,3 +553,62 @@ async def update_sync_schedule(db: DbSession, request: ContributorSyncScheduleUp
         logger.warning("Failed to queue scheduler reload: %s", e)
 
     return result
+
+
+# ---- 贡献者详情页增强（登录即可访问）----
+
+@router.get("/contributors/{login}/heatmap", response_model=ContributorHeatmapResponse)
+async def get_contributor_heatmap(
+    login: str,
+    db: DbSession,
+    repo_name: str | None = Query(None),
+    years: int = Query(1, ge=1, le=5, description="回溯年数"),
+):
+    """获取贡献者提交热力图数据"""
+    service = get_contributor_board_service()
+    data = await service.get_contributor_heatmap_data(
+        db, login=login, repo_name=repo_name, years=years
+    )
+    from contracts.schemas.contributor_board import HeatmapDataPoint
+    return ContributorHeatmapResponse(
+        login=data["login"],
+        heatmap_data=[HeatmapDataPoint(**p) for p in data["heatmap_data"]],
+    )
+
+
+@router.get("/contributors/{login}/distribution", response_model=ContributorDistributionResponse)
+async def get_contributor_distribution(
+    login: str,
+    db: DbSession,
+    repo_name: str | None = Query(None),
+):
+    """获取贡献者模块+类型分布数据"""
+    service = get_contributor_board_service()
+    data = await service.get_contributor_module_distribution(
+        db, login=login, repo_name=repo_name
+    )
+    from contracts.schemas.contributor_board import (
+        ModuleDistributionItem,
+        TypeDistributionItem,
+    )
+    return ContributorDistributionResponse(
+        login=data["login"],
+        modules=[ModuleDistributionItem(**m) for m in data["modules"]],
+        type_distribution=[TypeDistributionItem(**t) for t in data["type_distribution"]],
+    )
+
+
+@router.get("/contributors/{login}/timeline", response_model=ContributorTimelineResponse)
+async def get_contributor_timeline(
+    login: str,
+    db: DbSession,
+    limit: int = Query(20, ge=1, le=100),
+):
+    """获取贡献者提交时间线"""
+    service = get_contributor_board_service()
+    data = await service.get_contributor_timeline(db, login=login, limit=limit)
+    from contracts.schemas.contributor_board import TimelineCommitItem
+    return ContributorTimelineResponse(
+        login=data["login"],
+        commits=[TimelineCommitItem(**c) for c in data["commits"]],
+    )

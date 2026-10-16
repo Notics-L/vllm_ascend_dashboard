@@ -486,6 +486,57 @@ class ExtendedTrendResponse(BaseModel):
     score_trend: list[ScoreTrendPoint] = []
 
 
+# ============ 热力图 Schemas ============
+
+class HeatmapDataPoint(BaseModel):
+    date: str = Field(description="日期 (YYYY-MM-DD)")
+    commit_count: int = Field(default=0, description="当日提交数")
+    weekDay: int = Field(default=0, description="星期几 (0=Mon...6=Sun)")
+
+
+class ContributorHeatmapResponse(BaseModel):
+    login: str
+    heatmap_data: list[HeatmapDataPoint] = []
+
+
+# ============ 模块+类型分布 Schemas ============
+
+class ModuleDistributionItem(BaseModel):
+    module: str
+    commit_count: int = 0
+    code_additions: int = 0
+    code_deletions: int = 0
+
+
+class TypeDistributionItem(BaseModel):
+    commit_type: str
+    count: int = 0
+
+
+class ContributorDistributionResponse(BaseModel):
+    login: str
+    modules: list[ModuleDistributionItem] = []
+    type_distribution: list[TypeDistributionItem] = []
+
+
+# ============ 提交时间线 Schemas ============
+
+class TimelineCommitItem(BaseModel):
+    commit_hash: str
+    message: str = ""
+    classification: str = ""
+    module: str = ""
+    committed_at: datetime | None = None
+    files_changed: int = 0
+    code_additions: int = 0
+    code_deletions: int = 0
+
+
+class ContributorTimelineResponse(BaseModel):
+    login: str
+    commits: list[TimelineCommitItem] = []
+
+
 # ============ Common ============
 
 class Message(BaseModel):

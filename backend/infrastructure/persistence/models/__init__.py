@@ -10,6 +10,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -41,6 +42,7 @@ __all__ = [
     "NpuOccupancyRawEnv", "NpuOccupancySyncState",
     "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
     "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
+    "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
 ]
 
 
@@ -1158,3 +1160,76 @@ class ContributorSyncRecord(Base):
     started_at = Column(TIMESTAMP, nullable=True)
     completed_at = Column(TIMESTAMP, nullable=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ContributorScoringVersion(Base):
+    """评分权重版本记录表"""
+    __tablename__ = "contributor_scoring_version"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(String(30), nullable=False, comment="版本号: v1.0.0, v1.1.0...")
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    weights = Column(JSON, nullable=False, comment="权重配置快照")
+
+    method = Column(Enum("manual", "auto", "ai", name="scoring_method_enum"), nullable=False, comment="权重确定方式")
+    status = Column(Enum("draft", "active", "archived", name="scoring_version_status"), nullable=False, default="draft", comment="版本状态")
+
+    data_summary = Column(JSON, nullable=True, comment="算权时数据分布摘要")
+
+    ai_prompt = Column(Text, nullable=True)
+    ai_response = Column(Text, nullable=True)
+    ai_model = Column(String(100), nullable=True)
+
+    confidence_score = Column(Float, nullable=True)
+    description = Column(Text, nullable=True)
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)
+    activated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), nullable=True)
+    activated_by = Column(String(100), nullable=True)
+
+    __table_args__ = (
+        Index("idx_scoring_version_repo_status", "repo_name", "status"),
+    )
+
+
+class ContributorScoreSnapshot(Base):
+    """分数快照表"""
+    __tablename__ = "contributor_score_snapshot"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version_id = Column(Integer, ForeignKey("contributor_scoring_version.id", ondelete="CASCADE"), nullable=False, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    snapshot_date = Column(Date, nullable=False, index=True)
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    contributor_count = Column(Integer, nullable=False, default=0)
+
+    statistics = Column(JSON, nullable=True)
+    scores = Column(JSON, nullable=False)
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+
+class ContributorScoreUpdateAudit(Base):
+    """评分更新审计日志表"""
+    __tablename__ = "contributor_score_update_audit"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(50), nullable=False, comment="操作类型")
+    version_id = Column(Integer, nullable=True)
+    snapshot_id = Column(Integer, nullable=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    details = Column(JSON, nullable=True)
+    summary = Column(Text, nullable=True)
+
+    weight_diff = Column(JSON, nullable=True)
+    max_weight_shift = Column(Float, nullable=True, comment="最大单项权重变化幅度(%)")
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)

@@ -611,6 +611,301 @@ export const getSyncSchedule = async () => {
 }
 
 export const updateSyncSchedule = async (config: Partial<ContributorSyncScheduleConfig>) => {
-  const response = await api.put<ContributorSyncScheduleConfig>('/contributor-board/settings/sync-schedule', config)
+    const response = await api.put<ContributorSyncScheduleConfig>('/contributor-board/settings/sync-schedule', config)
+  return response.data
+}
+
+// ==================== 贡献者详情页增强 ====================
+
+// --- 热力图 ---
+
+export interface HeatmapDataPoint {
+  date: string
+  commit_count: number
+  weekDay: number
+}
+
+export interface ContributorHeatmap {
+  login: string
+  heatmap_data: HeatmapDataPoint[]
+}
+
+export const getContributorHeatmap = async (
+  login: string,
+  params?: { repo_name?: string | null; years?: number }
+) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  if (params?.years) queryParams.years = params.years
+  const response = await api.get<ContributorHeatmap>(
+    `/contributor-board/contributors/${login}/heatmap`, { params: queryParams }
+  )
+  return response.data
+}
+
+// --- 模块+类型分布 ---
+
+export interface ModuleDistributionItem {
+  module: string
+  commit_count: number
+  code_additions: number
+  code_deletions: number
+}
+
+export interface TypeDistributionItem {
+  commit_type: string
+  count: number
+}
+
+export interface ContributorDistribution {
+  login: string
+  modules: ModuleDistributionItem[]
+  type_distribution: TypeDistributionItem[]
+}
+
+export const getContributorDistribution = async (
+  login: string,
+  params?: { repo_name?: string | null }
+) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<ContributorDistribution>(
+    `/contributor-board/contributors/${login}/distribution`, { params: queryParams }
+  )
+  return response.data
+}
+
+// --- 提交时间线 ---
+
+export interface TimelineCommitItem {
+  commit_hash: string
+  message: string
+  classification: string
+  module: string
+  committed_at: string | null
+  files_changed: number
+  code_additions: number
+  code_deletions: number
+}
+
+export interface ContributorTimeline {
+  login: string
+  commits: TimelineCommitItem[]
+}
+
+export const getContributorTimeline = async (
+  login: string,
+  params?: { limit?: number }
+) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.limit) queryParams.limit = params.limit
+  const response = await api.get<ContributorTimeline>(
+    `/contributor-board/contributors/${login}/timeline`, { params: queryParams }
+  )
+  return response.data
+}
+
+// ==================== 评分权重版本管理 ====================
+
+export interface ScoringVersion {
+  id: number
+  version: string
+  repo_name: string | null
+  weights: Record<string, number>
+  method: 'manual' | 'auto' | 'ai'
+  status: 'draft' | 'active' | 'archived'
+  data_summary: Record<string, any> | null
+  ai_prompt: string | null
+  ai_response: string | null
+  ai_model: string | null
+  confidence_score: number | null
+  description: string | null
+  created_at: string
+  created_by: string | null
+  activated_at: string | null
+  activated_by: string | null
+}
+
+export interface VersionCompareResult {
+  version_a: ScoringVersion
+  version_b: ScoringVersion
+  weight_diff: Record<string, { from: number; to: number; change: number; change_pct: number }>
+  score_impact: { quadrant_changes?: Array<{ login: string; from: string; to: string }> } | null
+}
+
+export interface ScoreSnapshot {
+  id: number
+  version_id: number
+  repo_name: string | null
+  snapshot_date: string
+  period_start: string | null
+  period_end: string | null
+  contributor_count: number
+  statistics: { score_mean?: number; quadrant_distribution?: Record<string, number> } | null
+  scores: Array<{ login: string; score: number; error_score: number; quadrant: string }>
+  created_at: string
+  created_by: string | null
+  description: string | null
+}
+
+export interface ScoreUpdateAudit {
+  id: number
+  action: string
+  version_id: number | null
+  snapshot_id: number | null
+  repo_name: string | null
+  details: Record<string, any> | null
+  summary: string | null
+  weight_diff: Record<string, any> | null
+  max_weight_shift: number | null
+  created_at: string
+  created_by: string | null
+}
+
+export const getActiveScoringVersion = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<ScoringVersion>('/contributor-board/scoring/versions/active', { params: queryParams })
+  return response.data
+}
+
+export const listScoringVersions = async (params?: {
+  repo_name?: string | null
+  status?: string | null
+  skip?: number
+  limit?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    skip: params?.skip ?? 0,
+    limit: params?.limit ?? 50,
+  }
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  if (params?.status) queryParams.status = params.status
+  const response = await api.get<{ versions: ScoringVersion[]; total: number }>('/contributor-board/scoring/versions', { params: queryParams })
+  return response.data
+}
+
+export const getScoringVersion = async (versionId: number) => {
+  const response = await api.get<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}`)
+  return response.data
+}
+
+export const createScoringVersion = async (body: {
+  method: string
+  weights: Record<string, number>
+  data_summary?: Record<string, any> | null
+  confidence_score?: number | null
+  ai_prompt?: string | null
+  ai_response?: string | null
+  ai_model?: string | null
+  description?: string | null
+  repo_name?: string | null
+  apply_immediately?: boolean
+}) => {
+  const response = await api.post<ScoringVersion>('/contributor-board/scoring/versions/create', body)
+  return response.data
+}
+
+export const applyScoringVersion = async (versionId: number) => {
+  const response = await api.post<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}/apply`)
+  return response.data
+}
+
+export const rollbackScoringVersion = async (versionId: number) => {
+  const response = await api.post<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}/rollback`)
+  return response.data
+}
+
+export const compareScoringVersions = async (versionIdA: number, versionIdB: number) => {
+  const response = await api.get<VersionCompareResult>(`/contributor-board/scoring/versions/${versionIdA}/compare/${versionIdB}`)
+  return response.data
+}
+
+export const calculateAutoWeights = async () => {
+   const response = await api.post<AutoWeightsResult>('/contributor-board/scoring/weights/calculate-auto')
+  return response.data
+}
+
+export const aiAnalyzeWeights = async (model?: string | null) => {
+  const params: Record<string, string> = {}
+  if (model) params.model = model
+  const response = await api.post<ScoringVersion>('/contributor-board/scoring/weights/ai-analyze', {}, { params })
+  return response.data
+}
+
+export const exportExcel = async (snapshotId?: number | null) => {
+  const params: Record<string, string> = {}
+  if (snapshotId) params.snapshot_id = String(snapshotId)
+  const response = await api.get('/contributor-board/scoring/export/excel', { params, responseType: 'blob' })
+  return response.data
+}
+
+export const exportPdf = async (snapshotId?: number | null) => {
+  const params: Record<string, string> = {}
+  if (snapshotId) params.snapshot_id = String(snapshotId)
+  const response = await api.get('/contributor-board/scoring/export/pdf', { params, responseType: 'blob' })
+  return response.data
+}
+
+export interface AutoWeightsResult {
+  weights: Record<string, number>
+  confidence: number
+  data_summary: Record<string, any>
+  version_id: number | null
+}
+
+export const listScoreSnapshots = async (params?: {
+  repo_name?: string | null
+  skip?: number
+  limit?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    skip: params?.skip ?? 0,
+    limit: params?.limit ?? 50,
+  }
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<{ snapshots: ScoreSnapshot[]; total: number }>('/contributor-board/scoring/snapshots', { params: queryParams })
+  return response.data
+}
+
+export const getScoreSnapshot = async (snapshotId: number) => {
+  const response = await api.get<ScoreSnapshot>(`/contributor-board/scoring/snapshots/${snapshotId}`)
+  return response.data
+}
+
+export const listScoreAuditLogs = async (params?: {
+  repo_name?: string | null
+  skip?: number
+  limit?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    skip: params?.skip ?? 0,
+    limit: params?.limit ?? 100,
+  }
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.get<{ audits: ScoreUpdateAudit[]; total: number }>('/contributor-board/scoring/audit', { params: queryParams })
+  return response.data
+}
+
+// ==================== AI 综合分析报表 ====================
+
+export interface AIReport {
+  executive_summary: string
+  team_health: string
+  core_contributors: string
+  new_contributors: string
+  improvement_areas: string
+  recommendations: string[]
+  risk_level: string
+  ai_model: string
+  periods_count: number
+  total_contributors: number
+  generated_at: string
+}
+
+export const generateAIReport = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.post<AIReport>('/contributor-board/scoring/report/ai-analyze', null, { params: queryParams })
   return response.data
 }

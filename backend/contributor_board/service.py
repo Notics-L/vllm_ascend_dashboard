@@ -1415,6 +1415,209 @@ class ContributorBoardService:
         )
 
 
+    # ---- 贡献者详情页增强：热力图 ----
+
+    @staticmethod
+    async def get_contributor_heatmap_data(
+        db,
+        login: str,
+        repo_name: str | None = None,
+        years: int = 1,
+    ) -> dict:
+        """按日聚合贡献者的 commit 数量，返回热力图数据。
+
+        Returns:
+            { login, heatmap_data: [ {date, commit_count, weekDay}, ... ] }
+        """
+        from datetime import timedelta, UTC, datetime
+
+        end_date = datetime.now(UTC)
+        start_date = end_date - timedelta(days=years * 365)
+
+        conditions = [
+            CommitClassification.contributor_login == login,
+            CommitClassification.created_at >= start_date,
+            CommitClassification.created_at <= end_date,
+        ]
+        if repo_name:
+            conditions.append(CommitClassification.repo_name == repo_name)
+
+        date_col = func.date(CommitClassification.created_at)
+
+        stmt = (
+            select(
+                date_col.label("d"),
+                func.count(CommitClassification.id).label("cnt"),
+            )
+            .where(and_(*conditions))
+            .group_by(date_col)
+            .order_by(date_col.asc())
+        )
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        heatmap_data: list[dict] = []
+        for r in rows:
+            d = r[0]
+            cnt = int(r[1] or 0)
+            if isinstance(d, datetime):
+                date_str = d.strftime("%Y-%m-%d")
+                weekday = d.weekday()
+            elif isinstance(d, str):
+                date_str = d
+                weekday = datetime.strptime(d, "%Y-%m-%d").weekday()
+            else:
+                date_str = str(d)
+                weekday = 0
+            heatmap_data.append({
+                "date": date_str,
+                "commit_count": cnt,
+                "weekDay": weekday,
+            })
+
+        return {"login": login, "heatmap_data": heatmap_data}
+
+    # ---- 贡献者详情页增强：模块+类型分布 ----
+
+    @staticmethod
+    async def get_contributor_module_distribution(
+        db,
+        login: str,
+        repo_name: str | None = None,
+    ) -> dict:
+        """按模块和类型聚合贡献者的提交分布。
+
+        Returns:
+            { login, modules, type_distribution }
+        """
+        conditions_cc = [CommitClassification.contributor_login == login]
+        if repo_name:
+            conditions_cc.append(CommitClassification.repo_name == repo_name)
+
+        # 模块分布
+        cc_stmt = (
+            select(
+                CommitClassification.commit_sha,
+                CommitClassification.modules_touched,
+            )
+            .where(and_(*conditions_cc))
+        )
+        cc_result = await db.execute(cc_stmt)
+        cc_rows = cc_result.all()
+
+        module_commit_count: dict[str, int] = {}
+        for r in cc_rows:
+            modules = r[1] or []
+            if isinstance(modules, list):
+                for mod in modules:
+                    mod_name = str(mod).strip()
+                    if mod_name:
+                        module_commit_count[mod_name] = module_commit_count.get(mod_name, 0) + 1
+
+        # 从 ContributorMetrics 获取 code 统计
+        cm_stmt = (
+            select(
+                ContributorMetrics.contributor_login,
+                func.coalesce(func.sum(ContributorMetrics.code_additions), 0).label("total_additions"),
+                func.coalesce(func.sum(ContributorMetrics.code_deletions), 0).label("total_deletions"),
+            )
+            .where(ContributorMetrics.contributor_login == login)
+        )
+        if repo_name:
+            cm_stmt = cm_stmt.where(ContributorMetrics.repo_name == repo_name)
+
+        cm_result = await db.execute(cm_stmt)
+        cm_row = cm_result.one_or_none()
+
+        total_additions = int(cm_row[1] or 0) if cm_row else 0
+        total_deletions = int(cm_row[2] or 0) if cm_row else 0
+
+        total_module_commits = sum(module_commit_count.values())
+        modules: list[dict] = []
+        for mod_name, cnt in sorted(module_commit_count.items(), key=lambda x: -x[1]):
+            ratio = cnt / total_module_commits if total_module_commits > 0 else 0
+            modules.append({
+                "module": mod_name,
+                "commit_count": cnt,
+                "code_additions": int(total_additions * ratio),
+                "code_deletions": int(total_deletions * ratio),
+            })
+
+        # 类型分布
+        type_stmt = (
+            select(
+                CommitClassification.commit_type,
+                func.count(CommitClassification.id).label("cnt"),
+            )
+            .where(and_(*conditions_cc))
+            .group_by(CommitClassification.commit_type)
+            .order_by(func.count(CommitClassification.id).desc())
+        )
+        type_result = await db.execute(type_stmt)
+        type_rows = type_result.all()
+
+        type_distribution: list[dict] = [
+            {"commit_type": r[0], "count": int(r[1] or 0)}
+            for r in type_rows
+        ]
+
+        return {
+            "login": login,
+            "modules": modules,
+            "type_distribution": type_distribution,
+        }
+
+    # ---- 贡献者详情页增强：提交时间线 ----
+
+    @staticmethod
+    async def get_contributor_timeline(
+        db,
+        login: str,
+        limit: int = 20,
+    ) -> dict:
+        """获取贡献者最近的提交记录，按时间倒序排列。
+
+        Returns:
+            { login, commits: [...] }
+        """
+        conditions = [CommitClassification.contributor_login == login]
+
+        stmt = (
+            select(
+                CommitClassification.commit_sha,
+                CommitClassification.commit_message,
+                CommitClassification.commit_type,
+                CommitClassification.modules_touched,
+                CommitClassification.created_at,
+                CommitClassification.files_changed_count,
+            )
+            .where(and_(*conditions))
+            .order_by(CommitClassification.created_at.desc())
+            .limit(limit)
+        )
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        commits: list[dict] = []
+        for r in rows:
+            modules = r[3] or []
+            primary_module = str(modules[0]) if isinstance(modules, list) and len(modules) > 0 else ""
+            commits.append({
+                "commit_hash": r[0][:8] if r[0] else "",
+                "message": (r[1] or "")[:120],
+                "classification": r[2] or "",
+                "module": primary_module,
+                "committed_at": r[4],
+                "files_changed": int(r[5] or 0),
+                "code_additions": 0,
+                "code_deletions": 0,
+            })
+
+        return {"login": login, "commits": commits}
+
+
 _service_instance: ContributorBoardService | None = None
 
 
