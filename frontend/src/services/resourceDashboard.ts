@@ -165,9 +165,12 @@ export const getResourceDashboard = async (params: ResourceDashboardParams = {})
   return response.data
 }
 
-export const getNodeUtilizationHeatmap = async (pool?: string) => {
+export const getNodeUtilizationHeatmap = async (
+  pool?: string,
+  params?: { start?: string; end?: string; bucket_hours?: number },
+) => {
   const response = await api.get<NodeUtilizationHeatmap>('/resource-dashboard/node-utilization-heatmap', {
-    params: pool ? { pool } : undefined,
+    params: { ...(pool ? { pool } : {}), ...params },
   })
   return response.data
 }

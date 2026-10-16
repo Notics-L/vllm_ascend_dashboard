@@ -16,7 +16,6 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { DownOutlined, UpOutlined } from "@ant-design/icons";
 import {
   Area,
   AreaChart,
@@ -72,16 +71,20 @@ export default function NpuQueueDemand() {
   );
   const [selectedQueue, setSelectedQueue] = useState<QueueItem | null>(null);
   const [poolMode, setPoolMode] = useState<"current" | "usage" | "machines">("current");
+  const [poolModeDirection, setPoolModeDirection] = useState<"forward" | "backward">("forward");
   const [sectionPool, setSectionPool] = useState("all");
   const [trendMode, setTrendMode] = useState<"current" | "history">("current");
+  const [trendModeDirection, setTrendModeDirection] = useState<"forward" | "backward">("forward");
   const [taskMode, setTaskMode] = useState<"queue" | "cost">("queue");
+  const [costPool, setCostPool] = useState("all");
+  const [costDays, setCostDays] = useState<1 | 7>(7);
   const [costScopes, setCostScopes] = useState<Array<"actual" | "full">>([
     "actual",
   ]);
   const [expandedPoolKeys, setExpandedPoolKeys] = useState<string[]>([]);
   const queueQuery = useQuery({
     queryKey: ["npu-queue-dashboard"],
-    queryFn: getNpuQueueDashboard,
+    queryFn: () => getNpuQueueDashboard(),
     refetchInterval: 30_000,
   });
   const clusterConfigQuery = useQuery({
@@ -142,6 +145,34 @@ export default function NpuQueueDemand() {
     queryFn: () =>
       getNodeUtilizationHeatmap(sectionPool === "all" ? undefined : sectionPool),
     enabled: poolMode === "machines",
+  });
+  const currentMachineEnd = useMemo(
+    () => dayjs().startOf("minute"),
+    [sectionPool, poolMode],
+  );
+  const currentMachineQuery = useQuery({
+    queryKey: ["npu-node-utilization-current", sectionPool, currentMachineEnd.toISOString()],
+    queryFn: () =>
+      getNodeUtilizationHeatmap(
+        sectionPool === "all" ? undefined : sectionPool,
+        {
+          start: currentMachineEnd.subtract(24, "hour").toISOString(),
+          end: currentMachineEnd.toISOString(),
+          bucket_hours: 24,
+        },
+      ),
+    enabled: poolMode === "current",
+    staleTime: 60_000,
+  });
+  const costQuery = useQuery({
+    queryKey: ["npu-queue-consumption", costPool, costDays],
+    queryFn: () =>
+      getNpuQueueDashboard({
+        consumption_pool: costPool === "all" ? undefined : costPool,
+        consumption_days: costDays,
+      }),
+    enabled: taskMode === "cost",
+    staleTime: 30_000,
   });
 
   const data = useMemo(() => {
@@ -242,6 +273,15 @@ export default function NpuQueueDemand() {
           (sum, pod) => sum + pod.requests.npu,
           0,
         );
+        const machineRows = (currentMachineQuery.data?.nodes ?? []).filter(
+          (node) => node.cluster_id === cluster.cluster_id,
+        );
+        const machineUtilizations = machineRows.map(
+          (node) => node.buckets[node.buckets.length - 1]?.utilization ?? null,
+        );
+        const knownMachineUtilizations = machineUtilizations.filter(
+          (value): value is number => value !== null,
+        );
         return {
           key: String(cluster.cluster_id),
           name: cluster.cluster_name,
@@ -268,9 +308,25 @@ export default function NpuQueueDemand() {
           ),
           resourceName,
           error: cluster.error,
+          machineUtilizations,
+          machineAverage: knownMachineUtilizations.length
+            ? Math.round(
+              (knownMachineUtilizations.reduce((sum, value) => sum + value, 0) /
+                knownMachineUtilizations.length) *
+                10,
+            ) / 10
+            : null,
         };
       }),
-    [clusterConfigQuery.data, data?.queue, pools, sectionResourceQuery.data],
+    [clusterConfigQuery.data, currentMachineQuery.data?.nodes, data?.queue, pools, sectionResourceQuery.data],
+  );
+  const costData = useMemo(
+    () => [...(costQuery.data?.prCosts ?? [])].sort((left, right) => right.allCardHours - left.allCardHours).slice(0, 10),
+    [costQuery.data?.prCosts],
+  );
+  const costByBranch = useMemo(
+    () => new Map(costData.map((item) => [item.branch, item])),
+    [costData],
   );
   const physicalCapacity = resourceQuery.data?.overall.total.npu ?? null;
   const physicalRunning = resourceQuery.data?.overall.used.npu ?? null;
@@ -463,9 +519,12 @@ export default function NpuQueueDemand() {
             />
             <Segmented
               value={poolMode}
-              onChange={(value) =>
-                setPoolMode(value as "current" | "usage" | "machines")
-              }
+              onChange={(value) => {
+                const modes = ["current", "usage", "machines"]
+                const next = value as "current" | "usage" | "machines"
+                setPoolModeDirection(modes.indexOf(next) < modes.indexOf(poolMode) ? "backward" : "forward")
+                setPoolMode(next)
+              }}
               options={[
                 { label: "当前资源", value: "current" },
                 { label: "资源消耗", value: "usage" },
@@ -474,6 +533,7 @@ export default function NpuQueueDemand() {
             />
           </Space>
         </div>
+        <div className={`npu-demand-section-scroll is-${poolModeDirection}`} key={poolMode}>
         {poolMode === "current" ? (
           <Table
             rowKey="key"
@@ -491,11 +551,11 @@ export default function NpuQueueDemand() {
               expandedRowKeys: expandedPoolKeys,
               onExpandedRowsChange: (keys) =>
                 setExpandedPoolKeys(keys.map(String)),
-              expandIconColumnIndex: 4,
+          expandIconColumnIndex: 5,
               expandIcon: ({ expanded, onExpand, record }) => (
                 <button
                   type="button"
-                  className="npu-demand-pool-expand"
+                className={`npu-occupancy-expand ${expanded ? "is-expanded" : ""}`}
                   aria-label={
                     expanded
                       ? `收起 ${record.name} 明细`
@@ -503,7 +563,8 @@ export default function NpuQueueDemand() {
                   }
                   onClick={(event) => onExpand(record, event)}
                 >
-                  {expanded ? <UpOutlined /> : <DownOutlined />}
+                  <span className="npu-occupancy-expand-dot" />
+                  <span className="npu-occupancy-expand-arrow" />
                 </button>
               ),
               expandedRowRender: (record) => (
@@ -616,6 +677,21 @@ export default function NpuQueueDemand() {
                   </span>
                 ),
               },
+              {
+                title: "机器利用率（近 24h）",
+                key: "machineUtilization",
+                width: 190,
+                render: (_, record) => (
+                  <div className="npu-demand-machine-summary">
+                    <span>{record.machineAverage === null ? "暂无快照" : `平均 ${record.machineAverage}%`}</span>
+                    <div className="npu-demand-machine-squares" aria-label="各机器近 24 小时使用率">
+                      {record.machineUtilizations.map((value, index) => (
+                        <i key={index} aria-hidden="true" style={{ background: heatColor(value) }} />
+                      ))}
+                    </div>
+                  </div>
+                ),
+              },
             ]}
           />
         ) : poolMode === "usage" ? (
@@ -715,6 +791,7 @@ export default function NpuQueueDemand() {
             </div>
           </div>
         )}
+        </div>
       </section>
 
       <section
@@ -746,7 +823,11 @@ export default function NpuQueueDemand() {
             />
             <Segmented
               value={trendMode}
-              onChange={(value) => setTrendMode(value as "current" | "history")}
+              onChange={(value) => {
+                const next = value as "current" | "history"
+                setTrendModeDirection(next === "current" && trendMode === "history" ? "backward" : "forward")
+                setTrendMode(next)
+              }}
               options={[
                 { label: "当前 / 近 24h", value: "current" },
                 { label: "历史", value: "history" },
@@ -754,6 +835,7 @@ export default function NpuQueueDemand() {
             />
           </Space>
         </div>
+        <div className={`npu-demand-section-scroll is-${trendModeDirection}`} key={`${trendPool}:${trendMode}`}>
         {trendMode === "current" ? (
           <>
             <ResponsiveContainer width="100%" height={320}>
@@ -840,6 +922,7 @@ export default function NpuQueueDemand() {
             </ResponsiveContainer>
           </div>
         )}
+        </div>
       </section>
 
       <section
@@ -1025,15 +1108,32 @@ export default function NpuQueueDemand() {
                 </button>
               </div>
             </div>
+            <div className="npu-demand-cost-filter">
+              <Select
+                value={costPool}
+                style={{ minWidth: 180 }}
+                onChange={setCostPool}
+                options={[
+                  { value: "all", label: "全部资源池" },
+                  ...(clusterConfigQuery.data ?? []).map((cluster) => ({ value: cluster.name, label: cluster.name })),
+                ]}
+              />
+              <Segmented
+                value={costDays}
+                onChange={(value) => setCostDays(value as 1 | 7)}
+                options={[{ label: "最近 7 天", value: 7 }, { label: "最近 1 天", value: 1 }]}
+              />
+              <Text type="secondary">按总卡时排序，展示前 10 条 Run</Text>
+            </div>
             <Text type="secondary" style={{ display: "block", marginBottom: 10 }}>
-              {data.usagePeriod?.startDate
+              {costQuery.data?.usagePeriod?.startDate
                 ? `数据范围：${data.usagePeriod.startDate} 至 ${data.usagePeriod.endDate}`
                 : "暂无已完成的匹配 CI Job。"}
             </Text>
             <ResponsiveContainer width="100%" height={320}>
               <ComposedChart
                 layout="vertical"
-                data={data.prCosts}
+                data={costData}
                 margin={{ top: 8, right: 58, left: 12, bottom: 8 }}
                 barGap={1}
                 barCategoryGap="35%"
@@ -1062,7 +1162,7 @@ export default function NpuQueueDemand() {
                   tickLine={false}
                   axisLine={{ stroke: "#98a2b3" }}
                   tick={({ x, y, payload }: { x: number; y: number; payload: { value: string } }) => {
-                    const record = prCostByBranch.get(payload.value);
+                    const record = costByBranch.get(payload.value);
                     const text = <text x={x} y={y} textAnchor="end" fill={record?.detailUrl ? "#635bff" : "#475467"} fontSize={12}>{payload.value}</text>;
                     return record?.detailUrl ? (
                       <a href={record.detailUrl} target="_blank" rel="noreferrer">{text}</a>

@@ -8,12 +8,14 @@ deployments.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, or_, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from collector.ci import CICollector
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 _SYNC_LOCK_NAME = "vllm_dashboard:nightly_data_sync"
+_MATERIALIZATION_LOCK_RETRIES = 3
+_MATERIALIZATION_LOCK_RETRY_SECONDS = 0.25
 
 
 class NightlyDataCollector:
@@ -85,17 +89,47 @@ class NightlyDataCollector:
                 logger.info("Nightly data synchronization skipped: another worker holds the lock")
                 return {"nightly_test_cases": 0, "daily_failure_records": 0}
             try:
-                snapshot_count = await self.snapshot_configs()
-                failure_count = await self.populate_daily_failure_records()
-                return {
-                    "nightly_test_cases": snapshot_count,
-                    "daily_failure_records": failure_count,
-                }
+                for attempt in range(_MATERIALIZATION_LOCK_RETRIES):
+                    try:
+                        snapshot_count = await self.snapshot_configs()
+                        failure_count = await self.populate_daily_failure_records()
+                        return {
+                            "nightly_test_cases": snapshot_count,
+                            "daily_failure_records": failure_count,
+                        }
+                    except OperationalError as exc:
+                        if not self._is_transient_lock_error(exc):
+                            raise
+                        await self.db.rollback()
+                        if attempt + 1 >= _MATERIALIZATION_LOCK_RETRIES:
+                            logger.error(
+                                "Nightly data materialization exhausted %d lock retries",
+                                _MATERIALIZATION_LOCK_RETRIES,
+                            )
+                            raise
+                        delay = _MATERIALIZATION_LOCK_RETRY_SECONDS * (attempt + 1)
+                        logger.warning(
+                            "Nightly data materialization hit a transient database lock; "
+                            "retrying in %.2fs (%d/%d)",
+                            delay,
+                            attempt + 1,
+                            _MATERIALIZATION_LOCK_RETRIES,
+                        )
+                        await asyncio.sleep(delay)
             finally:
                 await lock_connection.execute(
                     text("SELECT RELEASE_LOCK(:lock_name)"),
                     {"lock_name": _SYNC_LOCK_NAME},
                 )
+
+    @staticmethod
+    def _is_transient_lock_error(exc: OperationalError) -> bool:
+        """Return whether MySQL can safely retry this transaction-level conflict."""
+        original = getattr(exc, "orig", None)
+        errno = getattr(original, "errno", None)
+        if errno is None and getattr(original, "args", None):
+            errno = original.args[0]
+        return errno in (1205, 1213)
 
     async def snapshot_configs(self) -> int:
         """Snapshot active branches from ``nightly_config.yaml``."""

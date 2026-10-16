@@ -1,4 +1,7 @@
-import api from './api'
+// Windowed reads are cached on the backend, but an initial cold snapshot can
+// still exceed the general UI request budget.  Keep this route independent of
+// the 60-second default used by ordinary CRUD calls.
+import { longTimeoutApiClient as api } from './api'
 
 export type OccupancyView = 'pool' | 'project'
 

@@ -13,12 +13,21 @@ router = APIRouter()
 
 
 @router.get("/dashboard")
-async def get_npu_queue_dashboard(db: DbSession, current_user: CurrentUser):
+async def get_npu_queue_dashboard(
+    db: DbSession,
+    current_user: CurrentUser,
+    consumption_pool: str | None = Query(None),
+    consumption_days: int = Query(7, ge=1, le=7),
+):
     """Real CI queue read model; unknown mappings are excluded, never zeroed."""
     replay = load_dashboard_replay()
     if replay:
         return replay["queueDashboard"]
-    return await build_dashboard(db)
+    return await build_dashboard(
+        db,
+        consumption_pool=consumption_pool,
+        consumption_days=consumption_days,
+    )
 
 
 @router.get("/trend")

@@ -982,12 +982,17 @@ class NpuOccupancyRawEnv(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     env_id = Column(String(255), nullable=False)
     source_updated_at = Column(TIMESTAMP, nullable=False)
+    pool = Column(String(255), nullable=True)
+    effective_start_at = Column(TIMESTAMP, nullable=True)
+    effective_end_at = Column(TIMESTAMP, nullable=True)
     payload = Column(JSON, nullable=False)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("env_id", "source_updated_at", name="uq_npu_occupancy_env_revision"),
+        UniqueConstraint("env_id", name="uq_npu_occupancy_env_id"),
+        Index("ix_npu_occupancy_pool_end_start", "pool", "effective_end_at", "effective_start_at"),
+        Index("ix_npu_occupancy_effective_end", "effective_end_at"),
     )
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Col, Drawer, Empty, Input, Progress, Row, Select, Space, Spin, Statistic, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Drawer, Empty, Input, Popover, Progress, Row, Select, Space, Spin, Statistic, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -36,6 +36,24 @@ function RunProject({ run }: { run: OccupancyRun }) {
   return <span title={projects.join(', ')}>{projects.join(', ') || '-'}</span>
 }
 
+function RunNodes({ run }: { run: OccupancyRun }) {
+  const nodes = [...new Set(run.tasks.map(task => task.node_ip).filter(Boolean))]
+  return <span title={nodes.join(', ')}>{nodes.join(', ') || '-'}</span>
+}
+
+function RunJobCount({ run }: { run: OccupancyRun }) {
+  const jobs = [...new Set(run.tasks.map(task => task.job_name || task.workflow).filter(Boolean))]
+  if (!jobs.length) return <span>{run.task_count} 个 Job</span>
+  return <Popover
+    trigger="hover"
+    placement="left"
+    overlayClassName="npu-occupancy-job-popover"
+    content={<div className="npu-occupancy-job-popover-content">{jobs.map(job => <div key={job}>{job}</div>)}</div>}
+  >
+    <button type="button" className="npu-occupancy-job-count">{run.task_count} 个 Job</button>
+  </Popover>
+}
+
 function RunJobs({ run }: { run: OccupancyRun }) {
   const jobs = [...new Set(run.tasks.map(task => task.job_name || task.workflow).filter(Boolean))]
   return <span title={jobs.join(', ')}>{jobs.join(', ') || '-'}</span>
@@ -55,6 +73,7 @@ export default function NpuOccupancyTrend() {
   const [analysisMode, setAnalysisMode] = useState<'table' | 'timeline'>('table')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
   const [analysisSearch, setAnalysisSearch] = useState('')
+  const [workflowFilter, setWorkflowFilter] = useState('all')
   const [drawerExpandedGroups, setDrawerExpandedGroups] = useState<Set<string>>(() => new Set())
   const [drawerSearch, setDrawerSearch] = useState('')
   const [drawerGroupBy, setDrawerGroupBy] = useState<OccupancyView>('pool')
@@ -65,6 +84,7 @@ export default function NpuOccupancyTrend() {
   const [selectedNames, setSelectedNames] = useState<string[]>([])
   const [drillTime, setDrillTime] = useState<string | null>(null)
   const [refreshStatus, setRefreshStatus] = useState<string | null>(null)
+  const [metadataRefreshAttempts, setMetadataRefreshAttempts] = useState(0)
   // The chart stays an all-pool trend. Filters below belong to range analysis only.
   const chartParams = useMemo(() => ({ dimension: 'pool' as OccupancyView, names: [], start: timeRange.start.toISOString(), end: timeRange.end.toISOString() }), [timeRange])
   const analysisParams = useMemo(() => ({ dimension: view, names: selectedNames, start: timeRange.start.toISOString(), end: timeRange.end.toISOString() }), [view, selectedNames, timeRange])
@@ -107,18 +127,41 @@ export default function NpuOccupancyTrend() {
   useEffect(() => {
     setDrawerExpandedGroups(new Set())
   }, [drawerGroupBy])
+  useEffect(() => {
+    setMetadataRefreshAttempts(0)
+  }, [analysisParams])
   const options = view === 'pool'
     ? (optionsQuery.data?.options ?? [])
     : (analysisQuery.data?.groups ?? []).map(group => ({ name: group.name, label: group.name, capacity: null, configured: true }))
+  const workflowOptions = useMemo(() => [...new Set(
+    (analysisQuery.data?.groups ?? []).flatMap(group => group.runs.map(run => run.workflow_name).filter(Boolean)),
+  )].sort() as string[], [analysisQuery.data?.groups])
   const analysisGroups = useMemo(() => {
     const keyword = analysisSearch.trim().toLowerCase()
-    if (!keyword) return analysisQuery.data?.groups ?? []
     return (analysisQuery.data?.groups ?? []).flatMap(group => {
-      if (group.name.toLowerCase().includes(keyword)) return [group]
-      const runs = group.runs.filter(run => [run.run_display_name, run.workflow_name, run.workflow_ref, run.event, run.trigger_scope, run.pr_number ? `pr #${run.pr_number}` : null, ...run.tasks.flatMap(task => [task.project, task.workflow, task.job_name, task.node_ip, task.env_id])].some(value => value?.toLowerCase().includes(keyword)))
+      const workflowRuns = workflowFilter === 'all' ? group.runs : group.runs.filter(run => run.workflow_name === workflowFilter)
+      if (!workflowRuns.length) return []
+      if (!keyword || group.name.toLowerCase().includes(keyword)) return [{ ...group, runs: workflowRuns }]
+      const runs = workflowRuns.filter(run => [run.run_display_name, run.workflow_name, run.workflow_ref, run.event, run.trigger_scope, run.pr_number ? `pr #${run.pr_number}` : null, ...run.tasks.flatMap(task => [task.project, task.workflow, task.job_name, task.node_ip, task.env_id])].some(value => value?.toLowerCase().includes(keyword)))
       return runs.length ? [{ ...group, runs }] : []
     })
-  }, [analysisQuery.data?.groups, analysisSearch])
+  }, [analysisQuery.data?.groups, analysisSearch, workflowFilter])
+  const hasUnresolvedWorkflow = useMemo(
+    () => (analysisQuery.data?.groups ?? []).some(group => group.runs.some(
+      run => Boolean(run.workflow_run_id) && !run.workflow_name,
+    )),
+    [analysisQuery.data?.groups],
+  )
+  useEffect(() => {
+    // Metadata is fetched by the backend in one bounded background batch.
+    // Re-read local data briefly so the page updates without a manual refresh.
+    if (!hasUnresolvedWorkflow || metadataRefreshAttempts >= 12 || analysisQuery.isFetching) return
+    const timer = window.setTimeout(() => {
+      setMetadataRefreshAttempts(attempts => attempts + 1)
+      void analysisQuery.refetch()
+    }, 3_000)
+    return () => window.clearTimeout(timer)
+  }, [analysisQuery, hasUnresolvedWorkflow, metadataRefreshAttempts])
   const drawerGroups = useMemo(() => {
     const keyword = drawerSearch.trim().toLowerCase()
     const groups = snapshotDetailsQuery.data?.groups ?? []
@@ -131,6 +174,8 @@ export default function NpuOccupancyTrend() {
   }, [snapshotDetailsQuery.data?.groups, drawerSearch])
   const chartData = trend?.series.map(point => ({ ...point, label: dayjs(point.timestamp).format('MM-DD HH:mm') })) ?? []
   const capacity = trend?.metrics.capacity ?? null
+  const analysisStart = dayjs(analysisQuery.data?.start ?? timeRange.start)
+  const analysisEnd = dayjs(analysisQuery.data?.end ?? timeRange.end)
   const estimatedProgress = Math.min(95, Math.max(5, Math.round(loadingSeconds / 90 * 100)))
 
   const changeView = (next: OccupancyView) => {
@@ -206,8 +251,21 @@ export default function NpuOccupancyTrend() {
           <Input allowClear value={analysisSearch} onChange={event => setAnalysisSearch(event.target.value)} placeholder="搜索项目、任务或节点" className="npu-occupancy-analysis-search" />
           <div className="npu-occupancy-analysis-mode"><button type="button" className={analysisMode === 'table' ? 'is-active' : ''} onClick={() => setAnalysisMode('table')}>表格视图</button><button type="button" className={analysisMode === 'timeline' ? 'is-active' : ''} onClick={() => setAnalysisMode('timeline')}>时间线视图</button></div>
         </div>
-        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 14 }}>统计区间：{timeRange.start.format('MM-DD HH:mm')} — {timeRange.end.format('MM-DD HH:mm')}</Text>
+        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 14 }}>统计区间：{analysisStart.format('MM-DD HH:mm')} — {analysisEnd.format('MM-DD HH:mm')}</Text>
         {analysisQuery.isLoading ? <Spin /> : analysisGroups.length ? analysisMode === 'table' ? <div className="npu-occupancy-analysis-table">
+          <div className="npu-occupancy-analysis-groups-v2">
+            <div className="npu-occupancy-analysis-head"><span>{view === 'pool' ? '资源池' : '项目 / 社区'}</span><span>峰值占用</span><span>平均占用</span><span>任务数</span></div>
+            {analysisGroups.map(group => {
+              const expanded = expandedGroups.has(group.name)
+              return <section key={`v2-${group.name}`} className="npu-occupancy-analysis-group">
+                <div className="npu-occupancy-analysis-row"><Text strong>{group.name}</Text><span>{group.peak_cards} 卡</span><span>{group.average_cards} 卡</span><span>{group.task_count}</span><button type="button" className={`npu-occupancy-expand ${expanded ? 'is-expanded' : ''}`} aria-label={expanded ? '收起任务' : '展开任务'} onClick={() => toggleGroup(group.name)}><span className="npu-occupancy-expand-dot" /><span className="npu-occupancy-expand-arrow" /></button></div>
+                {expanded ? <div className="npu-occupancy-run-table">
+                  <div className="npu-occupancy-run-head"><span>项目</span><span className="npu-occupancy-workflow-head">Workflow <Select size="small" variant="borderless" value={workflowFilter} onChange={setWorkflowFilter} suffixIcon={<span className="npu-occupancy-workflow-caret" />} options={[{ value: 'all', label: '全部' }, ...workflowOptions.map(name => ({ value: name, label: name }))]} /></span><span>Run</span><span>来源</span><span>节点</span><span>占用卡数</span><span>Job 数</span><span>占用时段</span></div>
+                  {group.runs.map(run => <div key={run.key} className="npu-occupancy-analysis-task"><RunProject run={run} /><WorkflowName run={run} /><span><RunName run={run} /></span><RunContext run={run} /><RunNodes run={run} /><span>{run.cards} NPU</span><RunJobCount run={run} /><span>{dayjs(run.created_at).format('MM-DD HH:mm')} — {dayjs(run.effective_end).format('MM-DD HH:mm')}</span></div>)}
+                </div> : null}
+              </section>
+            })}
+          </div>
           <div className="npu-occupancy-analysis-head"><span>{view === 'pool' ? '资源池' : '项目 / 社区'}</span><span>峰值占用</span><span>平均占用</span><span>任务数</span></div>
           {analysisGroups.map(group => { const expanded = expandedGroups.has(group.name); return <section key={group.name} className="npu-occupancy-analysis-group"><div className="npu-occupancy-analysis-row"><Text strong>{group.name}</Text><span>{group.peak_cards} 卡</span><span>{group.average_cards} 卡</span><span>{group.task_count}</span><button type="button" className={`npu-occupancy-expand ${expanded ? 'is-expanded' : ''}`} aria-label={expanded ? '收起任务' : '展开任务'} onClick={() => toggleGroup(group.name)}><span className="npu-occupancy-expand-dot" /><span className="npu-occupancy-expand-arrow">{expanded ? '↑' : '↓'}</span></button></div>{expanded ? <div className="npu-occupancy-run-table"><div className="npu-occupancy-run-head"><span>项目</span><span>Workflow</span><span>Run</span><span>Job</span><span>来源</span><span>占用卡数</span><span>Job 数</span><span>占用时段</span></div>{group.runs.map(run => <div key={run.key} className="npu-occupancy-analysis-task"><RunProject run={run} /><WorkflowName run={run} /><span><RunName run={run} /></span><RunJobs run={run} /><RunContext run={run} /><span>{run.cards} NPU</span><span>{run.task_count} 个 Job</span><span>{dayjs(run.created_at).format('MM-DD HH:mm')} — {dayjs(run.effective_end).format('MM-DD HH:mm')}</span></div>)}</div> : null}</section> })}
         </div> : <div className="npu-occupancy-timeline"><div className="npu-occupancy-timeline-axis"><span>资源信息</span><span>{timeRange.start.format('HH:mm')}</span><span>{timeRange.start.add(timeRange.end.diff(timeRange.start) / 3, 'millisecond').format('HH:mm')}</span><span>{timeRange.start.add(timeRange.end.diff(timeRange.start) * 2 / 3, 'millisecond').format('HH:mm')}</span><span>{timeRange.end.format('HH:mm')}</span></div>{analysisGroups.map(group => { const expanded = expandedGroups.has(group.name); return <section key={group.name} className="npu-occupancy-timeline-group"><div className="npu-occupancy-timeline-group-head"><div><Text strong>{group.name}</Text><Text type="secondary">峰值 {group.peak_cards} 卡 · {group.task_count} 个任务</Text></div><button type="button" className={`npu-occupancy-expand ${expanded ? 'is-expanded' : ''}`} aria-label={expanded ? '收起任务时间线' : '展开任务时间线'} onClick={() => toggleGroup(group.name)}><span className="npu-occupancy-expand-dot" /><span className="npu-occupancy-expand-arrow">{expanded ? '↑' : '↓'}</span></button></div>{expanded ? group.runs.map(run => { const rangeMs = timeRange.end.diff(timeRange.start); const left = Math.max(0, dayjs(run.created_at).diff(timeRange.start) / rangeMs * 100); const right = Math.min(100, dayjs(run.effective_end).diff(timeRange.start) / rangeMs * 100); return <div key={run.key} className="npu-occupancy-timeline-row"><div className="npu-occupancy-timeline-task-name"><Text><RunName run={run} /></Text><RunContext run={run} /></div><div className="npu-occupancy-timeline-lane"><Text type="secondary">{run.cards} NPU · {run.task_count} 个 Job</Text><div className="npu-occupancy-timeline-track"><span style={{ left: `${left}%`, width: `${Math.max(1, right - left)}%` }} /></div></div></div> }) : null}</section> })}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的占用任务" />}

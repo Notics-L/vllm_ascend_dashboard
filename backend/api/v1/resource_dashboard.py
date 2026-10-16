@@ -154,7 +154,10 @@ async def get_cluster_summary(
         )
 
     service = ResourceDashboardService()
-    summary, _, _ = await service.build_cluster_summary(cluster, label_selector, include_pods)
+    # Individual cards must degrade like the aggregate dashboard: a stale
+    # kubeconfig (for example cluster 3 returning 401) is displayable state,
+    # not an unhandled 500 that repeatedly surfaces as a page-level popup.
+    summary, _, _ = await service._safe_build_cluster_summary(cluster, label_selector, include_pods)
     return summary
 
 

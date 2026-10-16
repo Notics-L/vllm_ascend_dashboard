@@ -99,6 +99,23 @@ def test_pre_normalized_snapshot_is_reused_without_another_client_read():
     assert result["series"][0]["occupied_cards"] == 8
 
 
+def test_range_analysis_stops_at_the_persisted_snapshot_time():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    records = normalize_records([
+        _env(env_id="cached", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8),
+    ], snapshot)
+
+    result = NpuOccupancyService(records=records, snapshot_at=snapshot).analysis(
+        dimension="pool", names=[],
+        start=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 1, 10, 20, tzinfo=UTC),
+    )
+
+    assert result["end"] == snapshot
+    # The snapshot-end bucket itself is exclusive for an active environment.
+    assert result["groups"][0]["average_cards"] == 6.67
+
+
 def test_records_with_the_same_workflow_run_are_aggregated_once():
     snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
     envs = [

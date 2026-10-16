@@ -329,14 +329,18 @@ class NpuOccupancyService:
         """Aggregate selected groups over the complete requested interval."""
         records, snapshot_at = self._load(start, end)
         records, resolved_names = self._selected(records, dimension, names)
+        # A persisted snapshot cannot describe the future portion of a browser
+        # selected range. Use the same observed end as trend(), both for the
+        # metrics and the response shown by the analysis table.
+        observed_end = min(end, snapshot_at)
         grouped: dict[str, list[OccupancyRecord]] = defaultdict(list)
         for record in records:
-            if record.created_at < end and record.effective_end > start:
+            if record.created_at < observed_end and record.effective_end > start:
                 grouped[record.pool if dimension == "pool" else record.project].append(record)
 
         buckets: list[datetime] = []
         cursor = _bucket_floor(start)
-        while cursor <= end:
+        while cursor <= observed_end:
             buckets.append(cursor)
             cursor += timedelta(seconds=STEP_SECONDS)
         groups = []
@@ -351,4 +355,4 @@ class NpuOccupancyService:
                 # serialize every task twice at group level.
                 "runs": self._runs(items),
             })
-        return {"dimension": dimension, "names": resolved_names, "start": start, "end": end, "sample_interval_seconds": STEP_SECONDS, "groups": sorted(groups, key=lambda group: (-group["peak_cards"], group["name"])), "snapshot_at": snapshot_at}
+        return {"dimension": dimension, "names": resolved_names, "start": start, "end": observed_end, "sample_interval_seconds": STEP_SECONDS, "groups": sorted(groups, key=lambda group: (-group["peak_cards"], group["name"])), "snapshot_at": snapshot_at}
