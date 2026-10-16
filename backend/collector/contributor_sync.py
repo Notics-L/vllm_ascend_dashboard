@@ -272,6 +272,8 @@ class ContributorSyncCollector:
                 "closed_pr_count": 0,
                 "commit_count": 0,
                 "error_score": 0.0,
+                "files_changed_count": 0,
+                "_commit_types": {},  # commit type -> count mapping
             }
 
         agg_key = (period_key, login)
@@ -317,6 +319,8 @@ class ContributorSyncCollector:
                 "closed_pr_count": 0,
                 "commit_count": 0,
                 "error_score": 0.0,
+                "files_changed_count": 0,
+                "_commit_types": {},
                 "_is_reviewer_only": True,
             }
             reviewer_agg = contributor_period_aggregates.setdefault(reviewer_key, reviewer_empty)
@@ -351,6 +355,8 @@ class ContributorSyncCollector:
                     "closed_pr_count": 0,
                     "commit_count": 0,
                     "error_score": 0.0,
+                    "files_changed_count": 0,
+                    "_commit_types": {},
                     "_is_commit_author_only": True,
                 }
                 author_agg = contributor_period_aggregates.setdefault(author_key, author_empty)
@@ -377,6 +383,16 @@ class ContributorSyncCollector:
             # 核心模块计数
             if classification_result.is_core_module:
                 agg["core_module_count"] += 1
+
+            # 文件变更数累计
+            if files_changed:
+                agg["files_changed_count"] += len(files_changed)
+
+            # Commit 类型统计
+            commit_type_value = classification_result.commit_type.value
+            ct_map: dict[str, int] = agg.get("_commit_types", {})
+            ct_map[commit_type_value] = ct_map.get(commit_type_value, 0) + 1
+            agg["_commit_types"] = ct_map
 
             # Revert 检测
             if classification_result.commit_type.value == "Revert":
@@ -807,6 +823,9 @@ class ContributorSyncCollector:
             score = self._calculate_contribution_score(agg)
             quadrant = self._calculate_quadrant(score, agg["error_score"])
 
+            # 清理内部字段（不存储到 DB）
+            agg.pop("_commit_types", None)
+
             try:
                 stmt = select(ContributorMetrics).where(
                     and_(
@@ -930,14 +949,22 @@ class ContributorSyncCollector:
 
     @staticmethod
     def _calculate_contribution_score(agg: dict[str, Any]) -> float:
-        """计算贡献分数"""
-        score = 0.0
-        score += agg["merged_pr_count"] * 10.0
-        score += agg["code_additions"] * 0.5
-        score += agg["review_count"] * 3.0
-        score += agg["approval_count"] * 5.0
-        score += agg["core_module_count"] * 8.0
-        return round(score, 2)
+        """计算贡献分数 — 使用统一评分引擎，支持动态权重和新增维度"""
+        from contributor_board.scoring_engine import calculate_contribution_score
+
+        metrics = {
+            "merged_pr_count": agg["merged_pr_count"],
+            "code_additions": agg["code_additions"],
+            "code_deletions": agg["code_deletions"],
+            "review_count": agg["review_count"],
+            "approval_count": agg["approval_count"],
+            "core_module_count": agg["core_module_count"],
+            "commit_count": agg.get("commit_count", 0),
+            "files_changed_count": agg.get("files_changed_count", 0),
+        }
+        commit_type_counts = agg.get("_commit_types", {})
+
+        return calculate_contribution_score(metrics, commit_type_counts=commit_type_counts)
 
     @staticmethod
     def _calculate_quadrant(contribution_score: float, error_score: float) -> str:

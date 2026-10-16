@@ -551,6 +551,10 @@ export interface ScoringWeightsConfig {
   review_weight: number
   approval_weight: number
   core_module_weight: number
+  files_changed_weight: number
+  bugfix_weight: number
+  feature_weight: number
+  active_duration_weight: number
 }
 
 export interface RoleThresholdsConfig {
@@ -582,6 +586,16 @@ export const updateScoringWeights = async (weights: ScoringWeightsConfig) => {
 
 export const updateRoleThresholds = async (thresholds: RoleThresholdsConfig) => {
   const response = await api.put('/contributor-board/settings/role_thresholds', thresholds)
+  return response.data
+}
+
+/**
+ * 触发重算所有贡献者分数
+ */
+export const recalculateScores = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.post('/contributor-board/settings/recalculate_scores', null, { params: queryParams })
   return response.data
 }
 

@@ -479,6 +479,17 @@ async def update_role_thresholds(db: DbSession, request: UpdateRoleThresholdsReq
     return await service.update_role_thresholds(db, request)
 
 
+@router.post("/settings/recalculate_scores")
+async def recalculate_scores(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None, description="指定仓库，不传则重算所有仓库"),
+):
+    """权重变更后，读取最新权重配置并批量重算所有贡献者分数（管理员可见）"""
+    service = get_contributor_board_service()
+    return await service.recalculate_scores(db, repo_name=repo_name)
+
+
 # ---- 定时同步设置 ----
 
 @router.get("/settings/sync-schedule", response_model=ContributorSyncScheduleConfig)

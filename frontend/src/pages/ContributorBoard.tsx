@@ -49,8 +49,9 @@ import {
    CheckCircleOutlined,
    CloseCircleOutlined,
    ColumnHeightOutlined,
-  DeleteOutlined,
+   DeleteOutlined,
   EyeOutlined,
+  ExperimentOutlined,
   DownloadOutlined,
   FlagOutlined,
   FilterOutlined,
@@ -92,6 +93,7 @@ import {
   updateQuadrantConfig,
   updateScoringWeights,
   updateRoleThresholds,
+  recalculateScores,
   getSyncSchedule,
   updateSyncSchedule,
   type ContributorSyncScheduleConfig,
@@ -2039,6 +2041,7 @@ function SettingsTab() {
   const [settings, setSettings] = useState<SettingsType | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [recalculating, setRecalculating] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -2054,6 +2057,10 @@ function SettingsTab() {
           form.setFieldValue('review_weight', settingsData.scoring_weights.review_weight)
           form.setFieldValue('approval_weight', settingsData.scoring_weights.approval_weight)
           form.setFieldValue('core_module_weight', settingsData.scoring_weights.core_module_weight)
+          form.setFieldValue('files_changed_weight', settingsData.scoring_weights.files_changed_weight)
+          form.setFieldValue('bugfix_weight', settingsData.scoring_weights.bugfix_weight)
+          form.setFieldValue('feature_weight', settingsData.scoring_weights.feature_weight)
+          form.setFieldValue('active_duration_weight', settingsData.scoring_weights.active_duration_weight)
           form.setFieldValue('star_threshold', settingsData.role_thresholds.star_threshold)
           form.setFieldValue('active_threshold', settingsData.role_thresholds.active_threshold)
           form.setFieldValue('max_error_score', settingsData.role_thresholds.max_error_score)
@@ -2078,6 +2085,10 @@ function SettingsTab() {
           review_weight: values.review_weight,
           approval_weight: values.approval_weight,
           core_module_weight: values.core_module_weight,
+          files_changed_weight: values.files_changed_weight,
+          bugfix_weight: values.bugfix_weight,
+          feature_weight: values.feature_weight,
+          active_duration_weight: values.active_duration_weight,
         }),
         updateRoleThresholds({
           star_threshold: values.star_threshold,
@@ -2085,7 +2096,7 @@ function SettingsTab() {
           max_error_score: values.max_error_score,
         }),
       ])
-      message.success('设置已保存，四象限和排行榜将使用新配置重新计算')
+      message.success('设置已保存')
       window.dispatchEvent(new CustomEvent('settings-updated'))
       const data = await getContributorBoardSettings()
       setSettings(data)
@@ -2093,6 +2104,19 @@ function SettingsTab() {
       message.error('保存失败')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleRecalculate = async () => {
+    try {
+      setRecalculating(true)
+      const result = await recalculateScores()
+      message.success(`重算完成，共更新 ${result?.recalculated_count ?? 0} 位贡献者的分数`)
+      window.dispatchEvent(new CustomEvent('settings-updated'))
+    } catch {
+      message.error('重算失败')
+    } finally {
+      setRecalculating(false)
     }
   }
 
@@ -2122,15 +2146,20 @@ function SettingsTab() {
             贡献者分析设置
           </Title>
           <Text type="secondary" style={{ fontSize: 13 }}>
-            以下配置将同时影响「四象限看板」和「排行榜中的象限标识」。修改后保存，系统将使用新配置重新计算。
+            以下配置将同时影响「四象限看板」和「排行榜中的象限标识」。修改保存后，点击"重算分数"使新权重生效。
           </Text>
         </div>
-        <Button type="primary" loading={saving} onClick={handleSave}>
-          保存设置
-        </Button>
+        <Space>
+          <Button type="primary" loading={saving} onClick={handleSave}>
+            保存设置
+          </Button>
+          <Button danger loading={recalculating} onClick={handleRecalculate}>
+            重算分数
+          </Button>
+        </Space>
       </div>
 
-      {/* 三卡片水平排列 */}
+      {/* 卡片布局：第一排 Y轴+基础权重+阈值，第二排 新增维度 */}
       <Row gutter={[20, 0]}>
         {/* 卡片 1: Y 轴配置 */}
         <Col xs={24} md={8}>
@@ -2174,10 +2203,39 @@ function SettingsTab() {
                   marks={{ 0: '0', 5: '5', 10: '10' }}
                   tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
               </Form.Item>
-              <Form.Item label="核心模块权重" name="core_module_weight" style={{ marginBottom: 0 }}>
+              <Form.Item label="核心模块权重" name="core_module_weight" style={sliderFormItemStyle}>
                 <Slider min={0} max={15} step={1}
                   marks={{ 0: '0', 8: '8', 15: '15' }}
                   tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+
+        {/* 卡片 2.5: 新增权重维度 */}
+        <Col xs={24} md={8}>
+          <Card title={<><ExperimentOutlined style={{ marginRight: 6, color: '#722ed1' }} />新增评分维度</>}
+            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
+            <Form form={form}>
+              <Form.Item label="文件变更数权重" name="files_changed_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={2} step={0.1}
+                  marks={{ 0: '0', 1: '1', 2: '2' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
+              </Form.Item>
+              <Form.Item label="BugFix 贡献权重" name="bugfix_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={15} step={1}
+                  marks={{ 0: '0', 8: '8', 15: '15' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+              <Form.Item label="Feature 贡献权重" name="feature_weight" style={sliderFormItemStyle}>
+                <Slider min={0} max={10} step={1}
+                  marks={{ 0: '0', 5: '5', 10: '10' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+              </Form.Item>
+              <Form.Item label="活跃持续时间权重" name="active_duration_weight" style={{ marginBottom: 0 }}>
+                <Slider min={0} max={0.05} step={0.005}
+                  marks={{ 0: '0', 0.025: '0.025', 0.05: '0.05' }}
+                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(3) }} />
               </Form.Item>
             </Form>
           </Card>

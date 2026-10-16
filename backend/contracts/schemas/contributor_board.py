@@ -228,6 +228,10 @@ class ScoringWeightsConfig(BaseModel):
     review_weight: float = Field(default=3.0, ge=0, description="Review权重")
     approval_weight: float = Field(default=5.0, ge=0, description="Approval权重")
     core_module_weight: float = Field(default=8.0, ge=0, description="核心模块权重")
+    files_changed_weight: float = Field(default=0.3, ge=0, description="文件变更数权重")
+    bugfix_weight: float = Field(default=6.0, ge=0, description="BugFix 贡献权重")
+    feature_weight: float = Field(default=4.0, ge=0, description="Feature 贡献权重")
+    active_duration_weight: float = Field(default=0.01, ge=0, description="活跃持续时间权重（按天）")
 
 
 class RoleThresholdsConfig(BaseModel):
@@ -253,6 +257,10 @@ class UpdateScoringWeightsRequest(BaseModel):
     review_weight: float = Field(ge=0)
     approval_weight: float = Field(ge=0)
     core_module_weight: float = Field(ge=0)
+    files_changed_weight: float = Field(ge=0, default=0.3)
+    bugfix_weight: float = Field(ge=0, default=6.0)
+    feature_weight: float = Field(ge=0, default=4.0)
+    active_duration_weight: float = Field(ge=0, default=0.01)
     repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 

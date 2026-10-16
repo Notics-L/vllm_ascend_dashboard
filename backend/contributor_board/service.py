@@ -746,6 +746,19 @@ class ContributorBoardService:
     # ---- 设置管理 ----
 
     @staticmethod
+    async def _get_scoring_weights(db) -> ScoringWeightsConfig:
+        """内部方法：读取当前评分权重配置"""
+        result = await db.execute(
+            select(ContributorBoardSettings).where(
+                ContributorBoardSettings.setting_key == "scoring_weights"
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing and existing.setting_value:
+            return ScoringWeightsConfig(**existing.setting_value)
+        return ScoringWeightsConfig()
+
+    @staticmethod
     async def get_settings(db) -> ContributorBoardSettingsResponse:
         result = await db.execute(
             select(ContributorBoardSettings).where(
@@ -813,6 +826,30 @@ class ContributorBoardService:
         return await ContributorBoardService.update_setting(
             db, "scoring_weights", request.model_dump(), "贡献分数计算权重"
         )
+
+    @staticmethod
+    async def recalculate_scores(
+        db, repo_name: str | None = None
+    ) -> dict[str, Any]:
+        """权重变更后，读取最新权重配置并批量重算所有贡献者分数。"""
+        from contributor_board.scoring_engine import recalculate_all_scores, calculate_contribution_score
+
+        # 读取当前权重配置
+        weights = await ContributorBoardService._get_scoring_weights(db)
+        weights_dict: dict[str, float] = {
+            "merged_pr_weight": float(weights.merged_pr_weight),
+            "code_line_weight": float(weights.code_line_weight),
+            "review_weight": float(weights.review_weight),
+            "approval_weight": float(weights.approval_weight),
+            "core_module_weight": float(weights.core_module_weight),
+            "files_changed_weight": float(weights.files_changed_weight),
+            "bugfix_weight": float(weights.bugfix_weight),
+            "feature_weight": float(weights.feature_weight),
+            "active_duration_weight": float(weights.active_duration_weight),
+        }
+
+        count = await recalculate_all_scores(db, weights_dict, repo_name)
+        return {"recalculated_count": count}
 
     @staticmethod
     async def update_role_thresholds(
