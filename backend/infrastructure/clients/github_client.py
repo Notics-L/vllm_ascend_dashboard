@@ -76,6 +76,7 @@ class GitHubClient:
             timeout=httpx.Timeout(30.0, connect=10.0, read=60.0, write=30.0),
             follow_redirects=True,
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+            verify=not settings.DEBUG,
         )
 
         logger.info(f"GitHubClient initialized for {self.owner}/{self.repo}")

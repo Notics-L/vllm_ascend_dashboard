@@ -21,6 +21,7 @@ import CIBoardConfig from './pages/CIBoardConfig'
 import GitHubActivityDetail from './pages/GitHubActivityDetail'
 import CommitAnalysisDetail from './pages/CommitAnalysisDetail'
 import ProjectBoard from './pages/ProjectBoard'
+import ContributorBoard, { ContributorDetailPage } from './pages/ContributorBoard'
 import ProjectBoardConfig from './pages/ProjectBoardConfig'
 import PRPipelineBoard from './pages/PRPipelineBoard'
 import PRDetail from './pages/PRDetail'
@@ -118,6 +119,33 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// 仅超级管理员可访问的路由
+function SuperAdminRoute({ children }: { children: React.ReactNode }) {
+  const token = localStorage.getItem('access_token')
+  const { data: currentUser, isLoading, error } = useCurrentUser()
+
+  if (!token) return <Navigate to="/login" replace />
+
+  if (isLoading) {
+    return (
+      <div className="route-loading-state">
+        <Spin size="large" />
+        <span>正在验证权限…</span>
+      </div>
+    )
+  }
+
+  if (error || !currentUser) {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+    return <Navigate to="/login" replace />
+  }
+
+  if (currentUser.role !== 'super_admin') return <Navigate to="/" replace />
+
+  return <>{children}</>
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -165,6 +193,9 @@ function App() {
               <Route path="ci" element={<CIBoard />} />
               {/* Project Dashboard */}
               <Route path="project" element={<ProjectBoard />} />
+              {/* Contributor Board - super_admin only */}
+              <Route path="contributor-board" element={<SuperAdminRoute><ContributorBoard /></SuperAdminRoute>} />
+              <Route path="contributor-board/detail/:login" element={<SuperAdminRoute><ContributorDetailPage /></SuperAdminRoute>} />
               {/* CI 详情页面 */}
               <Route path="ci/runs/:runId" element={<WorkflowDetail />} />
               <Route path="ci/jobs/:jobId" element={<JobDetail />} />

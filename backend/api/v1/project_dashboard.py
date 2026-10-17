@@ -47,8 +47,8 @@ async def get_releases(
     # Ensure repo is cloned
     if not ensure_repo_cloned():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to clone repository",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository not initialized. Set GITHUB_TOKEN to clone the repository.",
         )
 
     service = get_project_dashboard_service()
@@ -77,8 +77,8 @@ async def get_main_versions():
     # Ensure repo is cloned
     if not ensure_repo_cloned():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to clone repository",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository not initialized. Set GITHUB_TOKEN to clone the repository.",
         )
 
     service = get_project_dashboard_service()
@@ -103,8 +103,8 @@ async def get_all_tags():
     # Ensure repo is cloned
     if not ensure_repo_cloned():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to clone repository",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository not initialized. Set GITHUB_TOKEN to clone the repository.",
         )
 
     service = get_project_dashboard_service()
@@ -573,8 +573,8 @@ async def compare_tags(
     # Ensure repo is cloned
     if not ensure_repo_cloned():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to clone repository",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository not initialized. Set GITHUB_TOKEN to clone the repository.",
         )
 
     cache = get_github_cache()
@@ -643,8 +643,8 @@ async def generate_version_quality_report(
     # 确保 git 仓库缓存就绪
     if not ensure_repo_cloned():
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to clone repository, please update git cache first",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository not initialized. Set GITHUB_TOKEN to clone the repository.",
         )
 
     service = VersionQualityService(db)

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -40,6 +41,9 @@ __all__ = [
     "SchedulerHeartbeat",
     "NpuOccupancyRawEnv", "NpuOccupancySyncState",
     "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
+    "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
+    "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
+    "ContributorAIReport",
 ]
 
 
@@ -1006,3 +1010,285 @@ class NpuOccupancySyncState(Base):
     active_task_id = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+
+
+class Contributor(Base):
+    """贡献者主表"""
+    __tablename__ = "contributors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    github_id = Column(BigInteger, nullable=False, unique=True, index=True)
+    login = Column(String(100), nullable=False, unique=True, index=True)
+    avatar_url = Column(String(500))
+    email = Column(String(200))
+    name = Column(String(200))
+    is_community = Column(Boolean, default=True, index=True)
+    role_types = Column(JSON)
+    company = Column(String(200))
+    employee_id = Column(String(100), nullable=True, index=True)
+    first_contribution_at = Column(TIMESTAMP)
+    last_contribution_at = Column(TIMESTAMP)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class ContributorMetrics(Base):
+    """贡献者聚合指标表"""
+    __tablename__ = "contributor_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    merged_pr_count = Column(Integer, default=0)
+    pending_pr_count = Column(Integer, default=0)
+    code_additions = Column(Integer, default=0)
+    code_deletions = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    approval_count = Column(Integer, default=0)
+    merge_count = Column(Integer, default=0)
+    core_module_count = Column(Integer, default=0)
+    closed_pr_count = Column(Integer, default=0)
+    commit_count = Column(Integer, default=0)
+    contribution_score = Column(Float, default=0)
+    error_score = Column(Float, default=0)
+    quadrant = Column(String(20))
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint('contributor_login', 'period_start', 'period_end', name='uq_contributor_metrics_period'),
+    )
+
+    def to_weight_dict(self) -> dict:
+        """提取自动算权所需的9个维度数据"""
+        return {
+            "merged_pr_count": self.merged_pr_count or 0,
+            "code_additions": self.code_additions or 0,
+            "review_count": self.review_count or 0,
+            "approval_count": self.approval_count or 0,
+            "core_module_count": self.core_module_count or 0,
+            "files_changed_count": self.files_changed_count if hasattr(self, "files_changed_count") else 0,
+            "commit_count": self.commit_count or 0,
+        }
+
+
+class ContributorBoardSettings(Base):
+    """贡献者看板设置表"""
+    __tablename__ = "contributor_board_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    setting_key = Column(String(100), nullable=False, unique=True, index=True)
+    setting_value = Column(JSON, nullable=False)
+    description = Column(String(500), nullable=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class CommitClassification(Base):
+    """提交分类记录表"""
+    __tablename__ = "commit_classifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    commit_sha = Column(String(40), nullable=False, unique=True, index=True)
+    commit_message = Column(Text)
+    commit_type = Column(String(20), nullable=False, index=True)
+    confidence = Column(Float, default=1.0)
+    modules_touched = Column(JSON)
+    files_changed_count = Column(Integer, default=0)
+    is_chip_specific = Column(Boolean, default=False)
+    chip_target = Column(String(50))
+    contributor_login = Column(String(100), index=True)
+    pr_number = Column(Integer, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ErrorRecord(Base):
+    """出错记录表"""
+    __tablename__ = "error_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    error_type = Column(String(50), nullable=False, index=True)
+    related_pr_number = Column(Integer, index=True)
+    related_commit_sha = Column(String(40))
+    revert_count = Column(Integer, default=0)
+    bugfix_linked_count = Column(Integer, default=0)
+    ci_failure_count = Column(Integer, default=0)
+    nightly_failure_count = Column(Integer, default=0)
+    weight_score = Column(Float, default=0)
+    description = Column(Text)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ImageBuildPlan(Base):
+    """镜像构建计划记录表"""
+    __tablename__ = "image_build_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pr_number = Column(Integer, nullable=False, index=True)
+    commit_sha = Column(String(40), nullable=False)
+    commit_type = Column(String(20))
+    build_type = Column(String(50), nullable=False)
+    chips = Column(JSON)
+    os_list = Column(JSON)
+    cache_strategy = Column(String(50))
+    estimated_saving_percent = Column(Float, default=0)
+    actual_execution = Column(Boolean, default=False)
+    reasoning = Column(String(500))
+    files_changed = Column(JSON)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class QuadrantSnapshot(Base):
+    """四象限历史快照表"""
+    __tablename__ = "quadrant_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
+    contributor_login = Column(String(100), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    quadrant = Column(String(20), nullable=False)
+    contribution_score = Column(Float, default=0)
+    error_score = Column(Float, default=0)
+    meta = Column(JSON)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint('contributor_login', 'snapshot_date', name='uq_quadrant_snapshot_date'),
+    )
+
+
+class ContributorSyncRecord(Base):
+    """收集器同步记录表"""
+    __tablename__ = "contributor_sync_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_name = Column(String(200), nullable=True, index=True)
+    sync_type = Column(String(20), nullable=False, default="full")
+    status = Column(String(20), nullable=False, index=True)
+    since_date = Column(Date)
+    until_date = Column(Date, nullable=True)
+    contributors_synced = Column(Integer, default=0)
+    commits_classified = Column(Integer, default=0)
+    total_prs_scanned = Column(Integer, default=0)
+    build_plans_created = Column(Integer, default=0)
+    errors = Column(JSON)
+    duration_seconds = Column(Float, default=0)
+    synced_at = Column(TIMESTAMP)
+    progress_percent = Column(Float, default=0)
+    progress_message = Column(String(500))
+    trigger_source = Column(String(20), nullable=False, default="manual")
+    started_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+
+class ContributorScoringVersion(Base):
+    """评分权重版本记录表"""
+    __tablename__ = "contributor_scoring_version"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(String(30), nullable=False, comment="版本号: v1.0.0, v1.1.0...")
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    weights = Column(JSON, nullable=False, comment="权重配置快照")
+
+    method = Column(Enum("manual", "auto", "ai", name="scoring_method_enum"), nullable=False, comment="权重确定方式")
+    status = Column(Enum("draft", "active", "archived", name="scoring_version_status"), nullable=False, default="draft", comment="版本状态")
+
+    data_summary = Column(JSON, nullable=True, comment="算权时数据分布摘要")
+
+    ai_prompt = Column(Text, nullable=True)
+    ai_response = Column(Text, nullable=True)
+    ai_model = Column(String(100), nullable=True)
+
+    confidence_score = Column(Float, nullable=True)
+    description = Column(Text, nullable=True)
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)
+    activated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), nullable=True)
+    activated_by = Column(String(100), nullable=True)
+
+    __table_args__ = (
+        Index("idx_scoring_version_repo_status", "repo_name", "status"),
+    )
+
+
+class ContributorScoreSnapshot(Base):
+    """分数快照表"""
+    __tablename__ = "contributor_score_snapshot"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version_id = Column(Integer, ForeignKey("contributor_scoring_version.id", ondelete="CASCADE"), nullable=False, index=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    snapshot_date = Column(Date, nullable=False, index=True)
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    contributor_count = Column(Integer, nullable=False, default=0)
+
+    statistics = Column(JSON, nullable=True)
+    scores = Column(JSON, nullable=False)
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+
+class ContributorScoreUpdateAudit(Base):
+    """评分更新审计日志表"""
+    __tablename__ = "contributor_score_update_audit"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(50), nullable=False, comment="操作类型")
+    version_id = Column(Integer, nullable=True)
+    snapshot_id = Column(Integer, nullable=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+
+    details = Column(JSON, nullable=True)
+    summary = Column(Text, nullable=True)
+
+    weight_diff = Column(JSON, nullable=True)
+    max_weight_shift = Column(Float, nullable=True, comment="最大单项权重变化幅度(%)")
+
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    created_by = Column(String(100), nullable=True)
+
+
+class ContributorAIReport(Base):
+    """AI 综合分析报告表"""
+    __tablename__ = "contributor_ai_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_name = Column(String(300), nullable=False)
+    report_type = Column(String(50), nullable=True, comment="quarterly/monthly/custom/adhoc")
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    generated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    generated_by = Column(String(100), nullable=True)
+    generation_source = Column(String(20), nullable=True, comment="manual/scheduled/ai_auto")
+    weight_version_id = Column(Integer, ForeignKey("contributor_scoring_version.id"), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    executive_summary = Column(Text, nullable=True)
+    quadrant_analysis = Column(JSON, nullable=True)
+    individual_evaluations = Column(JSON, nullable=True)
+    recommendations = Column(JSON, nullable=True)
+    confidence_overall = Column(Float, nullable=True)
+    report_content = Column(Text, nullable=True)
+    report_file_url = Column(String(500), nullable=True)
+    schedule_cron = Column(String(100), nullable=True)
+    enabled = Column(Boolean, default=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        Index("idx_ai_report_period", "period_start", "period_end"),
+        Index("idx_ai_report_created", "generated_at"),
+    )

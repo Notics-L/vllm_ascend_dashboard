@@ -166,6 +166,16 @@ class Settings(BaseSettings):
     SUPPORT_MATRIX_COMPAT_PATH: str = "docs/source/user_guide/support_matrix/feature_matrix.md"
     TEST_BOARD_CASE_MATRIX_PATH: str = "resources/test-board/e2e_feature_matrix.csv"
 
+    # 贡献者评估系统配置
+    CONTRIBUTOR_SYNC_INTERVAL_MINUTES: int = 360  # 6小时增量采集
+    CONTRIBUTOR_QUADRANT_UPDATE_HOUR: int = 2     # 每日 2:00 全量重新评估
+    CONTRIBUTOR_QUADRANT_UPDATE_MINUTE: int = 0
+    BUILD_OPTIMIZATION_ENABLED: bool = True
+    # 多仓库采集配置: owner/repo,owner/repo,... 默认为 GITHUB_OWNER/GITHUB_REPO
+    CONTRIBUTOR_REPOS: str = ""
+    # 工号提取正则: 从 GitHub email 或 bio 中匹配内部工号
+    EMPLOYEE_ID_PATTERN: str = r"\bZ?\d{7,8}\b"
+
     @field_validator("JWT_SECRET")
     @classmethod
     def validate_jwt_secret(cls, v: str) -> str:

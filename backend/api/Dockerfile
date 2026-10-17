@@ -1,4 +1,4 @@
-# Production Dockerfile for vLLM Ascend Dashboard Backend
+﻿# Production Dockerfile for vLLM Ascend Dashboard Backend
 # Multi-stage build for optimized image size
 
 # Stage 1: Install dependencies
@@ -77,6 +77,7 @@ COPY backend/test_board/ ./test_board/
 COPY backend/model_sync/ ./model_sync/
 COPY backend/support_matrix/ ./support_matrix/
 COPY backend/pr_pipeline/ ./pr_pipeline/
+COPY backend/contributor_board/ ./contributor_board/
 COPY backend/nightly_gantt/ ./nightly_gantt/
 COPY backend/npu_queue/ ./npu_queue/
 COPY backend/resources/ ./resources/
