@@ -149,9 +149,9 @@ async def analyze_weights_with_ai(
     try:
         result = await client.generate(
             provider=llm_config.provider,
-            model=llm_config.model,
-            api_key=llm_config.api_key,
-            api_base=llm_config.api_base or None,
+            model=llm_config.default_model,
+            api_key=llm_config.decrypted_api_key,
+            api_base=llm_config.api_base_url or None,
             system_prompt="",
             user_prompt=prompt,
             temperature=0.3,
@@ -161,7 +161,8 @@ async def analyze_weights_with_ai(
         raise RuntimeError(f"LLM 调用失败: {exc}") from exc
 
     weights, analysis = _parse_llm_response(result.content)
-    return weights, analysis, llm_config.model
+    model_used = llm_config.default_model
+    return weights, analysis, model_used
 
 
 async def _get_active_llm_config(db: Any, model: str | None = None) -> Any | None:
@@ -171,7 +172,7 @@ async def _get_active_llm_config(db: Any, model: str | None = None) -> Any | Non
 
     stmt = sa_select(LLMProviderConfig).where(LLMProviderConfig.is_active == True)  # noqa: E712
     if model:
-        stmt = stmt.where(LLMProviderConfig.model == model)
+        stmt = stmt.where(LLMProviderConfig.default_model == model)
     stmt = stmt.limit(1)
 
     result = await db.execute(stmt)

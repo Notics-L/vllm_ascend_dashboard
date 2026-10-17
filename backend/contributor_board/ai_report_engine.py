@@ -8,15 +8,9 @@ import json
 import logging
 from typing import Any
 
+from contributor_board.constants import QUADRANT_LABELS
+
 logger = logging.getLogger(__name__)
-
-_QUADRANT_LABELS: dict[str, str] = {
-    "INCENTIVE": "激励区",
-    "IMPROVE": "改进区",
-    "ENCOURAGE": "鼓励区",
-    "REPLACE": "置换区",
-}
-
 
 def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) -> str:
     """构造给 LLM 的分析 Prompt。"""
@@ -51,7 +45,7 @@ def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) 
         for q_key in ["INCENTIVE", "ENCOURAGE", "IMPROVE", "REPLACE"]:
             count = quad_dist.get(q_key, 0)
             pct = (count / snap.get("contributor_count", 1) * 100) if snap.get("contributor_count") else 0
-            lines.append(f"  {_QUADRANT_LABELS.get(q_key, q_key)}: {count} 人 ({pct:.1f}%)")
+            lines.append(f"  {QUADRANT_LABELS.get(q_key, q_key)}: {count} 人 ({pct:.1f}%)")
     lines.append("")
 
     # 权重变更记录
@@ -69,7 +63,7 @@ def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) 
         lines.append("=== 本期 Top 贡献者 ===")
         for tc in top_contributors[:10]:
             lines.append(f"  {tc.get('login', '?')}: {tc.get('score', 0):.1f}分 "
-                        f"({_QUADRANT_LABELS.get(tc.get('quadrant', ''), '?')})")
+                        f"({QUADRANT_LABELS.get(tc.get('quadrant', ''), '?')})")
         lines.append("")
 
     # 人员变动
@@ -85,8 +79,8 @@ def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) 
             lines.append(f"  象限变动:")
             for s in shifted[:10]:
                 lines.append(f"    {s.get('login', '?')}: "
-                            f"{_QUADRANT_LABELS.get(s.get('from', ''), '?')} -> "
-                            f"{_QUADRANT_LABELS.get(s.get('to', ''), '?')}")
+                            f"{QUADRANT_LABELS.get(s.get('from', ''), '?')} -> "
+                            f"{QUADRANT_LABELS.get(s.get('to', ''), '?')}")
         lines.append("")
 
     # 分析要求
@@ -169,9 +163,9 @@ async def generate_ai_report(
     try:
         result = await client.generate(
             provider=llm_config.provider,
-            model=llm_config.model,
-            api_key=llm_config.api_key,
-            api_base=llm_config.api_base or None,
+            model=llm_config.default_model,
+            api_key=llm_config.decrypted_api_key,
+            api_base=llm_config.api_base_url or None,
             system_prompt="",
             user_prompt=prompt,
             temperature=0.3,
@@ -181,7 +175,8 @@ async def generate_ai_report(
         raise RuntimeError(f"LLM 调用失败: {exc}") from exc
 
     report = _parse_response(result.content)
-    return report, llm_config.model
+    model_used = llm_config.default_model
+    return report, model_used
 
 
 async def _get_active_llm_config(db: Any, model: str | None = None) -> Any | None:
@@ -191,7 +186,7 @@ async def _get_active_llm_config(db: Any, model: str | None = None) -> Any | Non
 
     stmt = sa_select(LLMProviderConfig).where(LLMProviderConfig.is_active == True)  # noqa: E712
     if model:
-        stmt = stmt.where(LLMProviderConfig.model == model)
+        stmt = stmt.where(LLMProviderConfig.default_model == model)
     stmt = stmt.limit(1)
 
     result = await db.execute(stmt)

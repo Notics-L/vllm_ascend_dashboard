@@ -443,8 +443,10 @@ class ModuleHotspotResponse(BaseModel):
 class PolicyItemResponse(BaseModel):
     action: str = Field(description="策略动作")
     severity: str = Field(description="严重程度: info/warning/critical")
+    execution: str = Field(description="执行方式: auto/suggestion/alert")
     description: str = Field(description="策略描述")
     reason: str = Field(description="策略原因")
+    impact_level: str = Field(default="", description="影响等级: 高/中/低")
 
 
 class PolicyResultResponse(BaseModel):
@@ -456,6 +458,9 @@ class PolicyResultResponse(BaseModel):
     has_critical: bool = False
     has_warning: bool = False
     evaluated_at: datetime | None = None
+    auto_count: int = 0
+    suggestion_count: int = 0
+    alert_count: int = 0
 
 
 # ============ Trend Schemas (Extended) ============

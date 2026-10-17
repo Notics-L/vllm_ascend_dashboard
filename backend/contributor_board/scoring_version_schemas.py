@@ -85,3 +85,60 @@ class CalculateAutoWeightsResponse(BaseModel):
     confidence: float
     data_summary: dict
     version_id: int | None = None
+
+
+# ============ AI 报告 Schema ============
+
+class AIReportGenerateRequest(BaseModel):
+    report_type: str = Field("custom", description="quarterly/monthly/custom/adhoc")
+    period_start: date | None = Field(None, description="分析周期起始日期")
+    period_end: date | None = Field(None, description="分析周期结束日期")
+    repo_name: str | None = Field(None, description="仓库名")
+    model: str | None = Field(None, description="指定 LLM 模型")
+    include_individual_evaluations: bool = Field(False, description="是否包含个人评价")
+
+
+class AIReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    report_name: str
+    report_type: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    generated_at: datetime
+    generated_by: str | None = None
+    generation_source: str | None = None
+    weight_version_id: int | None = None
+    llm_model: str | None = None
+    executive_summary: str | None = None
+    confidence_overall: float | None = None
+    repo_name: str | None = None
+    created_at: datetime
+
+
+class AIReportDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    report_name: str
+    report_type: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    generated_at: datetime
+    generated_by: str | None = None
+    generation_source: str | None = None
+    weight_version_id: int | None = None
+    llm_model: str | None = None
+    executive_summary: str | None = None
+    quadrant_analysis: dict | None = None
+    individual_evaluations: list[dict] | None = None
+    recommendations: list[dict] | None = None
+    confidence_overall: float | None = None
+    report_content: str | None = None
+    report_file_url: str | None = None
+    schedule_cron: str | None = None
+    enabled: bool = True
+    repo_name: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None

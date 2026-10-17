@@ -44,6 +44,7 @@ from database.migrations.image_build_plans_reasoning import run as migrate_image
 from database.migrations.image_build_plans_files_changed import run as migrate_image_build_plans_files_changed
 from database.migrations.test_board_data import run as migrate_test_board_data
 from database.migrations.contributor_scoring_version import run as migrate_contributor_scoring_version
+from database.migrations.contributor_ai_report import run as migrate_contributor_ai_report
 from infrastructure.db.base import SessionLocal, engine
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -81,6 +82,7 @@ async def migrate() -> None:
     build_plan_reasoning_result = await migrate_image_build_plans_reasoning()
     build_plan_files_changed_result = await migrate_image_build_plans_files_changed()
     scoring_version_result = await migrate_contributor_scoring_version()
+    ai_report_result = await migrate_contributor_ai_report()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
@@ -100,6 +102,7 @@ async def migrate() -> None:
         build_plan_reasoning_result,
         build_plan_files_changed_result,
         scoring_version_result,
+        ai_report_result,
     )
 
 

@@ -1,6 +1,7 @@
 """
 贡献者看板 API 路由
 """
+import io
 import logging
 from datetime import date
 
@@ -612,3 +613,268 @@ async def get_contributor_timeline(
         login=data["login"],
         commits=[TimelineCommitItem(**c) for c in data["commits"]],
     )
+
+
+# =====================================================================
+# 评分权重版本管理 (C-3 ~ C-7)
+# =====================================================================
+
+from contributor_board.scoring_version_service import ScoringVersionService
+from contributor_board.scoring_version_schemas import (
+    AIReportDetailResponse,
+    AIReportGenerateRequest,
+    AIReportResponse,
+    CalculateAutoWeightsResponse,
+    ScoreSnapshotResponse,
+    ScoringVersionCreateRequest,
+    ScoringVersionResponse,
+    ScoreUpdateAuditResponse,
+    VersionCompareResponse,
+)
+
+
+# ---- C-3: 权重版本 CRUD + 应用 + 对比 ----
+
+@router.get("/settings/scoring/versions", response_model=dict)
+async def get_scoring_versions(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None),
+    status: str | None = Query(None, description="版本状态: draft/active/archived"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """获取权重版本历史列表"""
+    svc = ScoringVersionService()
+    return await svc.list_versions(db, repo_name=repo_name, status=status, skip=skip, limit=limit)
+
+
+@router.get("/settings/scoring/versions/active", response_model=ScoringVersionResponse | None)
+async def get_active_scoring_version(
+    db: DbSession,
+    repo_name: str | None = Query(None),
+):
+    """获取当前生效的权重版本"""
+    svc = ScoringVersionService()
+    return await svc.get_active_version(db, repo_name=repo_name)
+
+
+@router.get("/settings/scoring/versions/{version_id}", response_model=ScoringVersionResponse | None)
+async def get_scoring_version(
+    version_id: int,
+    db: DbSession,
+):
+    """获取权重版本详情"""
+    svc = ScoringVersionService()
+    return await svc.get_version(db, version_id)
+
+
+@router.post("/settings/scoring/versions", response_model=ScoringVersionResponse)
+async def create_scoring_version(
+    request: ScoringVersionCreateRequest,
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """创建新的权重版本"""
+    svc = ScoringVersionService()
+    return await svc.create_version(db, request, created_by=_access.username)
+
+
+@router.post("/settings/scoring/versions/{version_id}/apply", response_model=ScoringVersionResponse)
+async def apply_scoring_version(
+    version_id: int,
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """应用指定版本为生效版本（自动归档当前版本 + 重算 + 生成快照）"""
+    svc = ScoringVersionService()
+    return await svc.apply_version(db, version_id, created_by=_access.username)
+
+
+@router.post("/settings/scoring/versions/{version_id}/rollback", response_model=ScoringVersionResponse)
+async def rollback_scoring_version(
+    version_id: int,
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """回滚到指定版本"""
+    svc = ScoringVersionService()
+    return await svc.rollback_to_version(db, version_id, created_by=_access.username)
+
+
+@router.post("/settings/scoring/versions/compare", response_model=VersionCompareResponse)
+async def compare_scoring_versions(
+    db: DbSession,
+    version_id_a: int = Query(..., description="版本A ID"),
+    version_id_b: int = Query(..., description="版本B ID"),
+):
+    """对比两个权重版本"""
+    svc = ScoringVersionService()
+    return await svc.compare_versions(db, version_id_a, version_id_b)
+
+
+# ---- C-4: 自动评估 + AI评估 ----
+
+@router.post("/settings/scoring/auto-evaluate", response_model=CalculateAutoWeightsResponse)
+async def auto_evaluate_weights(
+    db: DbSession,
+    repo_name: str | None = Query(None),
+):
+    """执行自动权重评估（熵权法），返回结果但不自动创建版本"""
+    from contributor_board.auto_weight_engine import compute_weights_from_db
+
+    weights, confidence, data_summary = await compute_weights_from_db(db, repo_name)
+
+    return CalculateAutoWeightsResponse(
+        weights=weights,
+        confidence=confidence,
+        data_summary=data_summary,
+    )
+
+
+@router.post("/settings/scoring/ai-evaluate", response_model=CalculateAutoWeightsResponse)
+async def ai_evaluate_weights(
+    db: DbSession,
+    repo_name: str | None = Query(None),
+    model: str | None = Query(None, description="指定 LLM 模型"),
+):
+    """执行 AI 权重评估"""
+    from contributor_board.auto_weight_engine import compute_weights_from_db
+    from contributor_board.ai_weight_engine import analyze_weights_with_ai
+
+    _, _, data_summary = await compute_weights_from_db(db, repo_name)
+    ai_weights, ai_analysis, ai_model = await analyze_weights_with_ai(db, data_summary, model)
+
+    return CalculateAutoWeightsResponse(
+        weights=ai_weights,
+        confidence=0.7,
+        data_summary={**data_summary, "ai_analysis": ai_analysis, "ai_model": ai_model},
+    )
+
+
+# ---- C-5: 分数快照 CRUD + 对比 + 导出 ----
+
+@router.get("/settings/scoring/snapshots", response_model=dict)
+async def get_score_snapshots(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """获取分数快照列表"""
+    svc = ScoringVersionService()
+    return await svc.list_snapshots(db, repo_name=repo_name, skip=skip, limit=limit)
+
+
+@router.get("/settings/scoring/snapshots/{snapshot_id}", response_model=ScoreSnapshotResponse | None)
+async def get_score_snapshot(
+    snapshot_id: int,
+    db: DbSession,
+):
+    """获取分数快照详情"""
+    svc = ScoringVersionService()
+    return await svc.get_snapshot(db, snapshot_id)
+
+
+@router.post("/settings/scoring/snapshots/generate", response_model=ScoreSnapshotResponse | None)
+async def generate_score_snapshot(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    version_id: int = Query(..., description="权重版本 ID"),
+):
+    """手动生成分数快照（基于指定版本）"""
+    svc = ScoringVersionService()
+    return await svc.generate_snapshot(db, version_id, created_by=_access.username)
+
+
+@router.get("/settings/scoring/snapshots/export/pdf")
+async def export_snapshots_pdf(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    version_id: int = Query(..., description="权重版本 ID"),
+):
+    """导出分数快照为 PDF — 全量数据，包含所有贡献者"""
+    from contributor_board.scoring_version_service import ScoringVersionService
+    from contributor_board.report_exporter import export_pdf
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+
+    svc = ScoringVersionService()
+    version = await svc.get_version(db, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    snapshot = await svc.generate_snapshot(db, version_id, created_by=_access.username)
+    if not snapshot:
+        raise HTTPException(status_code=500, detail="Failed to generate snapshot")
+
+    version_info = {
+        "version": version.version,
+        "method": version.method,
+    }
+
+    pdf_bytes, filename = await export_pdf(db, snapshot.scores, version_info, statistics=snapshot.statistics)
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ---- C-6: 审计日志查询 ----
+
+@router.get("/settings/scoring/audit-log", response_model=dict)
+async def get_audit_logs(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """获取评分更新审计日志"""
+    svc = ScoringVersionService()
+    return await svc.list_audit_logs(db, repo_name=repo_name, skip=skip, limit=limit)
+
+
+# ---- C-7: AI 报告生成 + 查询 ----
+
+def _get_ai_report_service():
+    from contributor_board.ai_report_service import AIReportService
+    return AIReportService()
+
+
+@router.get("/settings/reports/ai", response_model=dict)
+async def get_ai_reports(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None),
+    report_type: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """获取 AI 综合报告列表"""
+    svc = _get_ai_report_service()
+    return await svc.list_reports(db, repo_name=repo_name, report_type=report_type, skip=skip, limit=limit)
+
+
+@router.get("/settings/reports/ai/{report_id}", response_model=AIReportDetailResponse)
+async def get_ai_report_detail(
+    report_id: int,
+    db: DbSession,
+):
+    """获取 AI 综合报告详情"""
+    svc = _get_ai_report_service()
+    return await svc.get_report(db, report_id)
+
+
+@router.post("/settings/reports/ai/generate", response_model=AIReportResponse)
+async def generate_ai_report(
+    request: AIReportGenerateRequest,
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """生成 AI 综合分析报告"""
+    svc = _get_ai_report_service()
+    return await svc.generate_report(db, request, created_by=_access.username)

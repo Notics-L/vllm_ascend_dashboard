@@ -479,8 +479,10 @@ export const getRoleRanking = async (
 export interface PolicyItem {
   action: string
   severity: 'info' | 'warning' | 'critical'
+  execution: 'auto' | 'suggestion' | 'alert'
   description: string
   reason: string
+  impact_level: string
 }
 
 export interface PolicyResult {
@@ -492,6 +494,9 @@ export interface PolicyResult {
   has_critical: boolean
   has_warning: boolean
   evaluated_at: string | null
+  auto_count: number
+  suggestion_count: number
+  alert_count: number
 }
 
 export const getContributorPolicy = async (login: string) => {
@@ -539,10 +544,61 @@ export const getExtendedTrend = async (
   return response.data
 }
 
+// ==================== 权重维度配置 ====================
+
+type WeightKey = keyof ScoringWeightsConfig
+
+export interface WeightDimensionConfig {
+  key: WeightKey
+  label: string
+  min: number
+  max: number
+  step: number
+}
+
+export const WEIGHT_DIMENSIONS: WeightDimensionConfig[] = [
+  { key: 'merged_pr_weight', label: 'PR 合并', min: 0, max: 30, step: 1 },
+  { key: 'code_line_weight', label: '代码行', min: 0, max: 5, step: 0.1 },
+  { key: 'review_weight', label: 'Review', min: 0, max: 15, step: 0.5 },
+  { key: 'approval_weight', label: 'Approval', min: 0, max: 15, step: 0.5 },
+  { key: 'core_module_weight', label: '核心模块', min: 0, max: 20, step: 1 },
+  { key: 'files_changed_weight', label: '变更文件', min: 0, max: 5, step: 0.1 },
+  { key: 'bugfix_weight', label: 'Bug 修复', min: 0, max: 5, step: 0.1 },
+  { key: 'feature_weight', label: '新功能', min: 0, max: 5, step: 0.1 },
+  { key: 'active_duration_weight', label: '活跃时长', min: 0, max: 1, step: 0.01 },
+]
+
+export const WEIGHT_LABELS: Record<WeightKey, string> = Object.fromEntries(
+  WEIGHT_DIMENSIONS.map(d => [d.key, d.label])
+) as Record<WeightKey, string>
+
+// ==================== 方法标签和颜色 ====================
+
+export const METHOD_CONFIG: Record<string, { label: string; color: string; emoji: string }> = {
+  auto: { label: '自动算权', color: 'blue', emoji: '📊' },
+  ai: { label: 'AI 评权', color: 'purple', emoji: '🤖' },
+  manual: { label: '手动设置', color: 'default', emoji: '✏️' },
+}
+
 // ==================== 设置 ====================
 
 export interface QuaddrantYAxisConfig {
   y_axis_type: string
+}
+
+/** 归一化权重：将原始倍数量纲值归一化为总和为 1 的比例 */
+export function normalizeWeights(weights: Record<string, number>): Record<string, number> {
+  const entries = Object.entries(weights)
+  const total = entries.reduce((sum, [, v]) => sum + v, 0)
+  if (total <= 0) {
+    const n = entries.length
+    return Object.fromEntries(entries.map(([k]) => [k, Number((1 / n).toFixed(4))]))
+  }
+  const result: Record<string, number> = {}
+  for (const [k, v] of entries) {
+    result[k] = Number((v / total).toFixed(4))
+  }
+  return result
 }
 
 export interface ScoringWeightsConfig {
@@ -765,7 +821,7 @@ export interface ScoreUpdateAudit {
 export const getActiveScoringVersion = async (params?: { repo_name?: string | null }) => {
   const queryParams: Record<string, unknown> = {}
   if (params?.repo_name) queryParams.repo_name = params.repo_name
-  const response = await api.get<ScoringVersion>('/contributor-board/scoring/versions/active', { params: queryParams })
+  const response = await api.get<ScoringVersion | null>('/contributor-board/settings/scoring/versions/active', { params: queryParams })
   return response.data
 }
 
@@ -781,12 +837,12 @@ export const listScoringVersions = async (params?: {
   }
   if (params?.repo_name) queryParams.repo_name = params.repo_name
   if (params?.status) queryParams.status = params.status
-  const response = await api.get<{ versions: ScoringVersion[]; total: number }>('/contributor-board/scoring/versions', { params: queryParams })
+  const response = await api.get<{ versions: ScoringVersion[]; total: number }>('/contributor-board/settings/scoring/versions', { params: queryParams })
   return response.data
 }
 
 export const getScoringVersion = async (versionId: number) => {
-  const response = await api.get<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}`)
+  const response = await api.get<ScoringVersion | null>(`/contributor-board/settings/scoring/versions/${versionId}`)
   return response.data
 }
 
@@ -802,48 +858,50 @@ export const createScoringVersion = async (body: {
   repo_name?: string | null
   apply_immediately?: boolean
 }) => {
-  const response = await api.post<ScoringVersion>('/contributor-board/scoring/versions/create', body)
+  const response = await api.post<ScoringVersion>('/contributor-board/settings/scoring/versions', body)
   return response.data
 }
 
 export const applyScoringVersion = async (versionId: number) => {
-  const response = await api.post<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}/apply`)
+  const response = await api.post<ScoringVersion>(`/contributor-board/settings/scoring/versions/${versionId}/apply`)
   return response.data
 }
 
 export const rollbackScoringVersion = async (versionId: number) => {
-  const response = await api.post<ScoringVersion>(`/contributor-board/scoring/versions/${versionId}/rollback`)
+  const response = await api.post<ScoringVersion>(`/contributor-board/settings/scoring/versions/${versionId}/rollback`)
   return response.data
 }
 
 export const compareScoringVersions = async (versionIdA: number, versionIdB: number) => {
-  const response = await api.get<VersionCompareResult>(`/contributor-board/scoring/versions/${versionIdA}/compare/${versionIdB}`)
+  const response = await api.get<VersionCompareResult>(
+    '/contributor-board/settings/scoring/versions/compare',
+    { params: { version_id_a: versionIdA, version_id_b: versionIdB } }
+  )
   return response.data
 }
 
-export const calculateAutoWeights = async () => {
-   const response = await api.post<AutoWeightsResult>('/contributor-board/scoring/weights/calculate-auto')
+export const calculateAutoWeights = async (params?: { repo_name?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  const response = await api.post<AutoWeightsResult>('/contributor-board/settings/scoring/auto-evaluate', null, { params: queryParams })
   return response.data
 }
 
-export const aiAnalyzeWeights = async (model?: string | null) => {
-  const params: Record<string, string> = {}
-  if (model) params.model = model
-  const response = await api.post<ScoringVersion>('/contributor-board/scoring/weights/ai-analyze', {}, { params })
+export const aiAnalyzeWeights = async (params?: { repo_name?: string | null; model?: string | null }) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params?.repo_name) queryParams.repo_name = params.repo_name
+  if (params?.model) queryParams.model = params.model
+  const response = await api.post<AutoWeightsResult>('/contributor-board/settings/scoring/ai-evaluate', null, { params: queryParams })
   return response.data
 }
 
-export const exportExcel = async (snapshotId?: number | null) => {
-  const params: Record<string, string> = {}
-  if (snapshotId) params.snapshot_id = String(snapshotId)
-  const response = await api.get('/contributor-board/scoring/export/excel', { params, responseType: 'blob' })
-  return response.data
-}
 
-export const exportPdf = async (snapshotId?: number | null) => {
-  const params: Record<string, string> = {}
-  if (snapshotId) params.snapshot_id = String(snapshotId)
-  const response = await api.get('/contributor-board/scoring/export/pdf', { params, responseType: 'blob' })
+
+export const exportPdfByVersion = async (versionId: number) => {
+  const response = await api.get('/contributor-board/settings/scoring/snapshots/export/pdf', {
+    params: { version_id: versionId },
+    responseType: 'blob',
+  })
   return response.data
 }
 
@@ -851,7 +909,7 @@ export interface AutoWeightsResult {
   weights: Record<string, number>
   confidence: number
   data_summary: Record<string, any>
-  version_id: number | null
+  version_id?: number | null
 }
 
 export const listScoreSnapshots = async (params?: {
@@ -864,12 +922,21 @@ export const listScoreSnapshots = async (params?: {
     limit: params?.limit ?? 50,
   }
   if (params?.repo_name) queryParams.repo_name = params.repo_name
-  const response = await api.get<{ snapshots: ScoreSnapshot[]; total: number }>('/contributor-board/scoring/snapshots', { params: queryParams })
+  const response = await api.get<{ snapshots: ScoreSnapshot[]; total: number }>('/contributor-board/settings/scoring/snapshots', { params: queryParams })
   return response.data
 }
 
 export const getScoreSnapshot = async (snapshotId: number) => {
-  const response = await api.get<ScoreSnapshot>(`/contributor-board/scoring/snapshots/${snapshotId}`)
+  const response = await api.get<ScoreSnapshot | null>(`/contributor-board/settings/scoring/snapshots/${snapshotId}`)
+  return response.data
+}
+
+export const generateScoreSnapshot = async (versionId: number) => {
+  const response = await api.post<ScoreSnapshot | null>(
+    '/contributor-board/settings/scoring/snapshots/generate',
+    null,
+    { params: { version_id: versionId } }
+  )
   return response.data
 }
 
@@ -883,29 +950,90 @@ export const listScoreAuditLogs = async (params?: {
     limit: params?.limit ?? 100,
   }
   if (params?.repo_name) queryParams.repo_name = params.repo_name
-  const response = await api.get<{ audits: ScoreUpdateAudit[]; total: number }>('/contributor-board/scoring/audit', { params: queryParams })
+  const response = await api.get<{ audits: ScoreUpdateAudit[]; total: number }>('/contributor-board/settings/scoring/audit-log', { params: queryParams })
   return response.data
 }
 
 // ==================== AI 综合分析报表 ====================
 
-export interface AIReport {
-  executive_summary: string
-  team_health: string
-  core_contributors: string
-  new_contributors: string
-  improvement_areas: string
-  recommendations: string[]
-  risk_level: string
-  ai_model: string
-  periods_count: number
-  total_contributors: number
-  generated_at: string
+export interface AIReportGenerateRequest {
+  report_type: 'quarterly' | 'monthly' | 'custom' | 'adhoc'
+  period_start?: string | null
+  period_end?: string | null
+  repo_name?: string | null
+  model?: string | null
+  include_individual_evaluations?: boolean
 }
 
-export const generateAIReport = async (params?: { repo_name?: string | null }) => {
-  const queryParams: Record<string, unknown> = {}
+export interface AIReportListItem {
+  id: number
+  report_name: string
+  report_type: string | null
+  period_start: string | null
+  period_end: string | null
+  generated_at: string
+  generated_by: string | null
+  generation_source: string | null
+  weight_version_id: number | null
+  llm_model: string | null
+  executive_summary: string | null
+  confidence_overall: number | null
+  repo_name: string | null
+  created_at: string
+}
+
+export interface AIReportListResponse {
+  reports: AIReportListItem[]
+  total: number
+}
+
+export interface AIReportDetail {
+  id: number
+  report_name: string
+  report_type: string | null
+  period_start: string | null
+  period_end: string | null
+  generated_at: string
+  generated_by: string | null
+  generation_source: string | null
+  weight_version_id: number | null
+  llm_model: string | null
+  executive_summary: string | null
+  quadrant_analysis?: Record<string, any> | null
+  individual_evaluations?: Array<Record<string, any>> | null
+  recommendations?: Array<Record<string, any>> | null
+  confidence_overall?: number | null
+  report_content?: string | null
+  report_file_url?: string | null
+  schedule_cron?: string | null
+  enabled: boolean
+  repo_name: string | null
+  created_at: string
+  updated_at?: string | null
+}
+
+export const generateAIReport = async (request: AIReportGenerateRequest) => {
+  const response = await api.post<AIReportListItem>('/contributor-board/settings/reports/ai/generate', request)
+  return response.data
+}
+
+export const listAIReports = async (params?: {
+  repo_name?: string | null
+  report_type?: string | null
+  skip?: number
+  limit?: number
+}) => {
+  const queryParams: Record<string, unknown> = {
+    skip: params?.skip ?? 0,
+    limit: params?.limit ?? 50,
+  }
   if (params?.repo_name) queryParams.repo_name = params.repo_name
-  const response = await api.post<AIReport>('/contributor-board/scoring/report/ai-analyze', null, { params: queryParams })
+  if (params?.report_type) queryParams.report_type = params.report_type
+  const response = await api.get<AIReportListResponse>('/contributor-board/settings/reports/ai', { params: queryParams })
+  return response.data
+}
+
+export const getAIReportDetail = async (reportId: number) => {
+  const response = await api.get<AIReportDetail>(`/contributor-board/settings/reports/ai/${reportId}`)
   return response.data
 }

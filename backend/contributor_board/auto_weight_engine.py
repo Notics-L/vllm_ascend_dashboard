@@ -4,6 +4,8 @@ import logging
 import math
 from typing import Any
 
+from sqlalchemy import select as sa_select
+
 logger = logging.getLogger(__name__)
 
 # 权重维度注册表 — 维度键名到指标字段名的映射
@@ -20,6 +22,21 @@ DimensionRegistry = {
 }
 
 DIMENSIONS = list(DimensionRegistry.keys())
+
+
+async def compute_weights_from_db(db: Any, repo_name: str | None = None) -> tuple[dict[str, float], float, dict[str, Any]]:
+    """从数据库查询 ContributorMetrics 并计算权重（封装完整流程）"""
+    from infrastructure.persistence.models import ContributorMetrics
+
+    stmt = sa_select(ContributorMetrics)
+    if repo_name:
+        stmt = stmt.where(ContributorMetrics.repo_name == repo_name)
+
+    result = await db.execute(stmt)
+    metrics_list = result.scalars().all()
+
+    metrics_data = [m.to_weight_dict() for m in metrics_list]
+    return compute_weights(metrics_data)
 
 
 def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float], float, dict[str, Any]]:
@@ -67,7 +84,7 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
 
     cv_weights = _compute_cv_weights(values, DIMENSIONS)
     
-    # 综合置信度：熵分布均匀性 + 方法间相关性 + 样本量
+    # 综合置信度：熵分布均匀性 + 方法间相关性 + 样本量 + 维度稳定性
     entropy_conf = _entropy_distribution_confidence(weights)
     method_conf = _pearson_correlation(
         [weights[d] for d in DIMENSIONS],
@@ -75,10 +92,26 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
     )
     if method_conf < 0:
         method_conf = 0.0
-    # 样本量衰减因子
-    sample_factor = min(1.0, n / 50)
+    # 样本量因子：50人即达到高置信度，200人满分
+    sample_factor = min(1.0, n / 200)
+    sample_bonus = min(0.15, n / 500)
+    # 维度稳定性：有多少维度有有效的数据区分度（std > 0）
+    stable_dims = sum(1 for d in DIMENSIONS if len(set(values[d])) > 1)
+    dimension_factor = stable_dims / len(DIMENSIONS)
     
-    confidence = round(0.4 * entropy_conf + 0.4 * method_conf + 0.2 * sample_factor, 4)
+    confidence = round(
+        0.25 * entropy_conf
+        + 0.25 * method_conf
+        + 0.20 * sample_factor
+        + 0.20 * dimension_factor
+        + sample_bonus,
+        4,
+    )
+    # 保底：有基础数据时不低于 0.40
+    if n >= 10:
+        confidence = max(0.40, confidence)
+    elif n >= 3:
+        confidence = max(0.25, confidence)
 
     data_summary = _build_data_summary(values, DIMENSIONS, n)
 

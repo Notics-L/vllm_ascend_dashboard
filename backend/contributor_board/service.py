@@ -1031,14 +1031,19 @@ class ContributorBoardService:
                 PolicyItemResponse(
                     action=p.action,
                     severity=p.severity,
+                    execution=p.execution,
                     description=p.description,
                     reason=p.reason,
+                    impact_level=p.impact_level,
                 )
                 for p in result.policies
             ],
             has_critical=result.has_critical,
             has_warning=result.has_warning,
             evaluated_at=result.evaluated_at,
+            auto_count=len(result.auto_policies),
+            suggestion_count=len(result.suggestion_policies),
+            alert_count=len(result.alert_policies),
         )
 
     # ---- 扩展趋势数据 ----

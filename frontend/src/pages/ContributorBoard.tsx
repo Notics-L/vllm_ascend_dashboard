@@ -43,14 +43,14 @@ import {
   Typography,
 } from 'antd'
 import {
-   CalendarOutlined,
-   ClockCircleOutlined,
-   CodeOutlined,
-   CloudUploadOutlined,
-   CheckCircleOutlined,
-   CloseCircleOutlined,
-   ColumnHeightOutlined,
-   DeleteOutlined,
+  CalendarOutlined,
+  ClockCircleOutlined,
+  CodeOutlined,
+  CloudUploadOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ColumnHeightOutlined,
+  DeleteOutlined,
   EyeOutlined,
   ExperimentOutlined,
   DownloadOutlined,
@@ -61,18 +61,20 @@ import {
   RocketOutlined,
   SearchOutlined,
   SettingOutlined,
-   SortAscendingOutlined,
-   StarOutlined,
-   StopOutlined,
-   ToolOutlined,
-   TrophyOutlined,
+  SortAscendingOutlined,
+  StarOutlined,
+  StopOutlined,
+  ToolOutlined,
+  TrophyOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
   type BuildOptimizationStats,
   type BuildPlan,
   type ClassificationSummary,
-  type ContributorDetail, ExtendedTrend,
+  type ContributorDetail,
+  ExtendedTrend,
+  getExtendedTrend,
   getBuildFilterOptions,
   getBuildOptimizationStats,
   getBuildPlans,
@@ -82,7 +84,6 @@ import {
   getContributorHeatmap,
   getContributorPolicy,
   getContributorTimeline,
-  getExtendedTrend,
   type ContributorHeatmap as HeatmapType,
   type ContributorDistribution as DistributionType,
   type ContributorTimeline as TimelineType,
@@ -113,15 +114,24 @@ import {
   applyScoringVersion,
   rollbackScoringVersion,
   compareScoringVersions,
-    calculateAutoWeights,
-    aiAnalyzeWeights,
-    exportExcel,
-    exportPdf,
-    generateAIReport,
-   type ScoringVersion,
+  calculateAutoWeights,
+  aiAnalyzeWeights,
+  exportPdfByVersion,
+  generateAIReport,
+  listAIReports,
+  getAIReportDetail,
+  generateScoreSnapshot,
+  type AIReportListItem,
+  type AIReportDetail as AIReportDetailType,
+  type ScoringVersion,
   type VersionCompareResult,
   type ScoreSnapshot,
   type ScoreUpdateAudit,
+  WEIGHT_DIMENSIONS,
+  WEIGHT_LABELS,
+  METHOD_CONFIG,
+  normalizeWeights,
+   type AutoWeightsResult,
   getSyncSchedule,
   updateSyncSchedule,
   type ContributorSyncScheduleConfig,
@@ -224,18 +234,6 @@ const classificationColors: Record<string, string> = {
 }
 
 const chartColors = ['#5b46f5', '#52c41a', '#ff4d4f', '#1890ff', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#d9d9d9']
-
-const weightLabels: Record<string, string> = {
-  merged_pr_weight: 'PR 合并',
-  code_line_weight: '代码行',
-  review_weight: 'Review',
-  approval_weight: 'Approval',
-  core_module_weight: '核心模块',
-  files_changed_weight: '变更文件',
-  bugfix_weight: 'Bug 修复',
-  feature_weight: '新功能',
-  active_duration_weight: '活跃时长',
-}
 
 const quadrantRoleLabels: Record<string, string> = {
   star: '明星',
@@ -2508,6 +2506,13 @@ function ContributorBoardSettingsPage() {
   const [selectedSnapshot, setSelectedSnapshot] = useState<ScoreSnapshot | null>(null)
   const [aiReporting, setAiReporting] = useState(false)
   const [aiReport, setAiReport] = useState<any>(null)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [aiReports, setAiReports] = useState<AIReportListItem[]>([])
+  const [selectedReport, setSelectedReport] = useState<AIReportDetailType | null>(null)
+  const [reportsPage, setReportsPage] = useState(1)
+  const [manualWeights, setManualWeights] = useState<Record<string, number>>({})
+  const [applyMode, setApplyMode] = useState<'draft' | 'apply' | null>(null)
+  const [savingWeights, setSavingWeights] = useState(false)
 
   useEffect(() => {
     loadAll().then()
@@ -2520,12 +2525,13 @@ function ContributorBoardSettingsPage() {
 
   const loadAll = async () => {
     try {
-      const [av, vs, ss, au, st] = await Promise.all([
+      const [av, vs, ss, au, st, reports] = await Promise.all([
         getActiveScoringVersion().catch(() => null),
         listScoringVersions().catch(() => ({ versions: [], total: 0 })),
         listScoreSnapshots().catch(() => ({ snapshots: [], total: 0 })),
         listScoreAuditLogs().catch(() => ({ audits: [], total: 0 })),
         getContributorBoardSettings().catch(() => null),
+        listAIReports({ skip: 0, limit: 50 }).catch(() => ({ reports: [], total: 0 })),
       ])
       setActiveVersion(av)
       setVersions(vs.versions)
@@ -2535,6 +2541,10 @@ function ContributorBoardSettingsPage() {
       setAudits(au.audits)
       setAuditsTotal(au.total)
       setSettings(st)
+      setAiReports(reports.reports)
+      if (st) {
+        setManualWeights({ ...st.scoring_weights } as Record<string, number>)
+      }
     } finally {
       setLoading(false)
     }
@@ -2543,8 +2553,17 @@ function ContributorBoardSettingsPage() {
   const handleAutoWeights = async () => {
     try {
       setCalculating(true)
-      const result = await calculateAutoWeights()
-      message.success(`自动算权完成 (置信度: ${result.confidence.toFixed(2)})，已创建新版本`)
+      const result = await calculateAutoWeights() as AutoWeightsResult
+      // 自动创建版本记录
+      await createScoringVersion({
+        method: 'auto',
+        weights: result.weights as Record<string, number>,
+        data_summary: result.data_summary,
+        confidence_score: result.confidence,
+        description: `自动算权 (置信度: ${result.confidence.toFixed(2)})`,
+        apply_immediately: false,
+      })
+      message.success(`自动算权完成 (置信度: ${result.confidence.toFixed(2)})，已创建新版本（草稿）`)
       await loadAll()
     } catch {
       message.error('自动算权失败')
@@ -2556,8 +2575,29 @@ function ContributorBoardSettingsPage() {
   const handleAIWeights = async () => {
     try {
       setAiCalculating(true)
-      const result = await aiAnalyzeWeights()
-      message.success(`AI 评权完成，已创建新版本 ${result.version} (模型: ${result.ai_model || '默认'})`)
+      const result = await aiAnalyzeWeights() as AutoWeightsResult
+      const aiModel = result.data_summary?.ai_model || '默认'
+      const aiAnalysis = result.data_summary?.ai_analysis || ''
+      if (aiAnalysis) {
+        Modal.info({
+          title: 'AI 评权分析结果',
+          content: <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, maxHeight: 400, overflow: 'auto' }}>{aiAnalysis}</pre>,
+          width: 600,
+        })
+      }
+      // 自动创建版本记录
+      await createScoringVersion({
+        method: 'ai',
+        weights: result.weights as Record<string, number>,
+        data_summary: result.data_summary,
+        confidence_score: result.confidence,
+        ai_prompt: result.data_summary?.ai_prompt as any,
+        ai_response: aiAnalysis as any,
+        ai_model: aiModel as any,
+        description: `AI 评权 (模型: ${aiModel}, 置信度: ${result.confidence.toFixed(2)})`,
+        apply_immediately: false,
+      })
+      message.success(`AI 评权完成 (置信度: ${result.confidence.toFixed(2)}, 模型: ${aiModel})，已创建新版本（草稿）`)
       await loadAll()
     } catch (e: any) {
       const msg = e.response?.data?.msg || 'AI 评权失败，请检查 LLM 配置'
@@ -2571,9 +2611,9 @@ function ContributorBoardSettingsPage() {
     try {
       setAiReporting(true)
       setAiReport(null)
-      const report = await generateAIReport()
-      setAiReport(report)
-      message.success(`AI 综合分析报告生成成功 (模型: ${report.ai_model}, 涵盖 ${report.periods_count} 个周期)`)
+      const report = await generateAIReport({ report_type: 'adhoc' }) as AIReportListItem
+      message.success(`AI 综合分析报告生成成功 (报告: ${report.report_name})`)
+      await loadAll()
     } catch (e: any) {
       const msg = e.response?.data?.detail || 'AI 报告生成失败，请检查 LLM 配置'
       message.error(msg)
@@ -2582,25 +2622,30 @@ function ContributorBoardSettingsPage() {
     }
   }
 
-  const handleExport = async (format: 'excel' | 'pdf') => {
+  const handleLoadReportDetail = async (reportId: number) => {
+    try {
+      setReportLoading(true)
+      const detail = await getAIReportDetail(reportId) as AIReportDetailType
+      setSelectedReport(detail)
+    } catch {
+      message.error('加载报告详情失败')
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
+  const handleExportByVersion = async (versionId: number, format: 'pdf') => {
     try {
       setExporting(true)
-      const snapId = selectedSnapshot?.id || undefined
-      let blob: Blob, filename: string
-      if (format === 'excel') {
-        blob = await exportExcel(snapId)
-        filename = `contributor_report_${new Date().toISOString().slice(0, 10)}.xlsx`
-      } else {
-        blob = await exportPdf(snapId)
-        filename = `contributor_report_${new Date().toISOString().slice(0, 10)}.pdf`
-      }
+      const blob = await exportPdfByVersion(versionId)
+      const filename = `contributor_report_${new Date().toISOString().slice(0, 10)}.pdf`
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = filename
       a.click()
       URL.revokeObjectURL(url)
-      message.success(`报告导出成功 (${format.toUpperCase()})`)
+      message.success('PDF 报告导出成功')
     } catch {
       message.error('导出失败')
     } finally {
@@ -2654,20 +2699,33 @@ function ContributorBoardSettingsPage() {
     }
   }
 
-  const handleSaveWeights = async () => {
+  const handleConfirmSaveWeights = async () => {
     try {
-      if (!settings) return
+      setSavingWeights(true)
+      const applyImmediately = applyMode === 'apply'
+      const normalized = normalizeWeights(manualWeights)
       await createScoringVersion({
         method: 'manual',
-        weights: { ...settings.scoring_weights } as Record<string, number>,
-        description: '手动调整权重',
-        apply_immediately: true,
+        weights: normalized as Record<string, number>,
+        description: '手动调整权重（归一化）',
+        apply_immediately: applyImmediately,
       })
-      message.success('权重修改已保存为新版版本并应用')
+      if (applyImmediately) {
+        message.success('权重修改已创建新版本并立即应用')
+      } else {
+        message.success('权重修改已保存为新版本（草稿），可在版本历史中应用生效')
+      }
+      setApplyMode(null)
       await loadAll()
     } catch {
       message.error('保存失败')
+    } finally {
+      setSavingWeights(false)
     }
+  }
+
+  const handleSaveWeights = () => {
+    setApplyMode('draft')
   }
 
   if (loading) return <Spin size="large" />
@@ -2689,8 +2747,8 @@ function ContributorBoardSettingsPage() {
                   <Descriptions column={1} size="small" bordered>
                     <Descriptions.Item label="版本">{activeVersion.version}</Descriptions.Item>
                     <Descriptions.Item label="确定方式">
-                      <Tag color={activeVersion.method === 'auto' ? 'blue' : activeVersion.method === 'ai' ? 'purple' : 'default'}>
-                        {activeVersion.method === 'auto' ? '📊 自动算权' : activeVersion.method === 'ai' ? '🤖 AI 评权' : '✏️ 手动设置'}
+                       <Tag color={METHOD_CONFIG[activeVersion.method]?.color || 'default'}>
+                         {METHOD_CONFIG[activeVersion.method]?.emoji || ''} {METHOD_CONFIG[activeVersion.method]?.label || activeVersion.method}
                       </Tag>
                     </Descriptions.Item>
                     <Descriptions.Item label="置信度">
@@ -2706,21 +2764,31 @@ function ContributorBoardSettingsPage() {
                   <Empty description="暂无生效版本" />
                 )}
               </Card>
-            </Col>
-             <Col xs={24} md={12}>
+             </Col>
+              <Col xs={24} md={12}>
                <Card title="权重配置" size="small">
-                 {activeVersion ? (
-                   <Descriptions column={2} size="small">
-                     {Object.entries(activeVersion.weights).map(([key, value]) => (
-                       <Descriptions.Item key={key} label={weightLabels[key] || key}>
-                         {typeof value === 'number' ? value.toFixed(4) : value}
-                       </Descriptions.Item>
-                     ))}
-                   </Descriptions>
-                 ) : <Empty />}
+                 {activeVersion ? (() => {
+                    const entries = Object.entries(activeVersion.weights)
+                    const maxVal = Math.max(...entries.map(([, v]) => Math.abs(v as number)))
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {entries.map(([key, value]) => (
+                          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Text style={{ width: 72, flexShrink: 0, fontSize: 12 }}>{WEIGHT_LABELS[key as keyof typeof WEIGHT_LABELS] || key}</Text>
+                            <div style={{ flex: 1, background: '#f0f0f0', borderRadius: 4, height: 16, overflow: 'hidden' }}>
+                              <div style={{ width: `${maxVal > 0 ? (Math.abs(value as number) / maxVal) * 100 : 0}%`, background: `linear-gradient(90deg, #722ed1, #b745d3)`, height: '100%', borderRadius: 4, minWidth: 2 }} />
+                            </div>
+                            <Text strong style={{ width: 56, textAlign: 'right', flexShrink: 0, fontSize: 12 }}>
+                              {typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : value}
+                            </Text>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })() : <Empty />}
                </Card>
-            </Col>
-          </Row>
+             </Col>
+           </Row>
 
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col span={12}>
@@ -2735,8 +2803,8 @@ function ContributorBoardSettingsPage() {
                   <Button onClick={handleRecalculate} danger ghost>
                     仅重算分数
                   </Button>
-                  <Button onClick={handleGenerateAIReport} loading={aiReporting} type="primary" ghost style={{ borderColor: '#722ed1', color: '#722ed1' }}>
-                    AI 综合报告
+                  <Button onClick={handleGenerateAIReport} loading={aiReporting} type="primary" style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
+                    📑 AI 综合报告
                   </Button>
                 </Space>
                 <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
@@ -2749,9 +2817,7 @@ function ContributorBoardSettingsPage() {
                 <Space>
                   <Text strong>当前版本</Text>
                   <Tag color="green">{activeVersion?.version || 'N/A'}</Tag>
-                  {activeVersion?.method === 'auto' && <Tag>自动算权</Tag>}
-                  {activeVersion?.method === 'manual' && <Tag color="blue">手动设置</Tag>}
-                  {activeVersion?.method === 'ai' && <Tag color="orange">AI 评权</Tag>}
+                  {activeVersion && <Tag color={METHOD_CONFIG[activeVersion.method]?.color}>{METHOD_CONFIG[activeVersion.method]?.emoji} {METHOD_CONFIG[activeVersion.method]?.label}</Tag>}
                 </Space>
                 <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
                   {activeVersion?.activated_at ? `生效于 ${activeVersion.activated_at.slice(0, 10)}` : '尚未生效'}
@@ -2760,39 +2826,56 @@ function ContributorBoardSettingsPage() {
             </Col>
           </Row>
 
-          {settings && (
-            <Card title="手动调整权重" extra={<Text type="secondary" style={{ fontSize: 12 }}>* 手动模式使用倍数量纲，自动/AI 模式权重归一化（和为1）</Text>} size="small" style={{ marginTop: 16 }}>
-              <Row gutter={[16, 16]}>
-                {[
-                  { key: 'merged_pr_weight' as const, label: 'PR 合并权重', min: 0, max: 30, step: 1 },
-                  { key: 'code_line_weight' as const, label: '代码行权重', min: 0, max: 5, step: 0.1 },
-                  { key: 'review_weight' as const, label: 'Review 权重', min: 0, max: 15, step: 0.5 },
-                  { key: 'approval_weight' as const, label: 'Approval 权重', min: 0, max: 15, step: 0.5 },
-                  { key: 'core_module_weight' as const, label: '核心模块权重', min: 0, max: 20, step: 1 },
-                ].map(dw => (
-                  <Col span={12} key={dw.key}>
-                    <div style={{ marginBottom: 4 }}>
-                      <Text style={{ fontWeight: 500 }}>{dw.label}</Text>
-                      <Text strong style={{ marginLeft: 8, fontSize: 14 }}>
-                        {settings.scoring_weights[dw.key]}
-                      </Text>
-                    </div>
-                    <Slider value={settings.scoring_weights[dw.key]} min={dw.min} max={dw.max} step={dw.step}
-                      onChange={v => { settings.scoring_weights[dw.key] = v; setSettings({ ...settings }) }}
-                      tooltip={{ formatter: (val) => `${val}` }} />
-                  </Col>
-                ))}
-              </Row>
-              <div style={{ marginTop: 12, textAlign: 'center' }}>
-                <Button type="primary" size="large" onClick={handleSaveWeights}>
-                  保存修改 — 创建新版本
-                </Button>
-                <Text style={{ marginLeft: 16, color: '#999', fontSize: 12 }}>
-                  保存后将创建新的权重版本，需手动生效后才会应用到评分
-                </Text>
-              </div>
-            </Card>
-          )}
+            {settings && (
+             <Card title="手动调整权重" extra={<Text type="secondary" style={{ fontSize: 12 }}>* 量纲：倍数量纲，保存后系统自动归一化</Text>} size="small" style={{ marginTop: 16 }}>
+               <Row gutter={[16, 16]}>
+                 {WEIGHT_DIMENSIONS.map(dw => (
+                   <Col span={12} key={dw.key}>
+                     <div style={{ marginBottom: 4 }}>
+                       <Text style={{ fontWeight: 500 }}>{dw.label}权重</Text>
+                       <Text strong style={{ marginLeft: 8, fontSize: 14 }}>
+                         {manualWeights[dw.key]?.toFixed(2) ?? settings.scoring_weights[dw.key]}
+                       </Text>
+                     </div>
+                     <Slider value={manualWeights[dw.key] ?? settings.scoring_weights[dw.key]} min={dw.min} max={dw.max} step={dw.step}
+                       onChange={v => setManualWeights(prev => ({ ...prev, [dw.key]: v }))}
+                       tooltip={{ formatter: (val) => `${val}` }} />
+                   </Col>
+                 ))}
+               </Row>
+               <div style={{ marginTop: 12, textAlign: 'center' }}>
+                 <Button type="primary" onClick={handleSaveWeights}>
+                   保存修改 — 创建新版本
+                 </Button>
+                 <Text style={{ marginLeft: 16, color: '#999', fontSize: 12 }}>
+                   保存后将创建新的手动权重版本（草稿），可在版本历史中应用生效
+                 </Text>
+               </div>
+             </Card>
+            )}
+
+          <Modal
+            title="确认保存权重"
+            open={applyMode !== null}
+            onCancel={() => setApplyMode(null)}
+            footer={[
+              <Button key="draft" onClick={() => { setApplyMode('draft'); handleConfirmSaveWeights(); }}>仅创建（草稿）</Button>,
+              <Button key="apply" type="primary" onClick={() => { setApplyMode('apply'); handleConfirmSaveWeights(); }} loading={savingWeights}>
+                立即应用
+              </Button>,
+            ]}>
+            <div style={{ marginBottom: 12 }}>
+              <Radio.Group value={applyMode} onChange={e => setApplyMode(e.target.value)}>
+                <Radio.Button value="draft">仅创建 — 新版本保存为草稿，不立即生效</Radio.Button>
+                <Radio.Button value="apply">立即应用 — 新版本立即生效，自动重算所有分数</Radio.Button>
+              </Radio.Group>
+            </div>
+            {applyMode === 'draft' ? (
+              <Alert message="仅创建" description="新版本将保存为草稿状态，不会立即生效。您可以在「版本历史」Tab 中对比和应用。" type="info" showIcon />
+            ) : (
+              <Alert message="立即应用" description="新版本将立即成为生效版本，当前版本将被归档。系统将自动重算所有贡献者的分数并生成快照。" type="warning" showIcon />
+            )}
+          </Modal>
         </Tabs.TabPane>
 
         {/* Tab 2: 版本历史 */}
@@ -2813,11 +2896,11 @@ function ContributorBoardSettingsPage() {
             <Card title={`对比: ${compareResult.version_a.version} vs ${compareResult.version_b.version}`} size="small" style={{ marginBottom: 16 }}
               extra={<Button size="small" onClick={() => setCompareResult(null)}>关闭</Button>}>
               <Descriptions column={4} size="small" bordered>
-                {Object.entries(compareResult.weight_diff).map(([key, diff]) => (
-                  <Descriptions.Item key={key} label={key}>
-                    {diff.from} → {diff.to} ({diff.change_pct > 0 ? '+' : ''}{diff.change_pct}%)
-                  </Descriptions.Item>
-                ))}
+                  {Object.entries(compareResult.weight_diff).map(([key, diff]) => (
+                    <Descriptions.Item key={key} label={WEIGHT_LABELS[key as keyof typeof WEIGHT_LABELS] || key}>
+                      {diff.from} → {diff.to} ({diff.change_pct > 0 ? '+' : ''}{diff.change_pct.toFixed(1)}%)
+                    </Descriptions.Item>
+                  ))}
               </Descriptions>
               {compareResult.score_impact?.quadrant_changes && compareResult.score_impact.quadrant_changes.length > 0 && (
                 <div style={{ marginTop: 8 }}>
@@ -2840,8 +2923,8 @@ function ContributorBoardSettingsPage() {
                   <Space>
                     <Text strong>{v.version}</Text>
                     <Tag color={v.status === 'active' ? 'green' : v.status === 'draft' ? 'orange' : 'default'}>{v.status}</Tag>
-                    <Tag color={v.method === 'auto' ? 'blue' : v.method === 'ai' ? 'purple' : 'default'}>
-                      {v.method}
+                     <Tag color={METHOD_CONFIG[v.method]?.color || 'default'}>
+                       {METHOD_CONFIG[v.method]?.emoji || ''} {METHOD_CONFIG[v.method]?.label || v.method}
                     </Tag>
                     {v.confidence_score != null && <Text type="secondary">置信度: {v.confidence_score.toFixed(2)}</Text>}
                   </Space>
@@ -2850,12 +2933,14 @@ function ContributorBoardSettingsPage() {
                     <Text type="secondary" style={{ marginLeft: 8 }}>{new Date(v.created_at).toLocaleString('zh-CN')}</Text>
                     {v.description && <Text style={{ marginLeft: 8 }}>{v.description}</Text>}
                   </div>
-                  <Space size="small">
+                  <Space size="small" style={{ marginBottom: 8 }}>
                     {v.status !== 'active' && (
                       <Button size="small" onClick={() => handleRollback(v.id)} loading={applying === v.id}>
                         {v.status === 'draft' ? '应用' : '回滚'}
                       </Button>
                     )}
+                     <Button size="small" type="link" onClick={() => handleExportByVersion(v.id, 'pdf')}>导出 PDF</Button>
+                    <Button size="small" type="link" onClick={() => generateScoreSnapshot(v.id).then(r => { if (r) { message.success('快照生成成功'); loadAll(); } })}>生成快照</Button>
                   </Space>
                   {v.ai_response && (
                     <div style={{ marginTop: 8, padding: 8, background: '#f5f5f5', borderRadius: 4 }}>
@@ -2873,11 +2958,8 @@ function ContributorBoardSettingsPage() {
         <Tabs.TabPane tab="分数快照" key="snapshots">
           <div style={{ marginBottom: 12 }}>
             <Space>
-              <Button size="small" onClick={() => handleExport('excel')} loading={exporting}>
-                导出 Excel
-              </Button>
-              <Button size="small" onClick={() => handleExport('pdf')} loading={exporting}>
-                导出 PDF
+              <Button size="small" onClick={() => activeVersion && handleExportByVersion(activeVersion.id, 'pdf')} loading={exporting}>
+                导出 PDF (当前版本)
               </Button>
             </Space>
           </div>
@@ -2888,12 +2970,13 @@ function ContributorBoardSettingsPage() {
             pagination={{ pageSize: 10, showSizeChanger: true }}
             columns={[
               { title: 'ID', dataIndex: 'id', width: 60 },
-              { title: '日期', dataIndex: 'snapshot_date', width: 120 },
+              { title: '日期', width: 180, render: (r: ScoreSnapshot) => r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : (r.snapshot_date || '-') },
               { title: '贡献者数', dataIndex: 'contributor_count', width: 100 },
               { title: '均值', render: (r: ScoreSnapshot) => r.statistics?.score_mean?.toFixed?.(1) || '-', width: 80 },
               { title: '操作人', dataIndex: 'created_by', width: 100 },
               {
                 title: '操作',
+                width: 80,
                 render: (r: ScoreSnapshot) => (
                   <Button size="small" onClick={() => setSelectedSnapshot(r)}>查看</Button>
                 ),
@@ -2925,10 +3008,10 @@ function ContributorBoardSettingsPage() {
                 size="small"
                 pagination={{ pageSize: 10 }}
                 columns={[
-                  { title: '用户', dataIndex: 'login' },
-                  { title: '分数', dataIndex: 'score', sorter: (a: any, b: any) => a.score - b.score },
-                  { title: '错误分', dataIndex: 'error_score' },
-                  { title: '象限', dataIndex: 'quadrant', render: (q: string) => <Tag color={quadrantColors[q]}>{quadrantLabels[q] || q}</Tag> },
+                  { title: '用户', dataIndex: 'login', width: 180 },
+                  { title: '分数', dataIndex: 'score', width: 100, sorter: (a: any, b: any) => a.score - b.score, render: (v: number) => Number(v).toFixed(2) },
+                  { title: '错误分', dataIndex: 'error_score', width: 100 },
+                  { title: '象限', dataIndex: 'quadrant', width: 100, render: (q: string) => <Tag color={quadrantColors[q]}>{quadrantLabels[q] || q}</Tag> },
                 ]}
               />
             </Card>
@@ -2971,88 +3054,142 @@ function ContributorBoardSettingsPage() {
 
         {/* Tab 5: AI 综合报告 */}
         <Tabs.TabPane tab="AI 综合报告" key="ai-report">
-          <Card>
-            <div style={{ textAlign: 'center', padding: '20px 0' }}>
-              <Button type="primary" onClick={handleGenerateAIReport} loading={aiReporting} size="large"
-                style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
-                生成 AI 综合分析报告
-              </Button>
-              <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
-                基于多周期四象限数据，调用大模型生成团队健康度分析和决策建议
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <Text strong>生成 AI 综合分析报告</Text>
+                <div style={{ fontSize: 12, color: '#999' }}>
+                  基于多周期四象限数据，调用大模型生成团队健康度分析和决策建议
+                </div>
               </div>
+              <Button type="primary" onClick={handleGenerateAIReport} loading={aiReporting}
+                style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
+                生成新报告
+              </Button>
             </div>
           </Card>
 
-          {aiReport && (
-            <div style={{ marginTop: 16 }}>
-              <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
-                <Descriptions.Item label="模型">
-                  <Tag color="purple">{aiReport.ai_model || 'N/A'}</Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="分析周期数">
-                  {aiReport.periods_count}
-                </Descriptions.Item>
-                <Descriptions.Item label="贡献者总数">
-                  {aiReport.total_contributors}
-                </Descriptions.Item>
-                <Descriptions.Item label="风险等级">
-                  {aiReport.risk_level === 'high' && <Tag color="red">高风险</Tag>}
-                  {aiReport.risk_level === 'medium' && <Tag color="orange">中等风险</Tag>}
-                  {aiReport.risk_level === 'low' && <Tag color="green">低风险</Tag>}
-                </Descriptions.Item>
-                <Descriptions.Item label="生成时间">
-                  {aiReport.generated_at ? new Date(aiReport.generated_at).toLocaleString('zh-CN') : 'N/A'}
-                </Descriptions.Item>
-              </Descriptions>
+          <Spin spinning={reportLoading}>
+            {selectedReport ? (
+              <div>
+                <Button size="small" onClick={() => setSelectedReport(null)} style={{ marginBottom: 12 }}>
+                  ← 返回列表
+                </Button>
 
-              <Alert
-                message="Executive Summary"
-                description={aiReport.executive_summary}
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
+                <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
+                  <Descriptions.Item label="报告名称">
+                    <Text strong>{selectedReport.report_name}</Text>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="报告类型">
+                    <Tag>{selectedReport.report_type || 'adhoc'}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="模型">
+                    <Tag color="purple">{selectedReport.llm_model || 'N/A'}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="置信度">
+                    {selectedReport.confidence_overall != null ? (
+                      <Progress percent={Math.round(selectedReport.confidence_overall * 100)} size="small" />
+                    ) : <Text type="secondary">N/A</Text>}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="操作人">
+                    {selectedReport.generated_by || 'N/A'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="生成时间">
+                    {selectedReport.generated_at ? new Date(selectedReport.generated_at).toLocaleString('zh-CN') : 'N/A'}
+                  </Descriptions.Item>
+                </Descriptions>
+
+                {selectedReport.executive_summary && (
+                  <Alert
+                    message="Executive Summary"
+                    description={selectedReport.executive_summary}
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
+
+                {selectedReport.report_content && (
+                  <Card title="完整报告内容" size="small" style={{ marginBottom: 16 }}>
+                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{selectedReport.report_content}</Paragraph>
+                  </Card>
+                )}
+
+                {selectedReport.quadrant_analysis && (
+                  <Card title="四象限分析" size="small" style={{ marginBottom: 16 }}>
+                    <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>
+                      {JSON.stringify(selectedReport.quadrant_analysis, null, 2)}
+                    </pre>
+                  </Card>
+                )}
+
+                {selectedReport.recommendations && selectedReport.recommendations.length > 0 && (
+                  <Card title="决策建议" size="small">
+                    {selectedReport.recommendations.map((rec: Record<string, any>, i: number) => (
+                      <div key={i} style={{ padding: '8px 12px', background: '#f5f0ff', borderRadius: 6, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <div style={{
+                          width: 24, height: 24, borderRadius: '50%',
+                          background: 'linear-gradient(135deg, #722ed1, #b745d3)',
+                          color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 12, fontWeight: 'bold', flexShrink: 0
+                        }}>{i + 1}</div>
+                        <Text style={{ fontSize: 13 }}>
+                          {rec.description || rec.title || JSON.stringify(rec)}
+                        </Text>
+                      </div>
+                    ))}
+                  </Card>
+                )}
+
+                {selectedReport.individual_evaluations && selectedReport.individual_evaluations.length > 0 && (
+                  <Card title="个人评价" size="small" style={{ marginTop: 16 }}>
+                    <Table
+                      dataSource={selectedReport.individual_evaluations}
+                      rowKey="login"
+                      size="small"
+                      pagination={{ pageSize: 5 }}
+                      columns={[
+                        { title: '用户', dataIndex: 'login' },
+                        { title: '评分', dataIndex: 'score' },
+                        { title: '评价', dataIndex: 'evaluation', ellipsis: true },
+                      ]}
+                    />
+                  </Card>
+                )}
+              </div>
+            ) : (
+              <Table
+                dataSource={aiReports}
+                rowKey="id"
+                size="small"
+                pagination={{ pageSize: 10 }}
+                columns={[
+                  { title: '报告名称', dataIndex: 'report_name', width: 200 },
+                  { title: '类型', dataIndex: 'report_type', width: 100 },
+                  {
+                    title: '置信度',
+                    dataIndex: 'confidence_overall',
+                    width: 120,
+                    render: (v: number | null) => v != null
+                      ? <Progress percent={Math.round(v * 100)} size="small" />
+                      : '-',
+                  },
+                  { title: '模型', dataIndex: 'llm_model', width: 120 },
+                  { title: '操作人', dataIndex: 'generated_by', width: 100 },
+                  { title: '生成时间', render: (_: unknown, r: AIReportListItem) => new Date(r.generated_at).toLocaleString('zh-CN'), width: 180 },
+                  {
+                    title: '操作',
+                    render: (_: unknown, r: AIReportListItem) => (
+                      <Space>
+                        <Button size="small" type="link" onClick={() => handleLoadReportDetail(r.id)}>查看</Button>
+                      </Space>
+                    ),
+                    width: 120,
+                  },
+                ]}
               />
-
-              <Row gutter={[16, 16]}>
-                <Col span={12}>
-                  <Card title="团队健康度分析" size="small">
-                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.team_health}</Paragraph>
-                  </Card>
-                </Col>
-                <Col span={12}>
-                  <Card title="核心贡献者稳定性" size="small">
-                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.core_contributors}</Paragraph>
-                  </Card>
-                </Col>
-                <Col span={12}>
-                  <Card title="新增贡献者融入分析" size="small">
-                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.new_contributors}</Paragraph>
-                  </Card>
-                </Col>
-                <Col span={12}>
-                  <Card title="需要关注的问题" size="small">
-                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{aiReport.improvement_areas}</Paragraph>
-                  </Card>
-                </Col>
-              </Row>
-
-              {aiReport.recommendations && aiReport.recommendations.length > 0 && (
-                <Card title="决策建议" style={{ marginTop: 16 }} size="small">
-                  {aiReport.recommendations.map((rec: string, i: number) => (
-                    <div key={i} style={{ padding: '8px 12px', background: '#f5f0ff', borderRadius: 6, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                      <div style={{
-                        width: 24, height: 24, borderRadius: '50%',
-                        background: 'linear-gradient(135deg, #722ed1, #b745d3)',
-                        color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: 12, fontWeight: 'bold', flexShrink: 0
-                      }}>{i + 1}</div>
-                      <Text style={{ fontSize: 13 }}>{rec}</Text>
-                    </div>
-                  ))}
-                </Card>
-              )}
-            </div>
-          )}
+            )}
+          </Spin>
         </Tabs.TabPane>
       </Tabs>
     </Spin>
@@ -3214,25 +3351,159 @@ function ContributorDetailPage() {
       </Row>
 
       {policy && policy.policies.length > 0 && (
-        <Card title="自动化策略建议" style={{ marginTop: 16 }}>
-          {policy.has_critical && (
-            <Alert message="存在需要立即处理的关键策略" type="error" showIcon style={{ marginBottom: 16 }} />
-          )}
-          {policy.has_warning && !policy.has_critical && (
-            <Alert message="存在需要关注的改进策略" type="warning" showIcon style={{ marginBottom: 16 }} />
-          )}
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            {policy.policies.map((p, i) => (
-              <Alert
-                key={i}
-                message={p.description}
-                description={p.reason}
-                type={p.severity === 'critical' ? 'error' : p.severity === 'warning' ? 'warning' : 'info'}
-                showIcon
-              />
-            ))}
-          </Space>
-        </Card>
+        <>
+          {/* ── 自动化策略面板 ── */}
+          <Card
+            style={{
+              marginTop: 16,
+              borderRadius: 12,
+              borderTop: '3px solid',
+              borderImage: 'linear-gradient(90deg, #722ed1, #b745d3) 1',
+              overflow: 'hidden',
+            }}
+            title={
+              <Space>
+                <RocketOutlined style={{ color: '#722ed1', fontSize: 18 }} />
+                <span style={{ fontWeight: 600, fontSize: 15 }}>自动化策略中心</span>
+                <Tag
+                  color={
+                    policy.has_critical ? '#ff4d4f' : policy.has_warning ? '#faad14' : '#722ed1'
+                  }
+                  style={{ fontWeight: 500 }}
+                >
+                  {policy.has_critical ? '需立即关注' : policy.has_warning ? '有待改进' : '运行良好'}
+                </Tag>
+              </Space>
+            }
+            extra={
+              <Space size="small">
+                <Tag color="blue" style={{ border: 'none' }}>
+                  自动 {policy.auto_count}
+                </Tag>
+                <Tag color="purple" style={{ border: 'none' }}>
+                  建议 {policy.suggestion_count}
+                </Tag>
+                {policy.alert_count > 0 && (
+                  <Tag color="red" style={{ border: 'none' }}>
+                    告警 {policy.alert_count}
+                  </Tag>
+                )}
+              </Space>
+            }
+          >
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              {/* 告警区域 */}
+              {policy.policies.filter(p => p.execution === 'alert').length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#ff4d4f', marginBottom: 6 }}>
+                    <CloseCircleOutlined /> 需关注 ({policy.alert_count})
+                  </div>
+                  <Row gutter={[8, 8]}>
+                    {policy.policies.filter(p => p.execution === 'alert').map((p, i) => (
+                      <Col span={12} key={`alert-${i}`}>
+                        <div style={{
+                          padding: '8px 12px', borderRadius: 6,
+                          background: '#fff2f0', border: '1px solid #ffccc7',
+                        }}>
+                          <Space size={4} style={{ fontSize: 12 }}>
+                            <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                            <span style={{ fontWeight: 500, flex: 1 }}>{p.description}</span>
+                            <Tag color="error" style={{ fontSize: 10, lineHeight: '16px' }}>{p.impact_level}</Tag>
+                          </Space>
+                          <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 4, paddingLeft: 18 }}>{p.reason}</div>
+                        </div>
+                      </Col>
+                    ))}
+                  </Row>
+                </div>
+              )}
+
+              {/* 自动执行区域 */}
+              {policy.policies.filter(p => p.execution === 'auto').length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#52c41a', marginBottom: 6 }}>
+                    <CheckCircleOutlined /> 已自动执行 ({policy.auto_count})
+                  </div>
+                  <Row gutter={[8, 8]}>
+                    {policy.policies.filter(p => p.execution === 'auto').map((p, i) => (
+                      <Col span={12} key={`auto-${i}`}>
+                        <div style={{
+                          padding: '8px 12px', borderRadius: 6,
+                          background: '#f6ffed', border: '1px solid #d9f7be',
+                        }}>
+                          <Space size={4} style={{ fontSize: 12 }}>
+                            <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                            <span style={{ fontWeight: 500, flex: 1 }}>{p.description}</span>
+                            <Tag color="success" style={{ fontSize: 10, lineHeight: '16px' }}>自动</Tag>
+                          </Space>
+                          <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 4, paddingLeft: 18 }}>{p.reason}</div>
+                        </div>
+                      </Col>
+                    ))}
+                  </Row>
+                </div>
+              )}
+
+              {/* 建议执行区域 */}
+              {policy.policies.filter(p => p.execution === 'suggestion').length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#722ed1', marginBottom: 6 }}>
+                    <FlagOutlined /> 推荐建议 ({policy.suggestion_count})
+                  </div>
+                  <Row gutter={[8, 8]}>
+                    {policy.policies.filter(p => p.execution === 'suggestion').map((p, i) => (
+                      <Col span={12} key={`sug-${i}`}>
+                        <div style={{
+                          padding: '8px 12px', borderRadius: 6,
+                          background: '#faf5ff', border: '1px solid #d3adf7',
+                        }}>
+                          <Space size={4} style={{ fontSize: 12 }}>
+                            <StarOutlined style={{ color: '#722ed1' }} />
+                            <span style={{ fontWeight: 500, flex: 1 }}>{p.description}</span>
+                            <Tag color={
+                              p.impact_level === '高' ? 'error' : p.impact_level === '中' ? 'warning' : 'default'
+                            } style={{ fontSize: 10, lineHeight: '16px' }}>{p.impact_level}</Tag>
+                            <Button size="small" type="primary" style={{
+                              height: 20, padding: '0 6px', fontSize: 11,
+                              background: '#722ed1', borderColor: '#722ed1',
+                            }}>采纳</Button>
+                          </Space>
+                          <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 4, paddingLeft: 18 }}>{p.reason}</div>
+                        </div>
+                      </Col>
+                    ))}
+                  </Row>
+                </div>
+              )}
+
+              {/* 兜底 info */}
+              {policy.policies.filter(p => !['alert', 'auto', 'suggestion'].includes(p.execution)).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1890ff', marginBottom: 6 }}>
+                    <CheckCircleOutlined /> 其他
+                  </div>
+                  <Row gutter={[8, 8]}>
+                    {policy.policies.filter(p => !['alert', 'auto', 'suggestion'].includes(p.execution)).map((p, i) => (
+                      <Col span={12} key={`other-${i}`}>
+                        <div style={{
+                          padding: '8px 12px', borderRadius: 6,
+                          background: '#f0f5ff', border: '1px solid #b6e0ff',
+                        }}>
+                          <Space size={4} style={{ fontSize: 12 }}>
+                            <CheckCircleOutlined style={{ color: '#1890ff' }} />
+                            <span style={{ fontWeight: 500, flex: 1 }}>{p.description}</span>
+                            <Tag color="blue" style={{ fontSize: 10, lineHeight: '16px' }}>信息</Tag>
+                          </Space>
+                          <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 4, paddingLeft: 18 }}>{p.reason}</div>
+                        </div>
+                      </Col>
+                    ))}
+                  </Row>
+                </div>
+              )}
+            </Space>
+          </Card>
+        </>
       )}
 
       <Divider />

@@ -98,29 +98,12 @@ async def calculate_auto_weights(
     user: str = Depends(_get_user),
 ):
     """触发自动算权 — 创建新版本并自动生效"""
-    from sqlalchemy import select as sa_select
-    from infrastructure.persistence.models import ContributorMetrics as CM
+    from contributor_board.auto_weight_engine import compute_weights_from_db
 
-    result = await db.execute(sa_select(CM))
-    metrics_list = result.scalars().all()
-
-    if not metrics_list:
+    weights, confidence, data_summary = await compute_weights_from_db(db)
+    if not data_summary.get("contributor_count"):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="No contributor metrics data available")
-
-    metrics_data = []
-    for m in metrics_list:
-        metrics_data.append({
-            "merged_pr_count": m.merged_pr_count or 0,
-            "code_additions": m.code_additions or 0,
-            "review_count": m.review_count or 0,
-            "approval_count": m.approval_count or 0,
-            "core_module_count": m.core_module_count or 0,
-            "files_changed_count": getattr(m, 'files_changed_count', None) or m.commit_count or 0,
-            "commit_count": m.commit_count or 0,
-        })
-
-    weights, confidence, data_summary = compute_weights(metrics_data)
 
     svc = _get_service()
     from contributor_board.scoring_version_schemas import ScoringVersionCreateRequest
@@ -153,31 +136,13 @@ async def ai_analyze_weights(
     model: str | None = Query(None, description="指定 LLM 模型名"),
 ):
     """AI 辅助权重分析 — 调用 LLM 给出权重建议并创建新版本"""
-    from sqlalchemy import select as sa_select
-    from infrastructure.persistence.models import ContributorMetrics as CM
-    from contributor_board.auto_weight_engine import compute_weights
+    from contributor_board.auto_weight_engine import compute_weights_from_db
     from contributor_board.ai_weight_engine import analyze_weights_with_ai
 
-    result = await db.execute(sa_select(CM))
-    metrics_list = result.scalars().all()
-
-    if not metrics_list:
+    _, _, data_summary = await compute_weights_from_db(db)
+    if not data_summary.get("contributor_count"):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="No contributor metrics data available")
-
-    metrics_data = []
-    for m in metrics_list:
-        metrics_data.append({
-            "merged_pr_count": m.merged_pr_count or 0,
-            "code_additions": m.code_additions or 0,
-            "review_count": m.review_count or 0,
-            "approval_count": m.approval_count or 0,
-            "core_module_count": m.core_module_count or 0,
-            "files_changed_count": getattr(m, 'files_changed_count', None) or m.commit_count or 0,
-            "commit_count": m.commit_count or 0,
-        })
-
-    _, _, data_summary = compute_weights(metrics_data)
 
     ai_weights, analysis, used_model = await analyze_weights_with_ai(db, data_summary, model)
 

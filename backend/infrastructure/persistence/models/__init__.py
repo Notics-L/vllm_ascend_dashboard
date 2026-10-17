@@ -43,6 +43,7 @@ __all__ = [
     "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
     "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
     "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
+    "ContributorAIReport",
 ]
 
 
@@ -1048,6 +1049,18 @@ class ContributorMetrics(Base):
         UniqueConstraint('contributor_login', 'period_start', 'period_end', name='uq_contributor_metrics_period'),
     )
 
+    def to_weight_dict(self) -> dict:
+        """提取自动算权所需的9个维度数据"""
+        return {
+            "merged_pr_count": self.merged_pr_count or 0,
+            "code_additions": self.code_additions or 0,
+            "review_count": self.review_count or 0,
+            "approval_count": self.approval_count or 0,
+            "core_module_count": self.core_module_count or 0,
+            "files_changed_count": self.files_changed_count if hasattr(self, "files_changed_count") else 0,
+            "commit_count": self.commit_count or 0,
+        }
+
 
 class ContributorBoardSettings(Base):
     """贡献者看板设置表"""
@@ -1233,3 +1246,36 @@ class ContributorScoreUpdateAudit(Base):
 
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     created_by = Column(String(100), nullable=True)
+
+
+class ContributorAIReport(Base):
+    """AI 综合分析报告表"""
+    __tablename__ = "contributor_ai_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_name = Column(String(300), nullable=False)
+    report_type = Column(String(50), nullable=True, comment="quarterly/monthly/custom/adhoc")
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    generated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    generated_by = Column(String(100), nullable=True)
+    generation_source = Column(String(20), nullable=True, comment="manual/scheduled/ai_auto")
+    weight_version_id = Column(Integer, ForeignKey("contributor_scoring_version.id"), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    executive_summary = Column(Text, nullable=True)
+    quadrant_analysis = Column(JSON, nullable=True)
+    individual_evaluations = Column(JSON, nullable=True)
+    recommendations = Column(JSON, nullable=True)
+    confidence_overall = Column(Float, nullable=True)
+    report_content = Column(Text, nullable=True)
+    report_file_url = Column(String(500), nullable=True)
+    schedule_cron = Column(String(100), nullable=True)
+    enabled = Column(Boolean, default=True)
+    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        Index("idx_ai_report_period", "period_start", "period_end"),
+        Index("idx_ai_report_created", "generated_at"),
+    )

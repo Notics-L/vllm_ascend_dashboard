@@ -502,6 +502,32 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Failed to add contributor incremental sync job: {e}")
 
+        # Monthly auto weight evaluation — 1st of each month at 03:00
+        try:
+            self.scheduler.add_job(
+                self._auto_evaluate_weights_job,
+                trigger=CronTrigger(day=1, hour=3, minute=0, timezone=self._timezone),
+                id="contributor_auto_weights",
+                name="Contributor Auto Weight Evaluation",
+                replace_existing=True,
+            )
+            logger.info("Contributor auto weight evaluation scheduled monthly on 1st at 03:00")
+        except Exception as e:
+            logger.error(f"Failed to add auto weight evaluation job: {e}")
+
+        # Monthly AI report generation — 1st of each month at 06:00
+        try:
+            self.scheduler.add_job(
+                self._generate_scheduled_ai_report_job,
+                trigger=CronTrigger(day=1, hour=6, minute=0, timezone=self._timezone),
+                id="contributor_ai_report",
+                name="Contributor AI Report Generation",
+                replace_existing=True,
+            )
+            logger.info("Contributor AI report generation scheduled monthly on 1st at 06:00")
+        except Exception as e:
+            logger.error(f"Failed to add AI report generation job: {e}")
+
     async def apply_db_config_overrides(self) -> None:
         """从数据库读取调度配置，覆盖默认值（异步，仅在事件循环内调用）。
 
@@ -1544,6 +1570,81 @@ class DataSyncScheduler:
             logger.info("Scheduled incremental sync triggered, record_id=%s", resp.record_id)
         except Exception as e:
             logger.error("Scheduled contributor incremental sync failed: %s", e, exc_info=True)
+
+    @staticmethod
+    async def _auto_evaluate_weights_job():
+        """Monthly automatic weight evaluation using entropy method.
+
+        Creates a new scoring version with auto-computed weights.
+        Does NOT apply it automatically — requires manual review and apply.
+        """
+        from contributor_board.auto_weight_engine import compute_weights_from_db
+        from contributor_board.scoring_version_service import ScoringVersionService
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+
+        try:
+            logger.info("Starting scheduled auto weight evaluation")
+            async with AsyncSessionLocal() as db:
+                weights, confidence, data_summary = await compute_weights_from_db(db)
+
+                if data_summary.get("contributor_count", 0) < 2:
+                    logger.warning("Insufficient metrics data for auto evaluation (%d contributors)", data_summary.get("contributor_count", 0))
+                    return
+
+                svc = ScoringVersionService()
+                await svc.create_version(
+                    db,
+                    request=type('Request', (), {
+                        'method': 'auto',
+                        'weights': weights,
+                        'data_summary': data_summary,
+                        'confidence_score': confidence,
+                        'description': f'定时自动算权 ({datetime.now(UTC).strftime("%Y-%m-%d")})',
+                        'repo_name': None,
+                        'apply_immediately': False,
+                        'ai_prompt': None,
+                        'ai_response': None,
+                        'ai_model': None,
+                    })(),
+                    created_by='scheduler',
+                )
+                logger.info("Auto weight evaluation completed, confidence=%.2f", confidence)
+        except Exception as e:
+            logger.error("Scheduled auto weight evaluation failed: %s", e, exc_info=True)
+
+    @staticmethod
+    async def _generate_scheduled_ai_report_job():
+        """Monthly AI report generation.
+
+        Reads the AI report schedule config and generates a periodic report.
+        """
+        from contributor_board.ai_report_service import AIReportService
+        from contributor_board.scoring_version_schemas import AIReportGenerateRequest
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from datetime import date
+
+        try:
+            logger.info("Starting scheduled AI report generation")
+            async with AsyncSessionLocal() as db:
+                svc = AIReportService()
+
+                today = date.today()
+                first_of_month = today.replace(day=1)
+                last_month = (first_of_month - __import__('datetime').timedelta(days=1))
+
+                request = AIReportGenerateRequest(
+                    report_type='monthly',
+                    period_start=last_month.replace(day=1),
+                    period_end=last_month,
+                    repo_name=None,
+                    model=None,
+                    include_individual_evaluations=False,
+                )
+
+                await svc.generate_report(db, request, created_by='scheduler')
+                logger.info("Scheduled AI report generation completed")
+        except Exception as e:
+            logger.error("Scheduled AI report generation failed: %s", e, exc_info=True)
 
 # 全局调度器实例
 _scheduler: DataSyncScheduler | None = None

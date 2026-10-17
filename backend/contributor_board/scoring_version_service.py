@@ -17,6 +17,7 @@ from contributor_board.scoring_version_schemas import (
     ScoreUpdateAuditResponse,
     CalculateAutoWeightsResponse,
 )
+from contributor_board.constants import QUADRANT_RANK
 from infrastructure.persistence.models import (
     Contributor,
     CommitClassification,
@@ -29,6 +30,51 @@ from infrastructure.persistence.models import (
 logger = logging.getLogger(__name__)
 
 
+def _version_filter(repo_name: str | None = None, status: str | None = None) -> list:
+    conditions = []
+    if repo_name:
+        conditions.append(ContributorScoringVersion.repo_name == repo_name)
+    if status:
+        conditions.append(ContributorScoringVersion.status == status)
+    return conditions
+
+
+def _snapshot_filter(repo_name: str | None = None) -> list:
+    if repo_name:
+        return [ContributorScoreSnapshot.repo_name == repo_name]
+    return []
+
+
+def _audit_filter(repo_name: str | None = None) -> list:
+    if repo_name:
+        return [ContributorScoreUpdateAudit.repo_name == repo_name]
+    return []
+
+
+async def _paginated_list(
+    db,
+    conditions: list,
+    model_class: Any,
+    order_col: Any,
+    skip: int = 0,
+    limit: int = 50,
+) -> tuple[list, int]:
+    """通用分页查询：返回 (items, total)"""
+    stmt = select(model_class)
+    if conditions:
+        stmt = stmt.where(*conditions)
+    stmt = stmt.order_by(order_col.desc()).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    items = result.scalars().all()
+
+    count_stmt = select(func.count(model_class.id))
+    if conditions:
+        count_stmt = count_stmt.where(*conditions)
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    return items, total
+
+
 class ScoringVersionService:
     @staticmethod
     async def list_versions(
@@ -38,24 +84,11 @@ class ScoringVersionService:
         skip: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
-        stmt = select(ContributorScoringVersion)
-        if repo_name:
-            stmt = stmt.where(ContributorScoringVersion.repo_name == repo_name)
-        if status:
-            stmt = stmt.where(ContributorScoringVersion.status == status)
-        stmt = stmt.order_by(ContributorScoringVersion.created_at.desc())
-        stmt = stmt.offset(skip).limit(limit)
-
-        result = await db.execute(stmt)
-        versions = result.scalars().all()
-
-        count_stmt = select(func.count(ContributorScoringVersion.id))
-        if repo_name:
-            count_stmt = count_stmt.where(ContributorScoringVersion.repo_name == repo_name)
-        if status:
-            count_stmt = count_stmt.where(ContributorScoringVersion.status == status)
-        total = (await db.execute(count_stmt)).scalar_one()
-
+        conditions = _version_filter(repo_name, status)
+        versions, total = await _paginated_list(
+            db, conditions, ContributorScoringVersion,
+            ContributorScoringVersion.created_at, skip, limit,
+        )
         return {
             "versions": [ScoringVersionResponse.model_validate(v) for v in versions],
             "total": total,
@@ -106,36 +139,24 @@ class ScoringVersionService:
             created_by=created_by,
         )
         db.add(version)
+        snapshot_id: int | None = None
 
-        active_stmt = select(ContributorScoringVersion).where(
-            ContributorScoringVersion.status == "active",
-        )
-        if repo_name:
-            active_stmt = active_stmt.where(ContributorScoringVersion.repo_name == repo_name)
-        else:
-            active_stmt = active_stmt.where(ContributorScoringVersion.repo_name.is_(None))
-        active = await db.execute(active_stmt)
-        currents = active.scalars().all()
-
-        for current in currents:
-            current.status = "archived"
-
-        if not currents and not request.apply_immediately:
-            logger.warning("No active version exists — auto-setting first version to active")
-            version.status = "active"
-
-        if version.status == "active":
-            version.activated_at = datetime.now(UTC)
-            version.activated_by = created_by
-
-        await db.flush()
-
-        if request.apply_immediately or version.status == "active":
+        if request.apply_immediately:
+            await ScoringVersionService._archive_active_versions(db, repo_name)
+            ScoringVersionService._set_version_active(version, created_by)
+            await db.flush()
             snapshot_id = await ScoringVersionService._create_snapshot_and_recalculate(
                 db, version, repo_name, created_by
             )
         else:
-            snapshot_id = None
+            currents = await ScoringVersionService._get_active_versions(db, repo_name)
+            if not currents:
+                logger.warning("No active version exists — auto-setting first version to active")
+                ScoringVersionService._set_version_active(version, created_by)
+                await db.flush()
+                snapshot_id = await ScoringVersionService._create_snapshot_and_recalculate(
+                    db, version, repo_name, created_by
+                )
 
         ScoringVersionService._create_audit(
             db, "create_version", version.id, snapshot_id, repo_name,
@@ -156,19 +177,12 @@ class ScoringVersionService:
         if not version:
             raise ValueError(f"Scoring version {version_id} not found")
 
-        active_stmt = select(ContributorScoringVersion).where(
-            ContributorScoringVersion.status == "active",
-        )
-        if version.repo_name:
-            active_stmt = active_stmt.where(ContributorScoringVersion.repo_name == version.repo_name)
-        else:
-            active_stmt = active_stmt.where(ContributorScoringVersion.repo_name.is_(None))
-        currents = await db.execute(active_stmt)
-        currents = currents.scalars().all()
-
         # Weight diff against the latest active version
+        currents = await ScoringVersionService._get_active_versions(db, version.repo_name)
         latest_current = currents[-1] if currents else None
-        weight_diff = ScoringVersionService._compute_weight_diff(latest_current.weights if latest_current else {}, version.weights)
+        weight_diff = ScoringVersionService._compute_weight_diff(
+            latest_current.weights if latest_current else {}, version.weights,
+        )
         max_shift = ScoringVersionService._max_weight_shift(weight_diff)
 
         if max_shift > 30:
@@ -177,12 +191,8 @@ class ScoringVersionService:
                 version.version, max_shift,
             )
 
-        for cur in currents:
-            cur.status = "archived"
-
-        version.status = "active"
-        version.activated_at = datetime.now(UTC)
-        version.activated_by = created_by
+        await ScoringVersionService._archive_active_versions(db, version.repo_name)
+        ScoringVersionService._set_version_active(version, created_by)
 
         snapshot_id = await ScoringVersionService._create_snapshot_and_recalculate(
             db, version, version.repo_name, created_by
@@ -262,18 +272,11 @@ class ScoringVersionService:
         skip: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
-        stmt = select(ContributorScoreSnapshot).order_by(ContributorScoreSnapshot.snapshot_date.desc())
-        if repo_name:
-            stmt = stmt.where(ContributorScoreSnapshot.repo_name == repo_name)
-        stmt = stmt.offset(skip).limit(limit)
-        result = await db.execute(stmt)
-        snapshots = result.scalars().all()
-
-        count_stmt = select(func.count(ContributorScoreSnapshot.id))
-        if repo_name:
-            count_stmt = count_stmt.where(ContributorScoreSnapshot.repo_name == repo_name)
-        total = (await db.execute(count_stmt)).scalar_one()
-
+        conditions = _snapshot_filter(repo_name)
+        snapshots, total = await _paginated_list(
+            db, conditions, ContributorScoreSnapshot,
+            ContributorScoreSnapshot.snapshot_date, skip, limit,
+        )
         return {
             "snapshots": [ScoreSnapshotResponse.model_validate(s) for s in snapshots],
             "total": total,
@@ -315,24 +318,47 @@ class ScoringVersionService:
         skip: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        stmt = select(ContributorScoreUpdateAudit).order_by(ContributorScoreUpdateAudit.created_at.desc())
-        if repo_name:
-            stmt = stmt.where(ContributorScoreUpdateAudit.repo_name == repo_name)
-        stmt = stmt.offset(skip).limit(limit)
-        result = await db.execute(stmt)
-        audits = result.scalars().all()
-
-        count_stmt = select(func.count(ContributorScoreUpdateAudit.id))
-        if repo_name:
-            count_stmt = count_stmt.where(ContributorScoreUpdateAudit.repo_name == repo_name)
-        total = (await db.execute(count_stmt)).scalar_one()
-
+        conditions = _audit_filter(repo_name)
+        audits, total = await _paginated_list(
+            db, conditions, ContributorScoreUpdateAudit,
+            ContributorScoreUpdateAudit.created_at, skip, limit,
+        )
         return {
             "audits": [ScoreUpdateAuditResponse.model_validate(a) for a in audits],
             "total": total,
         }
 
     # ---- Private helpers ----
+
+    @staticmethod
+    async def _get_active_versions(db, repo_name: str | None) -> list:
+        """Query all active scoring versions for a given repo (or global)."""
+        stmt = select(ContributorScoringVersion).where(
+            ContributorScoringVersion.status == "active",
+        )
+        if repo_name:
+            stmt = stmt.where(ContributorScoringVersion.repo_name == repo_name)
+        else:
+            stmt = stmt.where(ContributorScoringVersion.repo_name.is_(None))
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+    @staticmethod
+    async def _archive_active_versions(
+        db, repo_name: str | None,
+    ) -> list:
+        """Find and archive all active versions. Returns the archived list."""
+        currents = await ScoringVersionService._get_active_versions(db, repo_name)
+        for c in currents:
+            c.status = "archived"
+        return currents
+
+    @staticmethod
+    def _set_version_active(version, created_by: str | None) -> None:
+        """Mark a version as active with timestamp."""
+        version.status = "active"
+        version.activated_at = datetime.now(UTC)
+        version.activated_by = created_by
 
     @staticmethod
     async def _next_version_number(db, repo_name: str | None) -> str:
@@ -387,8 +413,8 @@ class ScoringVersionService:
             aggregated[login]["error_score"] += m.error_score or 0
             # Keep the highest quadrant (INCENTIVE > IMPROVE > ENCOURAGE > REPLACE)
             q = m.quadrant or "unknown"
-            q_rank = {"INCENTIVE": 4, "IMPROVE": 3, "ENCOURAGE": 2, "REPLACE": 1, "unknown": 0}.get(q, 0)
-            cur_rank = {"INCENTIVE": 4, "IMPROVE": 3, "ENCOURAGE": 2, "REPLACE": 1, "unknown": 0}.get(aggregated[login]["quadrant"], 0)
+            q_rank = QUADRANT_RANK.get(q, 0)
+            cur_rank = QUADRANT_RANK.get(aggregated[login]["quadrant"], 0)
             if q_rank > cur_rank:
                 aggregated[login]["quadrant"] = q
 
@@ -433,15 +459,25 @@ class ScoringVersionService:
             o = float(old_w.get(k, 0))
             n = float(new_w.get(k, 0))
             change = round(n - o, 4)
-            change_pct = round(change / o * 100, 2) if o != 0 else 0
+            # 避免除以接近0的值产生天文数字百分比；使用绝对差值作为主指标
+            if abs(o) > 0.001:
+                change_pct = round(change / o * 100, 2)
+            elif abs(n) > 0:
+                change_pct = round(n * 100, 2)  # 从0到有，用新值*100表示变化
+            else:
+                change_pct = 0.0
+            # 百分比封顶（避免单个维度变化被过度放大）
+            change_pct = max(-100.0, min(100.0, change_pct))
             diff[k] = {"from": o, "to": n, "change": change, "change_pct": change_pct}
         return diff
 
     @staticmethod
     def _max_weight_shift(weight_diff: dict) -> float:
+        """最大权重变动幅度：使用绝对差值*100（百分比点），而非相对百分比"""
         if not weight_diff:
             return 0.0
-        return max(abs(d["change_pct"]) for d in weight_diff.values())
+        # 取绝对差值的最大值，更稳定反映实际变化
+        return round(max(abs(d["change"]) for d in weight_diff.values()) * 100, 2)
 
     @staticmethod
     def _create_audit(
