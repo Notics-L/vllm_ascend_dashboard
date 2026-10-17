@@ -3889,16 +3889,28 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
 /*                        同步记录历史 Tab                              */
 /* ------------------------------------------------------------------ */
 
-function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
+function SyncHistoryTab() {
   const [retryingId, setRetryingId] = useState<number | null>(null)
   const [records, setRecords] = useState<SyncRecord[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [filterStatus, setFilterStatus] = useState<string | null>(null)
+  const [filterRepo, setFilterRepo] = useState<string | null>(null)
+  const [repos, setRepos] = useState<string[]>([])
   const [detailRecord, setDetailRecord] = useState<SyncRecord | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
   const [summary, setSummary] = useState<SyncSummary | null>(null)
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const data = await getReposList()
+        setRepos(data.repos ?? [])
+      } catch { /* ignore */ }
+    }
+    init()
+  }, [])
 
   const loadHistory = async () => {
     setLoading(true)
@@ -3907,7 +3919,7 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
       const result = await getSyncHistory({
         limit: pagination.pageSize,
         offset,
-        repo_name: selectedRepo || null,
+        repo_name: filterRepo,
         status: filterStatus,
       })
       setRecords(result.records)
@@ -3919,7 +3931,7 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
 
   const loadSummary = async () => {
     try {
-      const data = await getSyncSummary({ repo_name: selectedRepo || null })
+      const data = await getSyncSummary({ repo_name: filterRepo })
       setSummary(data)
     } catch { /* ignore */ }
   }
@@ -3970,7 +3982,7 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
   useEffect(() => {
     loadHistory()
     loadSummary()
-  }, [selectedRepo, filterStatus, pagination.current, pagination.pageSize, refreshTrigger])
+  }, [filterRepo, filterStatus, pagination.current, pagination.pageSize, refreshTrigger])
 
   useEffect(() => {
     const handler = () => {
@@ -4186,6 +4198,18 @@ function SyncHistoryTab({ selectedRepo }: { selectedRepo?: string }) {
 
       <div style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
         <Button onClick={() => { loadHistory(); loadSummary() }} icon={<ReloadOutlined />}>刷新</Button>
+        <Select
+          placeholder="选择仓库"
+          allowClear
+          showSearch
+          style={{ width: 200 }}
+          value={filterRepo}
+          onChange={(v) => { setFilterRepo(v); setPagination(p => ({ ...p, current: 1 })) }}
+          options={[
+            { label: '全部仓库', value: null },
+            ...repos.map(r => ({ label: r, value: r })),
+          ]}
+        />
         <Select
           allowClear
           placeholder="状态过滤"
@@ -4470,7 +4494,7 @@ function SyncTab({ selectedRepo }: { selectedRepo?: string }) {
           {
             key: 'history',
             label: <span><ReloadOutlined /> 同步记录</span>,
-            children: <SyncHistoryTab selectedRepo={selectedRepo} />,
+            children: <SyncHistoryTab />,
           },
           {
             key: 'schedule',
