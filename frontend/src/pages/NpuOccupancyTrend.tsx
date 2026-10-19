@@ -90,7 +90,10 @@ export default function NpuOccupancyTrend() {
   const analysisParams = useMemo(() => ({ dimension: view, names: selectedNames, start: timeRange.start.toISOString(), end: timeRange.end.toISOString() }), [view, selectedNames, timeRange])
   const optionsQuery = useQuery({ queryKey: ['npu-occupancy-options', view], queryFn: () => getOccupancyOptions(view), staleTime: OCCUPANCY_CACHE_STALE_TIME, refetchOnWindowFocus: false })
   const trendQuery = useQuery({ queryKey: ['npu-occupancy-trend', chartParams], queryFn: () => getOccupancyTrend(chartParams), staleTime: OCCUPANCY_CACHE_STALE_TIME, refetchOnWindowFocus: false })
-  const analysisQuery = useQuery({ queryKey: ['npu-occupancy-analysis', analysisParams], queryFn: () => getOccupancyAnalysis(analysisParams), enabled: trendQuery.isSuccess, staleTime: OCCUPANCY_CACHE_STALE_TIME, refetchOnWindowFocus: false })
+  // A first analysis response may be returned before the asynchronous workflow
+  // metadata backfill commits.  Do not reuse that incomplete response when the
+  // user returns to this page: re-read the local persisted aggregation once.
+  const analysisQuery = useQuery({ queryKey: ['npu-occupancy-analysis', analysisParams], queryFn: () => getOccupancyAnalysis(analysisParams), enabled: trendQuery.isSuccess, staleTime: 0, refetchOnMount: 'always', refetchOnWindowFocus: false })
   const refreshMutation = useMutation({
     mutationFn: () => refreshOccupancySnapshot({ start: chartParams.start, end: chartParams.end }),
     onMutate: () => setRefreshStatus('正在同步占用快照…'),

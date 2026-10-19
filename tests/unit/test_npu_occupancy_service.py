@@ -6,6 +6,7 @@ from resource_dashboard.npu_occupancy_service import (
     normalize_records,
     npu_cards,
     parse_timestamp,
+    project_of,
 )
 
 
@@ -62,6 +63,55 @@ def test_project_aliases_and_pool_selection_do_not_double_count():
     assert project["metrics"]["capacity"] is None
 
 
+def test_legacy_hyphenated_project_identifier_is_canonicalized_for_github_links():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    env = _env(env_id="sglang", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8)
+    env["extend_env_comments"] = {
+        "repository": "sgl-project-sglang",
+        "workflow_run_id": 123,
+        "job_display_name": "E2E",
+    }
+
+    record = normalize_records([env], snapshot)[0]
+
+    assert project_of(env) == "sgl-project/sglang"
+    assert (record.organization, record.repository, record.project) == ("sgl-project", "sglang", "sgl-project/sglang")
+    assert record.run_url == "https://github.com/sgl-project/sglang/actions/runs/123"
+
+
+def test_job_repository_is_used_when_arc_payload_omits_repository():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    env = _env(env_id="arc-sglang", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8)
+    env["extend_env_comments"] = {
+        "organization": "sgl-project",
+        "job_repository": "sgl-project/sglang",
+        "workflow_run_id": 456,
+        "job_display_name": "PR Test",
+    }
+
+    record = normalize_records([env], snapshot)[0]
+
+    assert project_of(env) == "sgl-project/sglang"
+    assert (record.organization, record.repository, record.project) == ("sgl-project", "sglang", "sgl-project/sglang")
+    assert record.run_url == "https://github.com/sgl-project/sglang/actions/runs/456"
+
+
+def test_project_identity_does_not_duplicate_owner_when_repository_is_already_qualified():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    env = _env(env_id="pytorch", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8)
+    env["extend_env_comments"] = {
+        "organization": "Ascend",
+        "repository": "Ascend/pytorch",
+        "workflow_run_id": 456,
+        "job_display_name": "JOB_UT",
+    }
+
+    record = normalize_records([env], snapshot)[0]
+
+    assert (record.organization, record.repository, record.project) == ("Ascend", "pytorch", "Ascend/pytorch")
+    assert record.run_url == "https://github.com/Ascend/pytorch/actions/runs/456"
+
+
 def test_range_analysis_uses_the_whole_interval_not_one_snapshot():
     envs = [
         _env(env_id="long", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8),
@@ -114,6 +164,24 @@ def test_range_analysis_stops_at_the_persisted_snapshot_time():
     assert result["end"] == snapshot
     # The snapshot-end bucket itself is exclusive for an active environment.
     assert result["groups"][0]["average_cards"] == 6.67
+
+
+def test_range_fully_after_snapshot_is_anchored_at_latest_known_data():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    records = normalize_records([
+        _env(env_id="cached", cluster="gy-004", status="active", created="2026-09-01T09:00:00Z", expires=None, cards=8),
+    ], snapshot)
+    service = NpuOccupancyService(records=records, snapshot_at=snapshot)
+    start = datetime(2026, 9, 1, 10, 20, tzinfo=UTC)
+    end = datetime(2026, 9, 1, 10, 30, tzinfo=UTC)
+
+    trend = service.trend(dimension="pool", names=[], start=start, end=end)
+    analysis = service.analysis(dimension="pool", names=[], start=start, end=end)
+
+    assert (trend["start"], trend["end"]) == (datetime(2026, 9, 1, 10, 0, tzinfo=UTC), snapshot)
+    assert trend["metrics"]["peak"] == 8
+    assert (analysis["start"], analysis["end"]) == (datetime(2026, 9, 1, 10, 0, tzinfo=UTC), snapshot)
+    assert analysis["groups"][0]["peak_cards"] == 8
 
 
 def test_records_with_the_same_workflow_run_are_aggregated_once():

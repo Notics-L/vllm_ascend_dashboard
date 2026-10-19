@@ -1,4 +1,5 @@
 .app-shell {
+  --app-header-height: 72px;
   min-height: 100vh;
   background: var(--surface-canvas);
 }
@@ -396,6 +397,10 @@
   .app-header {
     height: 64px;
     padding: 0 14px;
+  }
+
+  .app-shell {
+    --app-header-height: 64px;
   }
 
   .page-context span,

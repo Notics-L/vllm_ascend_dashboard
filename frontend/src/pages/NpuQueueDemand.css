@@ -126,7 +126,9 @@
 .npu-demand-pool-details h4 { margin: 0 0 3px; color: #344054; font-size: 13px; font-weight: 600; }
 .npu-demand-pool-details .ant-typography { display: block; color: #98a2b3; font-size: 12px; }
 .npu-demand-pod-list { margin-top: 10px; }
-.npu-demand-pod-row { display: grid; grid-template-columns: minmax(140px, 1.4fr) minmax(80px, .8fr) minmax(78px, .7fr) minmax(100px, .85fr); gap: 12px; padding: 8px 0; border-top: 1px solid #f0f2f5; color: #667085; font-size: 12px; }
+.npu-demand-pod-head, .npu-demand-pod-row { display: grid; grid-template-columns: minmax(140px, 1.4fr) minmax(80px, .8fr) minmax(78px, .7fr) minmax(100px, .85fr) 90px; gap: 12px; }
+.npu-demand-pod-head { padding: 0 0 7px; color: #98a2b3; font-size: 11px; }
+.npu-demand-pod-row { padding: 8px 0; border-top: 1px solid #f0f2f5; color: #667085; font-size: 12px; }
 .npu-demand-pod-row strong { overflow: hidden; color: #475467; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .npu-demand-pod-row span:last-child { color: #5425a7; }
 
@@ -256,7 +258,7 @@
   .npu-demand-cost-filter { align-items: flex-start; flex-direction: column; }
   .npu-demand-section-scroll > * { min-width: 620px; }
   .npu-demand-pool-details { grid-template-columns: 1fr; gap: 20px; }
-  .npu-demand-pod-row { grid-template-columns: minmax(120px, 1fr) 1fr; }
+  .npu-demand-pod-head, .npu-demand-pod-row { grid-template-columns: minmax(120px, 1fr) 1fr; }
   .npu-demand-queue-filter { flex-wrap: wrap; }
   .npu-demand-queue-filter .ant-select { flex: 1 1 160px; }
 }

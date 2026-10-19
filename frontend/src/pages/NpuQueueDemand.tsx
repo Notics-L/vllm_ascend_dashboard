@@ -574,6 +574,13 @@ export default function NpuQueueDemand() {
                     <Text type="secondary">资源名：{record.resourceName}</Text>
                     {record.pods.length ? (
                       <div className="npu-demand-pod-list">
+                        <div className="npu-demand-pod-head">
+                          <span>Pod</span>
+                          <span>命名空间</span>
+                          <span>状态</span>
+                          <span>申请卡数</span>
+                          <span>关联链接</span>
+                        </div>
                         {record.pods.map((pod) => (
                           <div
                             className="npu-demand-pod-row"
@@ -583,6 +590,13 @@ export default function NpuQueueDemand() {
                             <span>{pod.namespace || "—"}</span>
                             <span>{pod.phase || "Unknown"}</span>
                             <span>申请 {number(pod.requests.npu)} 卡</span>
+                            <span>
+                              {pod.pr_url ? (
+                                <a href={pod.pr_url} target="_blank" rel="noreferrer">
+                                  PR #{pod.pr_number ?? "详情"}
+                                </a>
+                              ) : "—"}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -1002,6 +1016,16 @@ export default function NpuQueueDemand() {
                       width: 190,
                       render: (value: string | null | undefined) =>
                         value || "—",
+                    },
+                    {
+                      title: "关联链接",
+                      key: "link",
+                      width: 120,
+                      render: (_, pod) => pod.pr_url ? (
+                        <a href={pod.pr_url} target="_blank" rel="noreferrer">
+                          PR #{pod.pr_number ?? "详情"}
+                        </a>
+                      ) : "—",
                     },
                   ]}
                 />
