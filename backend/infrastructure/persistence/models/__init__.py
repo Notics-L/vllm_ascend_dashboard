@@ -1026,7 +1026,7 @@ class ContributorMetrics(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
     contributor_login = Column(String(100), nullable=False, index=True)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
     period_start = Column(Date, nullable=False)
     period_end = Column(Date, nullable=False)
     merged_pr_count = Column(Integer, default=0)
@@ -1089,7 +1089,7 @@ class CommitClassification(Base):
     chip_target = Column(String(50))
     contributor_login = Column(String(100), index=True)
     pr_number = Column(Integer, index=True)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 
@@ -1127,7 +1127,7 @@ class ImageBuildPlan(Base):
     actual_execution = Column(Boolean, default=False)
     reasoning = Column(String(500))
     files_changed = Column(JSON)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 
@@ -1181,7 +1181,7 @@ class ContributorScoringVersion(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     version = Column(String(30), nullable=False, comment="版本号: v1.0.0, v1.1.0...")
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
 
     weights = Column(JSON, nullable=False, comment="权重配置快照")
 
@@ -1213,7 +1213,7 @@ class ContributorScoreSnapshot(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     version_id = Column(Integer, ForeignKey("contributor_scoring_version.id", ondelete="CASCADE"), nullable=False, index=True)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
 
     snapshot_date = Column(Date, nullable=False, index=True)
     period_start = Column(Date, nullable=True)
@@ -1236,7 +1236,7 @@ class ContributorScoreUpdateAudit(Base):
     action = Column(String(50), nullable=False, comment="操作类型")
     version_id = Column(Integer, nullable=True)
     snapshot_id = Column(Integer, nullable=True)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
 
     details = Column(JSON, nullable=True)
     summary = Column(Text, nullable=True)
@@ -1271,7 +1271,7 @@ class ContributorAIReport(Base):
     report_file_url = Column(String(500), nullable=True)
     schedule_cron = Column(String(100), nullable=True)
     enabled = Column(Boolean, default=True)
-    repo_name = Column(String(200), nullable=True, index=True, default='vllm-ascend')
+    repo_name = Column(String(200), nullable=True, index=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 

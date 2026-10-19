@@ -28,6 +28,7 @@ import {
   Modal,
   Progress,
   Radio,
+  Result,
   Row,
   Select,
   Slider,
@@ -4227,20 +4228,29 @@ function SyncHistoryTab() {
         />
         <Text type="secondary">共 {total} 条记录</Text>
       </div>
-      <Table
-        columns={columns}
-        dataSource={records}
-        loading={loading}
-        rowKey="id"
-        pagination={{
-          ...pagination,
-          total,
-          showSizeChanger: true,
-          showTotal: () => `共 ${total} 条`,
-          onChange: (page, size) => setPagination({ current: page, pageSize: size }),
-        }}
-        size="small"
-      />
+      {total === 0 && !loading && (
+        <Empty
+          description="暂无同步记录，请先执行数据同步以采集贡献者数据"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          style={{ padding: '20px 0' }}
+        />
+      )}
+      {total > 0 && (
+        <Table
+          columns={columns}
+          dataSource={records}
+          loading={loading}
+          rowKey="id"
+          pagination={{
+            ...pagination,
+            total,
+            showSizeChanger: true,
+            showTotal: () => `共 ${total} 条`,
+            onChange: (page, size) => setPagination({ current: page, pageSize: size }),
+          }}
+          size="small"
+        />
+      )}
 
       <Modal
         title={<><CloudUploadOutlined /> 同步记录详情</>}
@@ -4595,17 +4605,27 @@ function ContributorBoard() {
 
     return (
      <div className="stripe-project-page">
-       <div className="stripe-page-header">
-         <Title level={3} className="stripe-page-title">
-           <GithubOutlined className="stripe-page-icon" />
-           贡献者与提交分析
-         </Title>
-         <Text className="stripe-page-description">
-           vLLM Ascend 提交分类、构建优化与贡献者分析
-         </Text>
-       </div>
+        <div className="stripe-page-header">
+          <Title level={3} className="stripe-page-title">
+            <GithubOutlined className="stripe-page-icon" />
+            贡献者与提交分析
+          </Title>
+          <Text className="stripe-page-description">
+            vLLM Ascend 提交分类、构建优化与贡献者分析
+          </Text>
+        </div>
 
-       {repos.length > 0 && (
+        {repos.length === 0 && (
+          <Result
+            status="warning"
+            title="暂无贡献者数据"
+            subTitle="首次使用请先执行全量数据同步，采集 GitHub PR/提交数据后即可使用分析功能"
+            extra={<Button type="primary" onClick={() => { setActiveTab('sync'); updateUrlState('sync', undefined) }}>前往数据同步</Button>}
+            style={{ padding: '40px 0' }}
+          />
+      )}
+
+        {repos.length > 0 && (
          <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
            <Select
              allowClear
