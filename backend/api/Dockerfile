@@ -1,11 +1,11 @@
-# Production Dockerfile for vLLM Ascend Dashboard Backend
+﻿# Production Dockerfile for vLLM Ascend Dashboard Backend
 # Multi-stage build for optimized image size
 
 # Stage 1: Install dependencies
 # 国内网络环境使用镜像加速
 FROM ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uv
 
-FROM docker.m.daocloud.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS dependencies
+FROM docker.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS dependencies
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 
 # Stage 2: Production
-FROM docker.m.daocloud.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS production
+FROM docker.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS production
 
 WORKDIR /app
 
@@ -77,6 +77,7 @@ COPY backend/test_board/ ./test_board/
 COPY backend/model_sync/ ./model_sync/
 COPY backend/support_matrix/ ./support_matrix/
 COPY backend/pr_pipeline/ ./pr_pipeline/
+COPY backend/contributor_board/ ./contributor_board/
 COPY backend/nightly_gantt/ ./nightly_gantt/
 COPY backend/npu_queue/ ./npu_queue/
 COPY backend/resources/ ./resources/

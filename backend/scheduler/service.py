@@ -15,6 +15,8 @@ from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
 from infrastructure.db.base import SessionLocal
 
+from infrastructure.tasks.scheduler_config import SCHEDULER_RUNTIME_SETTING_MAP
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,8 @@ class DataSyncScheduler:
 
         logger.info("DataSyncScheduler initialized")
 
-    def _job_event_listener(self, event):
+    @staticmethod
+    def _job_event_listener(event):
         """任务执行事件监听"""
         if event.exception:
             logger.error(f"Job {event.job_id} failed: {event.exception}")
@@ -472,6 +475,59 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Failed to add code metrics collection job: {e}")
 
+        # 贡献者数据采集任务 - 每日 2:00 全量评估
+        try:
+            self.scheduler.add_job(
+                self._sync_contributors_job,
+                trigger=CronTrigger(hour=2, minute=0, timezone=self._timezone),
+                id="contributor_sync",
+                name="Contributor Full Sync",
+                replace_existing=True,
+            )
+            logger.info("Contributor full sync scheduled at 02:00 daily")
+        except Exception as e:
+            logger.error(f"Failed to add contributor sync job: {e}")
+
+        # 贡献者增量采集任务 - 每 6 小时执行一次
+        try:
+            contributor_incremental_interval = getattr(settings, 'CONTRIBUTOR_INCREMENTAL_INTERVAL_MINUTES', 360)
+            self.scheduler.add_job(
+                self._sync_contributors_incremental_job,
+                trigger=IntervalTrigger(minutes=contributor_incremental_interval),
+                id="contributor_incremental_sync",
+                name="Contributor Incremental Sync",
+                replace_existing=True,
+            )
+            logger.info(f"Contributor incremental sync scheduled every {contributor_incremental_interval} minutes")
+        except Exception as e:
+            logger.error(f"Failed to add contributor incremental sync job: {e}")
+
+        # Monthly auto weight evaluation — 1st of each month at 03:00
+        try:
+            self.scheduler.add_job(
+                self._auto_evaluate_weights_job,
+                trigger=CronTrigger(day=1, hour=3, minute=0, timezone=self._timezone),
+                id="contributor_auto_weights",
+                name="Contributor Auto Weight Evaluation",
+                replace_existing=True,
+            )
+            logger.info("Contributor auto weight evaluation scheduled monthly on 1st at 03:00")
+        except Exception as e:
+            logger.error(f"Failed to add auto weight evaluation job: {e}")
+
+        # Monthly AI report generation — 1st of each month at 06:00
+        try:
+            self.scheduler.add_job(
+                self._generate_scheduled_ai_report_job,
+                trigger=CronTrigger(day=1, hour=6, minute=0, timezone=self._timezone),
+                id="contributor_ai_report",
+                name="Contributor AI Report Generation",
+                replace_existing=True,
+            )
+            logger.info("Contributor AI report generation scheduled monthly on 1st at 06:00")
+        except Exception as e:
+            logger.error(f"Failed to add AI report generation job: {e}")
+
     async def apply_db_config_overrides(self) -> None:
         """从数据库读取调度配置，覆盖默认值（异步，仅在事件循环内调用）。
 
@@ -481,23 +537,7 @@ class DataSyncScheduler:
         try:
             runtime_config = await _read_config_async("scheduler_runtime_config")
             if runtime_config:
-                field_map = {
-                    "ci_sync_interval_minutes": "CI_SYNC_INTERVAL_MINUTES",
-                    "ci_sync_days_back": "CI_SYNC_DAYS_BACK",
-                    "ci_sync_max_runs_per_workflow": "CI_SYNC_MAX_RUNS_PER_WORKFLOW",
-                    "ci_sync_force_full_refresh": "CI_SYNC_FORCE_FULL_REFRESH",
-                    "ci_auto_failure_analysis_enabled": "CI_AUTO_FAILURE_ANALYSIS_ENABLED",
-                    "model_sync_interval_minutes": "MODEL_SYNC_INTERVAL_MINUTES",
-                    "model_sync_days_back": "MODEL_SYNC_DAYS_BACK",
-                    "model_sync_runs_limit": "MODEL_SYNC_RUNS_LIMIT",
-                    "pr_pipeline_sync_interval_minutes": "PR_PIPELINE_SYNC_INTERVAL_MINUTES",
-                    "pr_pipeline_days_back": "PR_PIPELINE_DAYS_BACK",
-                    "pr_pipeline_max_items_per_sync": "PR_PIPELINE_MAX_ITEMS_PER_SYNC",
-                    "pr_pipeline_incremental_lookback_minutes": "PR_PIPELINE_INCREMENTAL_LOOKBACK_MINUTES",
-                    "project_dashboard_cache_interval_minutes": "PROJECT_DASHBOARD_CACHE_INTERVAL_MINUTES",
-                    "data_retention_days": "DATA_RETENTION_DAYS",
-                    "github_cache_dir": "GITHUB_CACHE_DIR",
-                }
+                field_map = SCHEDULER_RUNTIME_SETTING_MAP
                 for config_key, setting_name in field_map.items():
                     if config_key in runtime_config:
                         setattr(settings, setting_name, runtime_config[config_key])
@@ -572,6 +612,14 @@ class DataSyncScheduler:
                 self.update_resource_metrics_schedule(int(metrics_config['interval_minutes']))
         except Exception as e:
             logger.warning(f"Failed to apply DB metrics interval: {e}")
+
+        # Contributor sync schedule overrides
+        try:
+            cs_schedule = await _read_config_async('contributor_sync_schedule')
+            if cs_schedule:
+                self.update_contributor_sync_schedule(cs_schedule)
+        except Exception as e:
+            logger.warning(f"Failed to apply DB contributor sync schedule: {e}")
 
     async def _consume_control_events(self) -> None:
         """Acknowledge durable API commands, then reload this process's schedule."""
@@ -708,7 +756,8 @@ class DataSyncScheduler:
         )
         self._initialized = True
 
-    async def _sync_npu_occupancy_job(self) -> None:
+    @staticmethod
+    async def _sync_npu_occupancy_job() -> None:
         from resource_dashboard.npu_occupancy_repository import NpuOccupancyRepository
 
         end = datetime.now(UTC)
@@ -716,7 +765,8 @@ class DataSyncScheduler:
         result = await NpuOccupancyRepository().sync(start, end)
         logger.info("NPU occupancy sync result: %s", result)
 
-    async def _sync_nightly_data_job(self) -> None:
+    @staticmethod
+    async def _sync_nightly_data_job() -> None:
         """Queue Nightly YAML snapshot and failure materialization."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -733,7 +783,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued Nightly data synchronization task %d", task_id)
 
-    async def _sync_ci_data_job(self) -> None:
+    @staticmethod
+    async def _sync_ci_data_job() -> None:
         """Queue CI synchronization; Collector owns GitHub I/O and all writes."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -760,7 +811,8 @@ class DataSyncScheduler:
         else:
             logger.info("CI synchronization is already queued or running")
 
-    async def _sync_pr_pipeline_job(self) -> None:
+    @staticmethod
+    async def _sync_pr_pipeline_job() -> None:
         """Queue PR synchronization; Collector owns the GitHub I/O and mutation."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -790,7 +842,8 @@ class DataSyncScheduler:
         else:
             logger.info("PR pipeline sync is already queued or running")
 
-    async def _cleanup_logs_job(self) -> None:
+    @staticmethod
+    async def _cleanup_logs_job() -> None:
         logger.info("LOG CLEANUP JOB STARTED")
         retention_days = getattr(settings, 'DATA_RETENTION_DAYS', 365)
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
@@ -812,7 +865,8 @@ class DataSyncScheduler:
                 logger.error(f"LOG CLEANUP FAILED: {e}", exc_info=True)
                 await db.rollback()
 
-    async def _update_project_dashboard_cache_job(self) -> None:
+    @staticmethod
+    async def _update_project_dashboard_cache_job() -> None:
         """Queue one daily mirror refresh for every active Collector node."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -845,7 +899,8 @@ class DataSyncScheduler:
             await db.commit()
         logger.info("Repository mirror refresh tasks queued: %s", task_ids)
 
-    async def _sync_model_reports_job(self) -> None:
+    @staticmethod
+    async def _sync_model_reports_job() -> None:
         """Queue model report synchronization for a Collector with Python capability."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -869,7 +924,8 @@ class DataSyncScheduler:
         else:
             logger.info("Model report sync is already queued or running")
 
-    async def _generate_daily_summary_job(self):
+    @staticmethod
+    async def _generate_daily_summary_job():
         """每日总结生成任务"""
         logger.info("=" * 60)
         logger.info("DAILY SUMMARY GENERATION JOB STARTED")
@@ -936,7 +992,8 @@ class DataSyncScheduler:
             logger.error(f"DAILY SUMMARY GENERATION JOB FAILED - Error: {e}", exc_info=True)
             logger.error("=" * 60)
 
-    async def _send_daily_report_job(self):
+    @staticmethod
+    async def _send_daily_report_job():
         """每日运行报告邮件推送任务"""
         logger.info("=" * 60)
         logger.info("DAILY REPORT EMAIL JOB STARTED")
@@ -1001,7 +1058,8 @@ class DataSyncScheduler:
             logger.error("=" * 60)
             raise  # Fix #135: re-raise so APScheduler records the failure
 
-    async def _collect_resource_metrics_job(self) -> None:
+    @staticmethod
+    async def _collect_resource_metrics_job() -> None:
         """Queue resource metric collection for Collector execution."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1018,7 +1076,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued resource metrics collection task %d", task_id)
 
-    async def _collect_npu_queue_snapshot_job(self) -> None:
+    @staticmethod
+    async def _collect_npu_queue_snapshot_job() -> None:
         from infrastructure.tasks.task_manager import TaskManager
 
         dedupe_key = f"npu_queue_snapshot:{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M')}"
@@ -1030,7 +1089,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued NPU queue snapshot task %d", task_id)
 
-    async def _cleanup_resource_metrics_job(self) -> None:
+    @staticmethod
+    async def _cleanup_resource_metrics_job() -> None:
         """Queue resource metric retention cleanup for Collector execution."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1047,7 +1107,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued resource metrics cleanup task %d", task_id)
 
-    async def _cleanup_npu_queue_snapshots_job(self) -> None:
+    @staticmethod
+    async def _cleanup_npu_queue_snapshots_job() -> None:
         from infrastructure.tasks.task_manager import TaskManager
 
         dedupe_key = f"npu_queue_snapshot_cleanup:{datetime.now(UTC).strftime('%Y-%m-%d')}"
@@ -1059,7 +1120,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued NPU queue snapshot cleanup task %d", task_id)
 
-    async def _parse_test_results_job(self) -> None:
+    @staticmethod
+    async def _parse_test_results_job() -> None:
         """Queue test-board parsing; Collector owns GitHub I/O and writes."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1076,7 +1138,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued test-board sync task %d", task_id)
 
-    async def _sync_coverage_job(self) -> None:
+    @staticmethod
+    async def _sync_coverage_job() -> None:
         """Queue coverage synchronization; the Collector owns external I/O."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1093,7 +1156,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued coverage sync task %d", task_id)
 
-    async def _sync_coverage_daily_baseline_job(self) -> None:
+    @staticmethod
+    async def _sync_coverage_daily_baseline_job() -> None:
         """Queue the daily, independently retained coverage source snapshot."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1109,7 +1173,9 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued daily coverage baseline task %d", task_id)
-    async def _calc_test_health_job(self) -> None:
+
+    @staticmethod
+    async def _calc_test_health_job() -> None:
         logger.info("TEST BOARD HEALTH CALC JOB STARTED")
         async with SessionLocal() as db:
             try:
@@ -1120,7 +1186,8 @@ class DataSyncScheduler:
             except Exception as e:
                 logger.error(f"TEST BOARD HEALTH CALC JOB FAILED: {e}", exc_info=True)
 
-    async def _snapshot_test_suites_job(self) -> None:
+    @staticmethod
+    async def _snapshot_test_suites_job() -> None:
         logger.info("TEST BOARD SUITE SNAPSHOT JOB STARTED")
         async with SessionLocal() as db:
             try:
@@ -1131,7 +1198,8 @@ class DataSyncScheduler:
             except Exception as e:
                 logger.error(f"TEST BOARD SUITE SNAPSHOT JOB FAILED: {e}", exc_info=True)
 
-    async def _cleanup_test_runs_job(self) -> None:
+    @staticmethod
+    async def _cleanup_test_runs_job() -> None:
         logger.info("TEST BOARD RUN CLEANUP JOB STARTED")
         async with SessionLocal() as db:
             try:
@@ -1142,7 +1210,8 @@ class DataSyncScheduler:
             except Exception as e:
                 logger.error(f"TEST BOARD RUN CLEANUP JOB FAILED: {e}", exc_info=True)
 
-    async def _cleanup_stale_cases_job(self) -> None:
+    @staticmethod
+    async def _cleanup_stale_cases_job() -> None:
         """物理清理超过 STALE_CASE_DELETE_DAYS 天未运行的已退出测试用例。"""
         logger.info("TEST BOARD STALE CASE CLEANUP JOB STARTED")
         async with SessionLocal() as db:
@@ -1201,6 +1270,56 @@ class DataSyncScheduler:
             logger.info(f"Resource metrics collection schedule updated: every {interval_minutes} minutes")
         except Exception as e:
             logger.error(f"Failed to update resource metrics schedule: {e}", exc_info=True)
+
+    def update_contributor_sync_schedule(self, config: dict):
+        """动态更新贡献者同步定时任务
+        
+        Args:
+            config: 包含 full_cron, incremental_interval_minutes, enabled 的字典
+        """
+        enabled = config.get('enabled', True)
+        if not enabled:
+            for job_id in ('contributor_sync', 'contributor_incremental_sync'):
+                try:
+                    self.scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+            logger.info("Contributor sync jobs disabled")
+            return
+
+        full_cron = config.get('full_cron', '0 2 * * *')
+        try:
+            parts = full_cron.strip().split()
+            if len(parts) != 5:
+                raise ValueError(f"Invalid cron expression: expected 5 fields, got {len(parts)}")
+            minute_val, hour_val, day, month, dow = parts
+            self.scheduler.add_job(
+                self._sync_contributors_job,
+                trigger=CronTrigger(
+                    hour=hour_val, minute=minute_val,
+                    day=day, month=month, day_of_week=dow,
+                    timezone=self._timezone,
+                ),
+                id="contributor_sync",
+                name="Contributor Full Sync",
+                replace_existing=True,
+            )
+            logger.info(f"Contributor full sync schedule updated: {full_cron}")
+        except Exception as e:
+            logger.error(f"Failed to update contributor full sync schedule: {e}")
+
+        incremental_interval = config.get('incremental_interval_minutes', 360)
+        try:
+            self.scheduler.add_job(
+                self._sync_contributors_incremental_job,
+                trigger=IntervalTrigger(minutes=int(incremental_interval)),
+                id="contributor_incremental_sync",
+                name="Contributor Incremental Sync",
+                replace_existing=True,
+            )
+            logger.info(f"Contributor incremental sync schedule updated: every {incremental_interval} minutes")
+        except Exception as e:
+            logger.error(f"Failed to update contributor incremental sync schedule: {e}")
 
     async def trigger_manual_sync(
         self,
@@ -1285,7 +1404,8 @@ class DataSyncScheduler:
             })
         return jobs
 
-    async def _sync_support_matrix_job(self) -> None:
+    @staticmethod
+    async def _sync_support_matrix_job() -> None:
         """Queue support-matrix synchronization for Collector execution."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1301,7 +1421,9 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued support-matrix sync task %d", task_id)
-    async def _cleanup_code_metrics_job(self):
+
+    @staticmethod
+    async def _cleanup_code_metrics_job():
         """定时清理过期代码度量明细数据（365天保留）"""
         try:
             from sqlalchemy import delete, select
@@ -1327,7 +1449,8 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Code metrics cleanup failed: {e}")
 
-    async def _sync_heatmap_job(self):
+    @staticmethod
+    async def _sync_heatmap_job():
         """Queue GitHub heatmap synchronization for Collector execution."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1344,7 +1467,8 @@ class DataSyncScheduler:
         if task_id:
             logger.info("Queued code heatmap synchronization task %d", task_id)
 
-    async def _collect_code_metrics_job(self):
+    @staticmethod
+    async def _collect_code_metrics_job():
         """Queue code metrics collection; only Collector may run local tools."""
         from infrastructure.tasks.task_manager import TaskManager
 
@@ -1360,6 +1484,180 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued code metrics collection task %d", task_id)
+
+    @staticmethod
+    async def _sync_contributors_job():
+        """每日贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
+        from contributor_board.service import ContributorBoardService
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from sqlalchemy import select
+
+        try:
+            logger.info("Starting scheduled contributor sync")
+            async with AsyncSessionLocal() as db:
+                service = ContributorBoardService()
+
+                # 查询最近一次成功同步的时间，只同步之后的新增数据
+                from infrastructure.persistence.models import ContributorSyncRecord
+                stmt = (
+                    select(ContributorSyncRecord)
+                    .where(
+                        ContributorSyncRecord.status.in_(["completed", "partial"])
+                    )
+                    .order_by(ContributorSyncRecord.synced_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(stmt)
+                last_record = result.scalar_one_or_none()
+
+                if last_record and last_record.synced_at:
+                    # Start from the day after last sync to avoid zero-data syncs
+                    # when multiple scheduled runs fall on the same day.
+                    since_date = last_record.synced_at.date() + timedelta(days=1)
+                    now_date = datetime.now(UTC).date()
+                    if since_date > now_date:
+                        since_date = now_date
+                    logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
+                else:
+                    since_date = None
+                    logger.info("No previous successful sync found, doing full sync from beginning")
+
+                resp = await service.trigger_sync(
+                    db=db,
+                    since_date=since_date,
+                    full_resync=False,
+                    repo_name=None,
+                    trigger_source="scheduled_full",
+                )
+            logger.info("Scheduled sync triggered, record_id=%s", resp.record_id)
+        except Exception as e:
+            logger.error("Scheduled contributor sync failed: %s", e, exc_info=True)
+
+    @staticmethod
+    async def _sync_contributors_incremental_job():
+        """增量贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
+        from contributor_board.service import ContributorBoardService
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from sqlalchemy import select
+
+        try:
+            logger.info("Starting scheduled contributor incremental sync")
+            async with AsyncSessionLocal() as db:
+                service = ContributorBoardService()
+
+                # 查询最近一次成功同步的时间
+                from infrastructure.persistence.models import ContributorSyncRecord
+                stmt = (
+                    select(ContributorSyncRecord)
+                    .where(
+                        ContributorSyncRecord.status.in_(["completed", "partial"])
+                    )
+                    .order_by(ContributorSyncRecord.synced_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(stmt)
+                last_record = result.scalar_one_or_none()
+
+                if last_record and last_record.synced_at:
+                    # Start incremental sync from the day after last sync completed.
+                    # Previous logic used synced_at.date() which could cause zero-data
+                    # syncs when the last sync and next scheduled sync fall on the same day
+                    # (e.g., full sync ran earlier the same day, then incremental picks up
+                    # today's date as since_date, yielding a very narrow time window).
+                    since_date = last_record.synced_at.date() + timedelta(days=1)
+                    now_date = datetime.now(UTC).date()
+                    if since_date > now_date:
+                        since_date = now_date
+                    logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
+                else:
+                    since_date = (datetime.now(UTC) - timedelta(days=1)).date()
+                    logger.info("No previous successful sync found, syncing since %s", since_date)
+
+                resp = await service.trigger_sync(
+                    db=db,
+                    since_date=since_date,
+                    full_resync=False,
+                    repo_name=None,
+                    trigger_source="scheduled_incremental",
+                )
+            logger.info("Scheduled incremental sync triggered, record_id=%s", resp.record_id)
+        except Exception as e:
+            logger.error("Scheduled contributor incremental sync failed: %s", e, exc_info=True)
+
+    @staticmethod
+    async def _auto_evaluate_weights_job():
+        """Monthly automatic weight evaluation using entropy method.
+
+        Creates a new scoring version with auto-computed weights.
+        Does NOT apply it automatically — requires manual review and apply.
+        """
+        from contributor_board.auto_weight_engine import compute_weights_from_db
+        from contributor_board.scoring_version_service import ScoringVersionService
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+
+        try:
+            logger.info("Starting scheduled auto weight evaluation")
+            async with AsyncSessionLocal() as db:
+                weights, confidence, data_summary = await compute_weights_from_db(db)
+
+                if data_summary.get("contributor_count", 0) < 2:
+                    logger.warning("Insufficient metrics data for auto evaluation (%d contributors)", data_summary.get("contributor_count", 0))
+                    return
+
+                svc = ScoringVersionService()
+                await svc.create_version(
+                    db,
+                    request=type('Request', (), {
+                        'method': 'auto',
+                        'weights': weights,
+                        'data_summary': data_summary,
+                        'confidence_score': confidence,
+                        'description': f'定时自动算权 ({datetime.now(UTC).strftime("%Y-%m-%d")})',
+                        'repo_name': None,
+                        'apply_immediately': False,
+                        'ai_prompt': None,
+                        'ai_response': None,
+                        'ai_model': None,
+                    })(),
+                    created_by='scheduler',
+                )
+                logger.info("Auto weight evaluation completed, confidence=%.2f", confidence)
+        except Exception as e:
+            logger.error("Scheduled auto weight evaluation failed: %s", e, exc_info=True)
+
+    @staticmethod
+    async def _generate_scheduled_ai_report_job():
+        """Monthly AI report generation.
+
+        Reads the AI report schedule config and generates a periodic report.
+        """
+        from contributor_board.ai_report_service import AIReportService
+        from contributor_board.scoring_version_schemas import AIReportGenerateRequest
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+        from datetime import date
+
+        try:
+            logger.info("Starting scheduled AI report generation")
+            async with AsyncSessionLocal() as db:
+                svc = AIReportService()
+
+                today = date.today()
+                first_of_month = today.replace(day=1)
+                last_month = (first_of_month - __import__('datetime').timedelta(days=1))
+
+                request = AIReportGenerateRequest(
+                    report_type='monthly',
+                    period_start=last_month.replace(day=1),
+                    period_end=last_month,
+                    repo_name=None,
+                    model=None,
+                    include_individual_evaluations=False,
+                )
+
+                await svc.generate_report(db, request, created_by='scheduler')
+                logger.info("Scheduled AI report generation completed")
+        except Exception as e:
+            logger.error("Scheduled AI report generation failed: %s", e, exc_info=True)
 
 # 全局调度器实例
 _scheduler: DataSyncScheduler | None = None

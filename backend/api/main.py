@@ -30,6 +30,7 @@ from api.v1 import (
     ci,
     code_metrics,
     commit_analysis,
+    contributor_board,
     daily_report,
     daily_summary,
     issue_diagnosis,
@@ -49,6 +50,7 @@ from api.v1 import (
     test_board,
     users,
     workflows,
+    contributor_scoring,
 )
 from infrastructure.core.config import settings
 from infrastructure.core.logging import setup_db_logging
@@ -525,6 +527,8 @@ def create_app() -> FastAPI:
     app.include_router(test_board.router, prefix="/api/v1", tags=["测试看板"])
     app.include_router(logs.router, prefix="/api/v1/logs", tags=["日志中心"])
     app.include_router(code_metrics.router, prefix="/api/v1/code-metrics", tags=["代码度量"])
+    app.include_router(contributor_board.router, prefix="/api/v1/contributor-board", tags=["贡献者看板"])
+    app.include_router(contributor_scoring.router, prefix="/api/v1/contributor-board/scoring", tags=["贡献者评分/权重版本"])
 
     @app.get("/health")
     async def health_check():
@@ -534,6 +538,55 @@ def create_app() -> FastAPI:
             "version": "0.1.0",
             "environment": settings.ENVIRONMENT,
         }
+
+    # ── 全局异常处理器 ──────────────────────────────────────────
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):
+        """
+        全局异常处理器，返回统一 JSON 格式：
+        {"code": int, "msg": str, "data": null}
+        """
+        from fastapi import HTTPException as FastAPIHTTPException
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        from infrastructure.core.exceptions import BusinessException, StatusCode
+
+        def _respond(status: StatusCode, msg: str) -> JSONResponse:
+            return JSONResponse(
+                status_code=int(status),
+                content={"code": int(status), "msg": msg, "data": None},
+            )
+
+        # HTTPException → 透传原始状态码
+        if isinstance(exc, FastAPIHTTPException):
+            status = StatusCode.from_http_status(exc.status_code)
+            return _respond(status, str(exc.detail))
+
+        # 业务异常 → 按枚举映射
+        if isinstance(exc, BusinessException):
+            msg = exc.msg
+            if settings.DEBUG and exc.detail is not None:
+                msg = f"{msg} [{exc.detail}]"
+            return _respond(exc.status_code, msg)
+
+        # 编程错误 → 500
+        if isinstance(exc, (NameError, TypeError, AttributeError, KeyError)):
+            detail = f"{type(exc).__name__}: {exc}" if settings.DEBUG else StatusCode.INTERNAL.default_msg
+            return _respond(StatusCode.INTERNAL, detail)
+
+        # 超时/连接 → 503
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+            return _respond(StatusCode.SERVICE_UNAVAILABLE, StatusCode.SERVICE_UNAVAILABLE.default_msg)
+
+        # 其他未知 → 500
+        detail = f"{type(exc).__name__}: {exc}" if settings.DEBUG else StatusCode.INTERNAL.default_msg
+        logger.error(
+            "Unhandled exception on %s %s: %s\n%s",
+            request.method, request.url.path, exc, traceback.format_exc(),
+        )
+        return _respond(StatusCode.INTERNAL, detail)
 
     return app
 

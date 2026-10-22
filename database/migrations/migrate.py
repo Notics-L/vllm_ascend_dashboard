@@ -43,7 +43,17 @@ from database.migrations.resource_metrics_query_indexes import (
 )
 from database.migrations.service_permissions import run as migrate_service_permissions
 from database.migrations.task_queue import run as migrate_phase_a
+from database.migrations.contributor_board import run as migrate_contributor_board
+from database.migrations.contributor_board_enhancements import run as migrate_contributor_board_enhancements
+from database.migrations.contributor_board_settings import run as migrate_contributor_board_settings
+from database.migrations.contributor_metrics_add_commit_count import run as migrate_commit_count
+from database.migrations.contributor_board_repo_name import run as migrate_contributor_board_repo_name
+from database.migrations.contributor_sync_records import run as migrate_contributor_sync_records
+from database.migrations.image_build_plans_reasoning import run as migrate_image_build_plans_reasoning
+from database.migrations.image_build_plans_files_changed import run as migrate_image_build_plans_files_changed
 from database.migrations.test_board_data import run as migrate_test_board_data
+from database.migrations.contributor_scoring_version import run as migrate_contributor_scoring_version
+from database.migrations.contributor_ai_report import run as migrate_contributor_ai_report
 from infrastructure.db.base import SessionLocal, engine
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -61,11 +71,12 @@ async def migrate() -> None:
 
     await create_tables_with_latest_schema()
     users_before = await _user_count()
+    # phase_a creates migration_history first, so it must run before other migrations
+    await migrate_phase_a()
     await migrate_mysql_schema()
+    await migrate_process_runtime()
     model_fo_result = await migrate_model_fo_mapping_seed()
     permission_result = await migrate_service_permissions()
-    await migrate_phase_a()
-    await migrate_process_runtime()
     await migrate_npu_occupancy()
     await migrate_npu_occupancy_current_snapshot()
     await migrate_github_workflow_run_metadata()
@@ -74,17 +85,36 @@ async def migrate() -> None:
     await migrate_ci_npu_queue_snapshots()
     await migrate_ci_npu_queue_snapshot_physical_running()
     test_board_result = await migrate_test_board_data()
+    contributor_board_result = await migrate_contributor_board()
+    contributor_board_enhancements_result = await migrate_contributor_board_enhancements()
+    contributor_board_settings_result = await migrate_contributor_board_settings()
+    commit_count_result = await migrate_commit_count()
+    contributor_board_repo_name_result = await migrate_contributor_board_repo_name()
+    contributor_sync_records_result = await migrate_contributor_sync_records()
+    build_plan_reasoning_result = await migrate_image_build_plans_reasoning()
+    build_plan_files_changed_result = await migrate_image_build_plans_files_changed()
+    scoring_version_result = await migrate_contributor_scoring_version()
+    ai_report_result = await migrate_contributor_ai_report()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d model_fo=%s permissions=%s test_board=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s repo_name=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s",
         users_after,
-        model_fo_result,
         permission_result,
         test_board_result,
+        contributor_board_result,
+        contributor_board_enhancements_result,
+        contributor_board_settings_result,
+        commit_count_result,
+        contributor_board_repo_name_result,
+        contributor_sync_records_result,
+        build_plan_reasoning_result,
+        build_plan_files_changed_result,
+        scoring_version_result,
+        ai_report_result,
     )
 
 
