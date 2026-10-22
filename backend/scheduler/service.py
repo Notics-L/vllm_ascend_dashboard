@@ -1511,7 +1511,12 @@ class DataSyncScheduler:
                 last_record = result.scalar_one_or_none()
 
                 if last_record and last_record.synced_at:
-                    since_date = last_record.synced_at.date()
+                    # Start from the day after last sync to avoid zero-data syncs
+                    # when multiple scheduled runs fall on the same day.
+                    since_date = last_record.synced_at.date() + timedelta(days=1)
+                    now_date = datetime.now(UTC).date()
+                    if since_date > now_date:
+                        since_date = now_date
                     logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
                 else:
                     since_date = None
@@ -1554,7 +1559,15 @@ class DataSyncScheduler:
                 last_record = result.scalar_one_or_none()
 
                 if last_record and last_record.synced_at:
-                    since_date = last_record.synced_at.date()
+                    # Start incremental sync from the day after last sync completed.
+                    # Previous logic used synced_at.date() which could cause zero-data
+                    # syncs when the last sync and next scheduled sync fall on the same day
+                    # (e.g., full sync ran earlier the same day, then incremental picks up
+                    # today's date as since_date, yielding a very narrow time window).
+                    since_date = last_record.synced_at.date() + timedelta(days=1)
+                    now_date = datetime.now(UTC).date()
+                    if since_date > now_date:
+                        since_date = now_date
                     logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
                 else:
                     since_date = (datetime.now(UTC) - timedelta(days=1)).date()
