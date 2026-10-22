@@ -1002,13 +1002,37 @@ class ContributorBoardService:
 
     @staticmethod
     async def get_repo_list(db) -> list[str]:
+        """获取可选仓库列表。
+
+        优先从已有数据中获取 repo_name，首次部署时 fallback
+        到配置中的仓库列表（GITHUB_OWNER/GITHUB_REPO 或
+        CONTRIBUTOR_REPOS），确保用户能看到可选仓库。
+        """
         result = await db.execute(
             select(ContributorMetrics.repo_name)
             .where(ContributorMetrics.repo_name.isnot(None))
             .distinct()
             .order_by(ContributorMetrics.repo_name)
         )
-        repos = [r[0] for r in result.all()]
+        repos = sorted({r[0] for r in result.all()})
+
+        # 首次部署时 contributor_metrics 表为空，fallback 到配置中的仓库
+        if not repos:
+            from infrastructure.core.config import settings
+
+            owner = (settings.GITHUB_OWNER or "").strip()
+            repo = (settings.GITHUB_REPO or "").strip()
+            if owner and repo:
+                repos = [f"{owner}/{repo}"]
+
+            # 同时解析 CONTRIBUTOR_REPOS 环境变量
+            repos_cfg = (settings.CONTRIBUTOR_REPOS or "").strip()
+            if repos_cfg:
+                for entry in repos_cfg.split(","):
+                    entry = entry.strip()
+                    if "/" in entry and entry not in repos:
+                        repos.append(entry)
+
         return repos
 
     # ---- 策略引擎 ----

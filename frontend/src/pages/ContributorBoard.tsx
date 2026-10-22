@@ -144,6 +144,7 @@ import {
     getSyncSummary,
     cancelSync,
 } from '../services/contributorBoard'
+import { getLLMProviders, type LLMProvider } from '../services/dailySummary'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -2514,9 +2515,14 @@ function ContributorBoardSettingsPage() {
   const [manualWeights, setManualWeights] = useState<Record<string, number>>({})
   const [applyMode, setApplyMode] = useState<'draft' | 'apply' | null>(null)
   const [savingWeights, setSavingWeights] = useState(false)
+  const [llmProviders, setLlmProviders] = useState<LLMProvider[]>([])
+  const [modelSelectOpen, setModelSelectOpen] = useState(false)
+  const [pendingAction, setPendingAction] = useState<'ai-weights' | 'ai-report' | null>(null)
+  const [selectedModel, setSelectedModel] = useState<string | null>(null)
 
   useEffect(() => {
     loadAll().then()
+    loadLlmProviders().then()
   }, [])
 
   useEffect(() => {
@@ -2551,6 +2557,15 @@ function ContributorBoardSettingsPage() {
     }
   }
 
+  const loadLlmProviders = async () => {
+    try {
+      const providers = await getLLMProviders()
+      setLlmProviders(providers)
+    } catch {
+      setLlmProviders([])
+    }
+  }
+
   const handleAutoWeights = async () => {
     try {
       setCalculating(true)
@@ -2573,10 +2588,16 @@ function ContributorBoardSettingsPage() {
     }
   }
 
-  const handleAIWeights = async () => {
+  const handleAIWeightsClick = () => {
+    setPendingAction('ai-weights')
+    setSelectedModel(null)
+    setModelSelectOpen(true)
+  }
+
+  const handleAIWeights = async (model: string | null) => {
     try {
       setAiCalculating(true)
-      const result = await aiAnalyzeWeights() as AutoWeightsResult
+      const result = await aiAnalyzeWeights({ model }) as AutoWeightsResult
       const aiModel = result.data_summary?.ai_model || '默认'
       const aiAnalysis = result.data_summary?.ai_analysis || ''
       if (aiAnalysis) {
@@ -2608,11 +2629,17 @@ function ContributorBoardSettingsPage() {
     }
   }
 
-  const handleGenerateAIReport = async () => {
+  const handleGenerateAIReportClick = () => {
+    setPendingAction('ai-report')
+    setSelectedModel(null)
+    setModelSelectOpen(true)
+  }
+
+  const handleGenerateAIReport = async (model: string | null) => {
     try {
       setAiReporting(true)
       setAiReport(null)
-      const report = await generateAIReport({ report_type: 'adhoc' }) as AIReportListItem
+      const report = await generateAIReport({ report_type: 'adhoc', model }) as AIReportListItem
       message.success(`AI 综合分析报告生成成功 (报告: ${report.report_name})`)
       await loadAll()
     } catch (e: any) {
@@ -2798,13 +2825,13 @@ function ContributorBoardSettingsPage() {
                   <Button type="primary" onClick={handleAutoWeights} loading={calculating}>
                     自动算权
                   </Button>
-                  <Button onClick={handleAIWeights} loading={aiCalculating} style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none', color: '#fff' }}>
+                  <Button onClick={handleAIWeightsClick} loading={aiCalculating} style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none', color: '#fff' }}>
                     AI 评权
                   </Button>
                   <Button onClick={handleRecalculate} danger ghost>
                     仅重算分数
                   </Button>
-                  <Button onClick={handleGenerateAIReport} loading={aiReporting} type="primary" style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
+                  <Button onClick={handleGenerateAIReportClick} loading={aiReporting} type="primary" style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
                     📑 AI 综合报告
                   </Button>
                 </Space>
@@ -2875,6 +2902,73 @@ function ContributorBoardSettingsPage() {
               <Alert message="仅创建" description="新版本将保存为草稿状态，不会立即生效。您可以在「版本历史」Tab 中对比和应用。" type="info" showIcon />
             ) : (
               <Alert message="立即应用" description="新版本将立即成为生效版本，当前版本将被归档。系统将自动重算所有贡献者的分数并生成快照。" type="warning" showIcon />
+            )}
+          </Modal>
+
+          {/* 模型选择弹窗 */}
+          <Modal
+            title={pendingAction === 'ai-weights' ? '选择 AI 模型 - AI 评权' : '选择 AI 模型 - 生成报告'}
+            open={modelSelectOpen}
+            onCancel={() => setModelSelectOpen(false)}
+            footer={[
+              <Button key="cancel" onClick={() => setModelSelectOpen(false)}>取消</Button>,
+              <Button
+                key="confirm"
+                type="primary"
+                loading={pendingAction === 'ai-weights' ? aiCalculating : aiReporting}
+                disabled={!selectedModel && llmProviders.length > 0}
+                onClick={() => {
+                  setModelSelectOpen(false)
+                  if (pendingAction === 'ai-weights') {
+                    handleAIWeights(selectedModel)
+                  } else if (pendingAction === 'ai-report') {
+                    handleGenerateAIReport(selectedModel)
+                  }
+                }}
+              >
+                确认执行
+              </Button>,
+            ]}
+          >
+            <div style={{ marginBottom: 16 }}>
+              <Text type="secondary">选择一个可用的大模型执行操作。未选择时将使用系统默认激活的模型。</Text>
+            </div>
+            {llmProviders.length === 0 ? (
+              <Alert
+                message="无可用的 LLM 提供商"
+                description="请先在「系统配置 → LLM 配置」中添加并启用至少一个 LLM 提供商。"
+                type="warning"
+                showIcon
+              />
+            ) : (
+              <Select
+                style={{ width: '100%' }}
+                placeholder="选择模型（留空使用默认激活模型）"
+                value={selectedModel || undefined}
+                onChange={v => setSelectedModel(v || null)}
+                allowClear
+              >
+                {llmProviders.filter(p => p.enabled && p.api_key_configured).map(p => (
+                  <Select.Option key={p.provider} value={p.default_model}>
+                    <Space>
+                      <Tag color={p.is_active ? 'gold' : 'blue'}>
+                        {p.display_name}
+                      </Tag>
+                      <Text type="secondary">{p.default_model}</Text>
+                      {p.is_active && <Tag color="gold">默认</Tag>}
+                    </Space>
+                  </Select.Option>
+                ))}
+              </Select>
+            )}
+            {llmProviders.filter(p => p.enabled && p.api_key_configured).length === 0 && llmProviders.length > 0 && (
+              <Alert
+                message="没有已启用且配置 API Key 的模型"
+                description="所有已配置的模型都未启用或未配置 API Key，请先在「系统配置 → LLM 配置」中完善配置。"
+                type="error"
+                showIcon
+                style={{ marginTop: 12 }}
+              />
             )}
           </Modal>
         </Tabs.TabPane>
@@ -3063,7 +3157,7 @@ function ContributorBoardSettingsPage() {
                   基于多周期四象限数据，调用大模型生成团队健康度分析和决策建议
                 </div>
               </div>
-              <Button type="primary" onClick={handleGenerateAIReport} loading={aiReporting}
+              <Button type="primary" onClick={handleGenerateAIReportClick} loading={aiReporting}
                 style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
                 生成新报告
               </Button>
