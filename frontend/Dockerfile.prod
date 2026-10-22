@@ -3,7 +3,7 @@
 
 # Stage 1: Builder
 # 国内网络环境使用镜像加速，若已配置 Docker daemon mirror 可改回 node:20-alpine
-FROM docker.m.daocloud.io/library/node:20-alpine AS builder
+FROM docker.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -37,7 +37,7 @@ RUN pnpm build
 
 
 # Stage 2: Production
-FROM docker.m.daocloud.io/library/nginx:alpine AS production
+FROM docker.io/library/nginx:alpine AS production
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
