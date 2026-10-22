@@ -5,7 +5,7 @@
 # 国内网络环境使用镜像加速
 FROM ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uv
 
-FROM docker.m.daocloud.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS dependencies
+FROM docker.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS dependencies
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 
 # Stage 2: Production
-FROM docker.m.daocloud.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS production
+FROM docker.io/library/python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS production
 
 WORKDIR /app
 
