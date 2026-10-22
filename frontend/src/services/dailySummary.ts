@@ -42,6 +42,7 @@ export interface LLMProvider {
   provider: string
   display_name: string
   default_model: string
+  enabled: boolean  // 是否启用
   is_active: boolean  // 是否为当前激活的提供商（用于 AI 总结）
   display_order: number
   api_key_configured: boolean

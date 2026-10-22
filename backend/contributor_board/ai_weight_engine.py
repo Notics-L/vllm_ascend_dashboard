@@ -138,7 +138,9 @@ async def analyze_weights_with_ai(
     prompt = _build_prompt(data_summary)
 
     # 获取启用的 LLM 配置
-    llm_config = await _get_active_llm_config(db, model)
+    from contributor_board.llm_helpers import get_active_llm_config
+
+    llm_config = await get_active_llm_config(db, model)
     if not llm_config:
         raise RuntimeError("没有可用的 LLM 配置，请先在系统配置中启用至少一个大模型供应商")
 
@@ -165,15 +167,4 @@ async def analyze_weights_with_ai(
     return weights, analysis, model_used
 
 
-async def _get_active_llm_config(db: Any, model: str | None = None) -> Any | None:
-    """从数据库获取启用的 LLM 配置。"""
-    from sqlalchemy import select as sa_select
-    from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 
-    stmt = sa_select(LLMProviderConfig).where(LLMProviderConfig.is_active == True)  # noqa: E712
-    if model:
-        stmt = stmt.where(LLMProviderConfig.default_model == model)
-    stmt = stmt.limit(1)
-
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
