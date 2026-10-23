@@ -53,6 +53,9 @@ class ResourceMetricsCollector:
                 timeout=30,
             )
         now = datetime.now(UTC)
+        executed_by_cluster: dict[int, list] = {}
+        for pod in dashboard.executed_pods:
+            executed_by_cluster.setdefault(pod.cluster_id, []).append(pod)
         collected = 0
         for summary in dashboard.clusters:
             if summary.error:
@@ -62,6 +65,7 @@ class ResourceMetricsCollector:
             # PR demand needs every currently executing NPU pod. Keeping only
             # the five largest pods undercounts PRs with a wider test matrix.
             resource_pods = sorted(pods, key=lambda pod: pod.requests.npu, reverse=True)
+            timeline_pods = [*pods, *executed_by_cluster.get(summary.cluster_id, [])]
             self.db.add(
                 ResourceNpuMetrics(
                     cluster_id=summary.cluster_id,
@@ -72,18 +76,8 @@ class ResourceMetricsCollector:
                     npu_utilization=self._percentage(summary.used.npu, summary.total.npu),
                     executing_pods_count=summary.executing_pods_count,
                     pr_count=len({pod.pr_number for pod in pods if pod.pr_number}),
-                    top_pods_json=[
-                        {
-                            "name": pod.name,
-                            "namespace": pod.namespace,
-                            "npu": pod.requests.npu,
-                            "pr_number": pod.pr_number,
-                            "pr_url": pod.pr_url,
-                            "phase": pod.phase,
-                            "created_at": pod.created_at.isoformat() if pod.created_at else None,
-                        }
-                        for pod in resource_pods
-                    ],
+                    top_pods_json=[self._serialize_pod(pod) for pod in resource_pods],
+                    pod_timeline_json=[self._serialize_pod(pod) for pod in timeline_pods],
                     collected_at=now,
                 )
             )
@@ -154,6 +148,27 @@ class ResourceMetricsCollector:
         return dict(row.config_value) if row and row.config_value else {
             "interval_minutes": 1,
             "retention_days": 30,
+        }
+
+    @staticmethod
+    def _serialize_pod(pod) -> dict:
+        """Keep enough lifecycle state to render the 24-hour Pod timeline."""
+        return {
+            "name": pod.name,
+            "namespace": pod.namespace,
+            "npu": pod.requests.npu,
+            "repository": pod.repository,
+            "repository_url": pod.repository_url,
+            "workflow_path": pod.workflow_path,
+            "workflow_url": pod.workflow_url,
+            "pr_number": pod.pr_number,
+            "pr_url": pod.pr_url,
+            "job_workflow_ref": pod.job_workflow_ref,
+            "phase": pod.phase,
+            "created_at": pod.created_at.isoformat() if pod.created_at else None,
+            "started_at": pod.started_at.isoformat() if pod.started_at else None,
+            "finished_at": pod.finished_at.isoformat() if pod.finished_at else None,
+            "duration_seconds": pod.duration_seconds,
         }
 
     @staticmethod

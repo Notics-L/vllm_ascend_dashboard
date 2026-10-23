@@ -463,6 +463,9 @@ class ResourceNpuMetrics(Base):
     executing_pods_count = Column(Integer, default=0)
     pr_count = Column(Integer, default=0)
     top_pods_json = Column(JSON)
+    # Lifecycle snapshots are kept separately from ``top_pods_json`` so the
+    # existing current-resource and PR-demand readers remain active-only.
+    pod_timeline_json = Column(JSON)
     collected_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), index=True)
 
     __table_args__ = (

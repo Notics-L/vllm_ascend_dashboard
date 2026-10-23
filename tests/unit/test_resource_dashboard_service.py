@@ -1,10 +1,60 @@
 from types import SimpleNamespace
 
-from cryptography.fernet import InvalidToken
 import pytest
+from cryptography.fernet import InvalidToken
 
 import resource_dashboard.service as resource_dashboard_service
-from resource_dashboard.service import ResourceDashboardService
+from resource_dashboard.metrics_query import PersistedResourceMetricsService
+from resource_dashboard.service import ResourceDashboardService, parse_job_workflow_ref
+
+
+def test_job_workflow_ref_uses_its_own_repository_for_all_github_links() -> None:
+    assert parse_job_workflow_ref(
+        "acme/ml-ci/.github/workflows/nightly-a2.yml@refs/pull/42/merge"
+    ) == {
+        "repository": "acme/ml-ci",
+        "repository_url": "https://github.com/acme/ml-ci",
+        "workflow_path": "nightly-a2.yml",
+        "workflow_url": "https://github.com/acme/ml-ci/actions/workflows/nightly-a2.yml",
+        "pr_number": 42,
+        "pr_url": "https://github.com/acme/ml-ci/pull/42",
+    }
+
+
+def test_job_workflow_ref_keeps_non_pr_workflows_linkable() -> None:
+    assert parse_job_workflow_ref(
+        "acme/ml-ci/.github/workflows/nightly.yml@refs/heads/main"
+    ) == {
+        "repository": "acme/ml-ci",
+        "repository_url": "https://github.com/acme/ml-ci",
+        "workflow_path": "nightly.yml",
+        "workflow_url": "https://github.com/acme/ml-ci/actions/workflows/nightly.yml",
+    }
+
+
+def test_persisted_resource_metrics_restore_github_links() -> None:
+    row = SimpleNamespace(
+        cluster_id=1,
+        cluster_name="A2",
+        top_pods_json=[{
+            "name": "runner-1",
+            "namespace": "vllm-project",
+            "npu": 8,
+            "repository": "acme/ml-ci",
+            "repository_url": "https://github.com/acme/ml-ci",
+            "workflow_path": "nightly.yml",
+            "workflow_url": "https://github.com/acme/ml-ci/actions/workflows/nightly.yml",
+            "pr_number": 42,
+            "pr_url": "https://github.com/acme/ml-ci/pull/42",
+            "job_workflow_ref": "acme/ml-ci/.github/workflows/nightly.yml@refs/pull/42/merge",
+        }],
+    )
+
+    pod = PersistedResourceMetricsService._pods(row, include_pods=True)[0]
+
+    assert pod.repository == "acme/ml-ci"
+    assert pod.workflow_url == "https://github.com/acme/ml-ci/actions/workflows/nightly.yml"
+    assert pod.pr_url == "https://github.com/acme/ml-ci/pull/42"
 
 
 @pytest.mark.asyncio

@@ -97,6 +97,25 @@ class _BoundFakeSession:
         self.rollback_count += 1
 
 
+def test_snapshot_sync_backfills_only_empty_model_fo_values():
+    missing = SimpleNamespace(
+        test_model="configs/DeepSeek_V31_Terminus_w4a8_w8a8_A5.yaml",
+        model_fo=None,
+    )
+    unmatched = SimpleNamespace(test_model="configs/unknown.yaml", model_fo="")
+    db = _FakeSession([[missing, unmatched]])
+
+    count = asyncio.run(
+        NightlyDataCollector(db)._backfill_missing_snapshot_model_fo(
+            {"deepseek_v31_terminus_w4a8_w8a8_a5.yaml": "李镕凡"}
+        )
+    )
+
+    assert count == 1
+    assert missing.model_fo == "李镕凡"
+    assert unmatched.model_fo == ""
+
+
 def test_sync_skips_when_another_worker_holds_the_materialization_lock():
     collector = NightlyDataCollector(_BoundFakeSession(acquired=0))
 
