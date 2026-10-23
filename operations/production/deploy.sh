@@ -16,6 +16,7 @@ RECOVER_FAILED_MIGRATION=false
 FAST=false
 FAST_BACKUP_MAX_AGE_HOURS="${DASHBOARD_FAST_BACKUP_MAX_AGE_HOURS:-24}"
 LOCK_DRAIN_SECONDS="${DASHBOARD_SCHEMA_LOCK_DRAIN_SECONDS:-30}"
+PRUNE_RELEASE_IMAGES="${DASHBOARD_PRUNE_RELEASE_IMAGES:-true}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -78,6 +79,67 @@ service_image() {
     container="$(service_container "$1")"
     [[ -n "$container" ]] || return 1
     docker inspect --format '{{.Config.Image}}' "$container"
+}
+image_repository() {
+    local image="$1"
+    # Immutable production references are normally repo:tag.  Digest-pinned
+    # references are already immutable and do not have older local tags to
+    # prune.
+    image="${image%@*}"
+    if [[ "$image" =~ ^(.+):[^/:]+$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf '%s\n' "$image"
+    fi
+}
+image_id_is_active() {
+    local image_id="$1" active_id
+    shift
+    for active_id in "$@"; do
+        [[ "$image_id" == "$active_id" ]] && return 0
+    done
+    return 1
+}
+prune_superseded_dashboard_images() {
+    [[ "$PRUNE_RELEASE_IMAGES" == "true" ]] || {
+        warn "release image cleanup skipped (DASHBOARD_PRUNE_RELEASE_IMAGES=$PRUNE_RELEASE_IMAGES)"
+        return 0
+    }
+
+    local service image image_id repo candidate_repo candidate_tag candidate_id
+    local -a active_ids=() repositories=(
+        "vllm_ascend_dashboard-backend"
+        "vllm_ascend_dashboard-frontend"
+    )
+    for service in backend frontend scheduler collector; do
+        image="$(service_image "$service" 2>/dev/null || true)"
+        [[ -n "$image" ]] || continue
+        image_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
+        [[ -n "$image_id" ]] && active_ids+=("$image_id")
+        repositories+=("$(image_repository "$image")")
+    done
+
+    # Only consider Dashboard backend/frontend repositories.  Other products
+    # sharing this Docker host are deliberately outside deployment scope.
+    while IFS=$'\t' read -r candidate_repo candidate_tag candidate_id; do
+        [[ "$candidate_repo" != "<none>" && "$candidate_tag" != "<none>" ]] || continue
+        case " ${repositories[*]} " in
+            *" $candidate_repo "*) ;;
+            *) continue ;;
+        esac
+        image_id_is_active "$candidate_id" "${active_ids[@]}" && continue
+        if docker ps -aq --filter "ancestor=$candidate_id" | grep -q .; then
+            warn "keeping old image in use by an existing container: $candidate_repo:$candidate_tag"
+            continue
+        fi
+        # No --force: Docker refuses deletion if a container still depends on
+        # the image, which is the required safety guard for rollback/runtime.
+        if docker image rm "$candidate_id" >/dev/null 2>&1; then
+            ok "removed superseded release image: $candidate_repo:$candidate_tag"
+        else
+            warn "could not remove superseded release image: $candidate_repo:$candidate_tag"
+        fi
+    done < <(docker image ls --format '{{.Repository}}\t{{.Tag}}\t{{.ID}}')
 }
 service_is_healthy() {
     local container
@@ -432,3 +494,6 @@ if $FAST; then
 else
     ok "verified backup retained at: $backup_file"
 fi
+
+step "Post-deploy release image cleanup"
+prune_superseded_dashboard_images

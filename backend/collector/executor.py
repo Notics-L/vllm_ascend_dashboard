@@ -150,6 +150,8 @@ class CollectorRunner:
                 await self._run_npu_queue_snapshot(ctx)
             elif task_type == "npu_queue_snapshot_cleanup":
                 await self._run_npu_queue_snapshot_cleanup(ctx)
+            elif task_type == "data_artifact_cleanup":
+                await self._run_data_artifact_cleanup(ctx)
             elif task_type == "repo_cache_refresh":
                 await self._run_repo_cache_refresh(ctx, task_params)
             else:
@@ -531,6 +533,28 @@ class CollectorRunner:
         async with SessionLocal() as db:
             deleted = await cleanup_snapshots(db, retention_days=settings.NPU_QUEUE_SNAPSHOT_RETENTION_DAYS)
         logger.info("NPU queue snapshot cleanup task %d deleted %d rows", ctx.task_id, deleted)
+
+    async def _run_data_artifact_cleanup(self, ctx: TaskContext):
+        """Prune dated disk artifacts while preserving the required windows."""
+        from pathlib import Path
+
+        from infrastructure.storage.data_retention import (
+            remove_all_but_latest_date,
+            remove_older_than_days,
+        )
+
+        data_root = Path(settings.DATA_DIR)
+        coverage_removed = remove_all_but_latest_date(data_root / "coverage")
+        claude_removed = remove_older_than_days(
+            data_root / "claude_logs",
+            retention_days=settings.CLAUDE_LOG_RETENTION_DAYS,
+        )
+        logger.info(
+            "Data artifact cleanup task %d removed coverage_dates=%d claude_log_dates=%d",
+            ctx.task_id,
+            len(coverage_removed),
+            len(claude_removed),
+        )
 
     async def _run_issues_derivation(self, ctx: TaskContext):
         """Derive test-board issue counts from durable worker execution."""

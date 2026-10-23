@@ -261,6 +261,18 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error("Failed to add NPU queue snapshot cleanup job: %s", e, exc_info=True)
 
+        try:
+            self.scheduler.add_job(
+                self._cleanup_data_artifacts_job,
+                trigger=CronTrigger(hour=4, minute=0, timezone=self._timezone),
+                id="data_artifact_cleanup",
+                name="Data Artifact Cleanup",
+                replace_existing=True,
+            )
+            logger.info("Data artifact cleanup scheduled at 04:00 %s", self._timezone)
+        except Exception as e:
+            logger.error("Failed to add data artifact cleanup job: %s", e, exc_info=True)
+
         # 失败分析不在 Scheduler 内执行；Collector 在 CI/Nightly 数据物化后
         # 将新失败任务作为 durable failure_analysis 任务入队。
 
@@ -1119,6 +1131,19 @@ class DataSyncScheduler:
             await db.commit()
         if task_id:
             logger.info("Queued NPU queue snapshot cleanup task %d", task_id)
+
+    @staticmethod
+    async def _cleanup_data_artifacts_job() -> None:
+        from infrastructure.tasks.task_manager import TaskManager
+
+        dedupe_key = f"data_artifact_cleanup:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+        async with SessionLocal() as db:
+            task_id = await TaskManager.create_task(
+                db, "data_artifact_cleanup", {}, dedupe_key, required_capability="python"
+            )
+            await db.commit()
+        if task_id:
+            logger.info("Queued data artifact cleanup task %d", task_id)
 
     @staticmethod
     async def _parse_test_results_job() -> None:
