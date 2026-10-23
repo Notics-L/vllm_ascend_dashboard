@@ -156,6 +156,7 @@ export interface ThirdPartyComponent {
   component_category: string
   versions: { version: string; usage_count: number }[]
   latest_version: string
+  baseline_status?: 'compliant' | 'violation' | 'no_baseline'
 }
 
 export interface ThirdPartyBaseline {
@@ -163,68 +164,52 @@ export interface ThirdPartyBaseline {
   component_name: string
   component_category: string
   approved_versions: string[]
-  min_version: string
-  max_version: string
-  notes: string
+  min_version: string | null
+  max_version: string | null
+  notes: string | null
   is_active: boolean
   updated_at: string | null
 }
 
-export interface ComplianceResult {
+export interface ThirdPartyVersionHistory {
+  version: string
   run_id: number
-  compliant: CompliantItem[]
-  violations: ViolationItem[]
+  branch: string | null
+  used_at: string
+}
+
+export interface ComplianceCheckResult {
+  run_id: number
+  compliant: Array<{ component: string; version: string; status: string }>
+  violations: Array<{ component: string; version: string; expected: string[] | null; min_version: string | null; max_version: string | null }>
   compliance_rate: number
 }
 
-export interface CompliantItem {
-  component: string
-  version: string
-  status: string
-}
-
-export interface ViolationItem {
-  component: string
-  version: string
-  expected: string[] | null
-  min_version: string
-  max_version: string
-}
-
-export interface AIEvaluation {
+export interface AIEvaluationSummary {
   id: number
   workflow_id: number
   evaluation_type: string
   period_start: string | null
   period_end: string | null
   run_count: number
-  trust_score: number
-  trust_level: string
+  trust_score: number | null
+  trust_level: string | null
   production_ready: boolean
-  llm_model: string
-  executive_summary: string
+  llm_model: string | null
+  generated_by: string | null
+  generated_at: string | null
+}
+
+export interface AIEvaluation extends AIEvaluationSummary {
+  executive_summary: string | null
   findings: AIFinding[]
   recommendations: AIRecommendation[]
   risk_factors: AIRiskFactor[]
   data_quality_issues: string[]
-  generated_by: string
-  generated_at: string
+  report_content: string | null
 }
 
-export interface AIEvaluationListItem {
-  id: number
-  workflow_id: number
-  evaluation_type: string
-  period_start: string | null
-  period_end: string | null
-  run_count: number
-  trust_score: number
-  trust_level: string
-  production_ready: boolean
-  llm_model: string
-  generated_by: string
-  generated_at: string
-}
+
 
 export interface AIFinding {
   id: string
@@ -247,14 +232,39 @@ export interface AIRiskFactor {
 
 export interface SyncTask {
   id: number
+  workflow_id: number
+  workflow_name: string
   task_type: string
+  trigger_source: string
   status: string
   progress: number
+  progress_message: string | null
   total_items: number
   processed_items: number
+  collected_items: number
+  days_back: number
+  max_runs: number
+  duration_seconds: number
   error_message: string | null
+  errors_json: any
   started_at: string | null
   completed_at: string | null
+  created_at: string | null
+}
+
+export interface SyncSummary {
+  total_syncs: number
+  completed_count: number
+  failed_count: number
+  running_count: number
+  total_collected: number
+  last_sync_at: string | null
+  last_sync_status: string | null
+}
+
+export interface SyncTasksResult {
+  tasks: SyncTask[]
+  total: number
 }
 
 export interface DurationTrendPoint {
@@ -265,6 +275,17 @@ export interface DurationTrendPoint {
   avg_duration: number
   min_duration: number
   max_duration: number
+}
+
+export interface WorkflowComparison {
+  workflow_id: number
+  workflow_name: string
+  stats: OverviewStats
+}
+
+export interface ComparisonResult {
+  comparisons: WorkflowComparison[]
+  days_back: number
 }
 
 // ============ API Calls ============
@@ -302,10 +323,26 @@ export const triggerSync = async (workflowId: number, daysBack = 30, maxRuns = 1
   return response.data
 }
 
-export const getSyncStatus = async (workflowId: number) => {
-  const response = await api.get<SyncTask[]>('/release-management/sync/status', {
-    params: { workflow_id: workflowId },
-  })
+export const getSyncTask = async (taskId: number) => {
+  const response = await api.get<SyncTask>(`/release-management/sync/task-by-id/${taskId}`)
+  return response.data
+}
+
+export const getSyncTasks = async (workflowId: number | null = null, status: string | null = null, limit = 20, offset = 0) => {
+  const params: Record<string, unknown> = { limit, offset }
+  if (workflowId) params.workflow_id = workflowId
+  if (status) params.status = status
+  const response = await api.get<SyncTasksResult>('/release-management/sync/tasks', { params })
+  return response.data
+}
+
+export const getSyncSummary = async () => {
+  const response = await api.get<SyncSummary>('/release-management/sync/summary')
+  return response.data
+}
+
+export const retrySync = async (taskId: number) => {
+  const response = await api.post(`/release-management/sync/retry/${taskId}`)
   return response.data
 }
 
@@ -364,7 +401,7 @@ export const getThirdPartyOverview = async (workflowIds: number[] | null) => {
 }
 
 export const getVersionHistory = async (componentName: string, limit = 50) => {
-  const response = await api.get('/release-management/third-party/version-history', {
+  const response = await api.get<ThirdPartyVersionHistory[]>('/release-management/third-party/version-history', {
     params: { component_name: componentName, limit },
   })
   return response.data
@@ -386,7 +423,7 @@ export const deleteBaseline = async (baselineId: number) => {
 }
 
 export const getComplianceCheck = async (runId: number) => {
-  const response = await api.get<ComplianceResult>('/release-management/third-party/compliance', {
+  const response = await api.get<ComplianceCheckResult>('/release-management/third-party/compliance', {
     params: { run_id: runId },
   })
   return response.data
@@ -418,7 +455,10 @@ export const listEvaluations = async (
 ) => {
   const params: Record<string, unknown> = { page, page_size: pageSize }
   if (workflowId) params.workflow_id = workflowId
-  const response = await api.get('/release-management/evaluations', { params })
+  const response = await api.get<{ evaluations: AIEvaluationSummary[]; total: number; page: number; page_size: number }>(
+    '/release-management/evaluations',
+    { params },
+  )
   return response.data
 }
 
@@ -435,6 +475,16 @@ export const getEvaluationDetail = async (evaluationId: number) => {
   const response = await api.get<AIEvaluation>(
     `/release-management/evaluations/${evaluationId}`,
   )
+  return response.data
+}
+
+export const exportPdf = async (workflowIds: number[] | null, daysBack = 30) => {
+  const params: Record<string, unknown> = { days_back: daysBack }
+  if (workflowIds) params.workflow_ids = workflowIds.join(',')
+  const response = await api.post('/release-management/export/pdf', null, {
+    params,
+    responseType: 'blob',
+  })
   return response.data
 }
 
@@ -474,4 +524,27 @@ export function getTrustLevelColor(level: string): string {
   if (l === 'high') return '#52c41a'
   if (l === 'medium') return '#faad14'
   return '#ff4d4f'
+}
+
+export function trustScoreColor(score: number | null): string {
+  if (score === null) return '#8c8c8c'
+  if (score >= 80) return '#52c41a'
+  if (score >= 60) return '#faad14'
+  return '#ff4d4f'
+}
+
+export const getComparison = async (workflowIds: number[], daysBack = 30) => {
+  const response = await api.get<ComparisonResult>('/release-management/comparison', {
+    params: { workflow_ids: workflowIds.join(','), days_back: daysBack },
+  })
+  return response.data
+}
+
+export function trustLevelLabel(level: string | null): string {
+  switch (level) {
+    case 'high': return '高'
+    case 'medium': return '中'
+    case 'low': return '低'
+    default: return level || 'N/A'
+  }
 }

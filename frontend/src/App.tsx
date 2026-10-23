@@ -38,6 +38,7 @@ import TestObservabilityDashboard from './pages/TestObservabilityDashboard'
 import LogCenter from './pages/LogCenter'
 import ShareReport from './pages/ShareReport'
 import ReleaseManagement from './components/release/ReleaseManagement'
+import BuildRunDetail from './pages/BuildRunDetail'
 import { useCurrentUser } from './hooks/useCurrentUser'
 import { appBasePath } from './utils/basePath'
 
@@ -240,6 +241,8 @@ function App() {
               <Route path="test-board" element={<TestObservabilityDashboard />} />
               {/* 发布件管理 */}
               <Route path="release-management" element={<ReleaseManagement />} />
+              {/* 构建运行详情 */}
+              <Route path="release-management/runs/:runId" element={<BuildRunDetail />} />
               {/* 日志中心（仅开发模式） */}
               {import.meta.env.DEV && <Route path="logs" element={<LogCenter />} />}
 

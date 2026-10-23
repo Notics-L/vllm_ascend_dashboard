@@ -46,7 +46,8 @@ class ReleaseWorkflowCollector:
         """列出仓库所有 workflow"""
         try:
             workflows = await self.github.list_workflows(owner, repo, per_page=100)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to discover workflows for {owner}/{repo}: {e}")
             workflows = {"workflows": []}
         return workflows.get("workflows", [])
 
@@ -107,7 +108,7 @@ class ReleaseWorkflowCollector:
             repo = workflow_config.repo_name
 
             runs = await self.github.get_workflow_runs(
-                workflow_file=workflow_config.workflow_path,
+                workflow_id_or_name=workflow_config.workflow_path,
                 days_back=days_back,
                 per_page=max_runs,
             )
@@ -128,7 +129,7 @@ class ReleaseWorkflowCollector:
                     await self.db.flush()
                     continue
 
-                jobs = await self.github.list_jobs_for_run(run["id"])
+                jobs = await self.github.get_job_list(run["id"])
                 await self._persist_run_data(workflow_config, run, jobs)
                 collected += 1
 

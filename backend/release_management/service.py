@@ -38,12 +38,15 @@ class ReleaseManagementService:
         return [self._workflow_to_dict(w) for w in workflows]
 
     async def discover_and_register(self, owner: str, repo: str) -> dict[str, Any]:
-        workflows = await self.collector.discover_workflows(owner, repo)
-        registered = await self.collector.register_workflows(owner, repo, workflows)
+        raw_workflows = await self.collector.discover_workflows(owner, repo)
+        registered = await self.collector.register_workflows(owner, repo, raw_workflows)
+        # 返回注册后从数据库读取的完整 workflow 列表（含 enabled, last_sync_at 等字段）
+        refreshed = await self.list_workflows(enabled_only=False)
         return {
-            "total_found": len(workflows),
+            "total_found": len(raw_workflows),
             "newly_registered": registered,
-            "workflows": workflows,
+            "total_registered": len(refreshed),
+            "workflows": refreshed,
         }
 
     async def toggle_workflow(self, workflow_id: int, enabled: bool) -> dict[str, Any]:

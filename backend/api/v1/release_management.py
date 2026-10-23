@@ -3,7 +3,7 @@
 """
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
@@ -21,6 +21,7 @@ from infrastructure.persistence.models import (
 )
 from release_management.ai_evaluator import TrustworthinessEvaluator
 from release_management.report_generator import ReportGenerator
+from release_management.collector import ReleaseWorkflowCollector
 from release_management.service import ReleaseManagementService
 from release_management.third_party_service import ThirdPartyService
 
@@ -66,8 +67,11 @@ async def get_report_generator() -> ReportGenerator:
 
 
 def _make_github() -> GitHubClient:
+    token = settings.GITHUB_TOKEN
+    if not token:
+        raise HTTPException(400, "GitHub Token 未配置")
     return GitHubClient(
-        token=settings.GITHUB_TOKEN or "",
+        token=token,
         owner=settings.GITHUB_OWNER or "vllm-project",
         repo=settings.GITHUB_REPO or "vllm-ascend",
     )
@@ -124,8 +128,11 @@ async def discover_workflows(
     owner: str = Query(default="vllm-project"),
     repo: str = Query(default="vllm-ascend"),
 ):
+    token = settings.GITHUB_TOKEN
+    if not token:
+        raise HTTPException(400, "GitHub Token 未配置")
     svc = ReleaseManagementService(db, GitHubClient(
-        token=settings.GITHUB_TOKEN,
+        token=token,
         owner=owner,
         repo=repo,
     ))
@@ -145,6 +152,97 @@ async def toggle_workflow(
 
 # ==================== Sync ====================
 
+def _task_to_dict(task: ReleaseAnalysisTask, workflow_name: str | None = None) -> dict[str, Any]:
+    duration = 0.0
+    if task.started_at and task.completed_at:
+        duration = (task.completed_at - task.started_at).total_seconds()
+    return {
+        "id": task.id,
+        "workflow_id": task.workflow_id,
+        "workflow_name": workflow_name or "",
+        "task_type": task.task_type,
+        "trigger_source": task.trigger_source or "manual",
+        "status": task.status,
+        "progress": task.progress or 0,
+        "progress_message": task.progress_message,
+        "total_items": task.total_items,
+        "processed_items": task.processed_items,
+        "collected_items": task.collected_items or 0,
+        "days_back": task.days_back,
+        "max_runs": task.max_runs,
+        "duration_seconds": round(duration, 1),
+        "error_message": task.error_message,
+        "errors_json": task.errors_json,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_runs: int):
+    """后台执行同步任务"""
+    from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        try:
+            task = await db.get(ReleaseAnalysisTask, task_id)
+            if not task:
+                return
+            task.status = "running"
+            task.progress_message = "正在初始化同步任务..."
+            await db.commit()
+
+            wf = await db.get(ReleaseWorkflow, workflow_id)
+            if not wf:
+                task.status = "failed"
+                task.error_message = "Workflow not found"
+                task.progress_message = "同步失败: Workflow 不存在"
+                task.completed_at = datetime.now(UTC)
+                await db.commit()
+                return
+
+            github = GitHubClient(
+                token=settings.GITHUB_TOKEN or "",
+                owner=wf.repo_owner,
+                repo=wf.repo_name,
+            )
+            collector = ReleaseWorkflowCollector(db, github)
+            collected, _collector_task = await collector.sync_workflow_runs(
+                wf, days_back=days_back, max_runs=max_runs
+            )
+
+            # Sync collector task state to the API-level task (task A)
+            # and delete the collector-created duplicate task (task B)
+            task.collected_items = collected
+            task.processed_items = _collector_task.processed_items
+            task.total_items = _collector_task.total_items
+            task.status = _collector_task.status
+            task.progress = _collector_task.progress
+            task.error_message = _collector_task.error_message
+            if _collector_task.status == "completed":
+                task.progress_message = f"同步完成，采集 {collected} 条新记录"
+            elif _collector_task.error_message:
+                task.progress_message = f"同步失败: {_collector_task.error_message[:200]}"
+            task.completed_at = _collector_task.completed_at
+
+            # Remove duplicate collector task
+            if _collector_task.id != task.id:
+                await db.delete(_collector_task)
+
+            await db.commit()
+        except Exception as e:
+            try:
+                task = await db.get(ReleaseAnalysisTask, task_id)
+                if task:
+                    task.status = "failed"
+                    task.error_message = str(e)
+                    task.progress_message = f"同步失败: {str(e)[:200]}"
+                    task.completed_at = datetime.now(UTC)
+                    await db.commit()
+            except Exception:
+                pass
+            logger.error(f"Background sync task {task_id} failed: {e}")
+
+
 @router.post("/release-management/sync")
 async def trigger_sync(
     db: DbSession,
@@ -153,39 +251,169 @@ async def trigger_sync(
     days_back: int = Query(30, ge=1, le=365),
     max_runs: int = Query(100, ge=1, le=500),
 ):
-    svc = ReleaseManagementService(db, _make_github())
-    return await svc.trigger_sync(workflow_id, days_back=days_back, max_runs=max_runs)
+    """触发异步同步任务 - 立即返回 task_id"""
+    import asyncio
+    token = settings.GITHUB_TOKEN
+    if not token:
+        raise HTTPException(400, "GitHub Token 未配置")
+
+    task = ReleaseAnalysisTask(
+        workflow_id=workflow_id,
+        task_type="sync_runs",
+        trigger_source="manual",
+        status="pending",
+        progress=0,
+        progress_message="等待执行...",
+        total_items=max_runs,
+        days_back=days_back,
+        max_runs=max_runs,
+        started_at=datetime.now(UTC),
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs))
+
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "message": "同步任务已创建，后台执行中...",
+    }
 
 
-@router.get("/release-management/sync/status")
-async def get_sync_status(
+@router.post("/release-management/sync/retry/{task_id}")
+async def retry_sync(
     db: DbSession,
     current_user: CurrentUser,
-    workflow_id: int = Query(...),
-    limit: int = Query(5, ge=1, le=20),
+    task_id: int,
 ):
-    stmt = (
-        select(ReleaseAnalysisTask)
-        .where(ReleaseAnalysisTask.workflow_id == workflow_id)
-        .order_by(ReleaseAnalysisTask.created_at.desc())
-        .limit(limit)
+    """根据历史记录重试同步"""
+    import asyncio
+    token = settings.GITHUB_TOKEN
+    if not token:
+        raise HTTPException(400, "GitHub Token 未配置")
+
+    old_task = await db.get(ReleaseAnalysisTask, task_id)
+    if not old_task:
+        raise HTTPException(404, f"同步任务 {task_id} 不存在")
+
+    days_back = old_task.days_back or 30
+    max_runs = old_task.max_runs or 100
+    workflow_id = old_task.workflow_id
+
+    task = ReleaseAnalysisTask(
+        workflow_id=workflow_id,
+        task_type="sync_runs",
+        trigger_source="retry",
+        status="pending",
+        progress=0,
+        progress_message="等待执行（重试）...",
+        total_items=max_runs,
+        days_back=days_back,
+        max_runs=max_runs,
+        started_at=datetime.now(UTC),
     )
-    result = await db.execute(stmt)
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs))
+
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "message": "重试任务已创建",
+    }
+
+
+@router.get("/release-management/sync/task-by-id/{task_id}")
+async def get_sync_task(
+    db: DbSession,
+    current_user: CurrentUser,
+    task_id: int,
+):
+    """获取单个同步任务状态"""
+    task = await db.get(ReleaseAnalysisTask, task_id)
+    if not task:
+        raise HTTPException(404, f"同步任务 {task_id} 不存在")
+    wf = await db.get(ReleaseWorkflow, task.workflow_id)
+    return _task_to_dict(task, wf.workflow_name if wf else None)
+
+
+@router.get("/release-management/sync/tasks")
+async def get_sync_tasks(
+    db: DbSession,
+    current_user: CurrentUser,
+    workflow_id: int = Query(None),
+    status: str = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """获取同步任务列表"""
+    from sqlalchemy import func as sa_func
+
+    query = select(ReleaseAnalysisTask)
+    count_query = select(sa_func.count())
+
+    if workflow_id:
+        query = query.where(ReleaseAnalysisTask.workflow_id == workflow_id)
+        count_query = count_query.where(ReleaseAnalysisTask.workflow_id == workflow_id)
+    if status:
+        query = query.where(ReleaseAnalysisTask.status == status)
+        count_query = count_query.where(ReleaseAnalysisTask.status == status)
+
+    total_result = await db.execute(count_query.select_from(ReleaseAnalysisTask))
+    total = total_result.scalar() or 0
+
+    query = query.order_by(ReleaseAnalysisTask.created_at.desc()).limit(limit).offset(offset)
+    result = await db.execute(query)
     tasks = result.scalars().all()
-    return [
-        {
-            "id": t.id,
-            "task_type": t.task_type,
-            "status": t.status,
-            "progress": t.progress,
-            "total_items": t.total_items,
-            "processed_items": t.processed_items,
-            "error_message": t.error_message,
-            "started_at": t.started_at.isoformat() if t.started_at else None,
-            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-        }
-        for t in tasks
-    ]
+
+    wf_ids = list(set(t.workflow_id for t in tasks))
+    wf_map = {}
+    if wf_ids:
+        wf_result = await db.execute(select(ReleaseWorkflow).where(ReleaseWorkflow.id.in_(wf_ids)))
+        wf_map = {w.id: w.workflow_name for w in wf_result.scalars().all()}
+
+    task_list = [_task_to_dict(t, wf_map.get(t.workflow_id)) for t in tasks]
+
+    return {"tasks": task_list, "total": total}
+
+
+@router.get("/release-management/sync/summary")
+async def get_sync_summary(
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """获取同步统计摘要"""
+    from sqlalchemy import func as sa_func
+
+    total = (await db.execute(select(sa_func.count()).select_from(ReleaseAnalysisTask))).scalar() or 0
+    completed = (await db.execute(select(sa_func.count()).select_from(ReleaseAnalysisTask).where(ReleaseAnalysisTask.status == "completed"))).scalar() or 0
+    failed = (await db.execute(select(sa_func.count()).select_from(ReleaseAnalysisTask).where(ReleaseAnalysisTask.status == "failed"))).scalar() or 0
+    running_stmt = select(sa_func.count()).where(ReleaseAnalysisTask.status.in_(["running", "pending"]))
+    running = (await db.execute(running_stmt)).scalar() or 0
+
+    last_task_result = await db.execute(
+        select(ReleaseAnalysisTask).order_by(ReleaseAnalysisTask.created_at.desc()).limit(1)
+    )
+    last_task = last_task_result.scalar_one_or_none()
+
+    total_collected_result = await db.execute(
+        select(sa_func.coalesce(sa_func.sum(ReleaseAnalysisTask.collected_items), 0)).select_from(ReleaseAnalysisTask)
+    )
+    total_collected = total_collected_result.scalar() or 0
+
+    return {
+        "total_syncs": total,
+        "completed_count": completed,
+        "failed_count": failed,
+        "running_count": running,
+        "total_collected": total_collected,
+        "last_sync_at": last_task.created_at.isoformat() if last_task else None,
+        "last_sync_status": last_task.status if last_task else None,
+    }
 
 
 # ==================== Overview & Runs ====================
@@ -229,6 +457,37 @@ async def get_run_detail(
     from release_management.analyzer import ReleaseAnalyzer
     analyzer = ReleaseAnalyzer(db)
     return await analyzer.get_run_detail(run_id)
+
+
+@router.get("/release-management/comparison")
+async def get_comparison(
+    db: DbSession,
+    current_user: CurrentUser,
+    workflow_ids: str = Query(..., description="逗号分隔的 workflow ID 列表，至少 2 个"),
+    days_back: int = Query(30, ge=1, le=365),
+):
+    """多工作流对比分析"""
+    ids = [int(x.strip()) for x in workflow_ids.split(",") if x.strip()]
+    if len(ids) < 2:
+        raise HTTPException(400, "至少需要 2 个工作流进行对比")
+
+    from release_management.analyzer import ReleaseAnalyzer
+
+    analyzer = ReleaseAnalyzer(db)
+    wf_map = {}
+    wf_result = await db.execute(select(ReleaseWorkflow).where(ReleaseWorkflow.id.in_(ids)))
+    wf_map = {w.id: w.workflow_name for w in wf_result.scalars().all()}
+
+    comparisons = []
+    for wf_id in ids:
+        overview = await analyzer.get_overview([wf_id], days_back=days_back)
+        comparisons.append({
+            "workflow_id": wf_id,
+            "workflow_name": wf_map.get(wf_id, f"#{wf_id}"),
+            "stats": overview["stats"],
+        })
+
+    return {"comparisons": comparisons, "days_back": days_back}
 
 
 # ==================== Trends ====================

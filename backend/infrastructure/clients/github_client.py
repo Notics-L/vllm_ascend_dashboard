@@ -546,6 +546,47 @@ class GitHubClient:
         """
         return await self._request("GET", f"/repos/{self.owner}/{self.repo}")
 
+    async def list_workflows(
+        self,
+        owner: str | None = None,
+        repo: str | None = None,
+        per_page: int = 100,
+    ) -> dict[str, Any]:
+        """
+        列出仓库所有 Actions workflows
+
+        Args:
+            owner: 仓库所有者（默认使用实例化时的 owner）
+            repo: 仓库名（默认使用实例化时的 repo）
+            per_page: 每页数量
+
+        Returns:
+            含 workflows 列表的字典
+        """
+        o = owner or self.owner
+        r = repo or self.repo
+        url = f"/repos/{o}/{r}/actions/workflows"
+        params = {"per_page": min(per_page, 100)}
+        logger.info(f"Listing workflows for {o}/{r}")
+        result = await self._request("GET", url, params=params)
+
+        # 分页获取所有 workflows
+        all_workflows = result.get("workflows", [])
+        total_count = result.get("total_count", 0)
+
+        if total_count > len(all_workflows):
+            page = 2
+            while len(all_workflows) < total_count:
+                params["page"] = page
+                result = await self._request("GET", url, params=params)
+                page_workflows = result.get("workflows", [])
+                if not page_workflows:
+                    break
+                all_workflows.extend(page_workflows)
+                page += 1
+
+        return {"workflows": all_workflows, "total_count": len(all_workflows)}
+
     async def __aenter__(self) -> "GitHubClient":
         """异步上下文管理器入口"""
         return self

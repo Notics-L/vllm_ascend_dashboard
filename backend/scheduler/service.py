@@ -16,6 +16,9 @@ from infrastructure.core.config import settings
 from infrastructure.db.base import SessionLocal
 
 from infrastructure.tasks.scheduler_config import SCHEDULER_RUNTIME_SETTING_MAP
+from release_management.service import ReleaseManagementService
+from release_management.analyzer import ReleaseAnalyzer
+from release_management.ai_evaluator import TrustworthinessEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +530,37 @@ class DataSyncScheduler:
             logger.info("Contributor AI report generation scheduled monthly on 1st at 06:00")
         except Exception as e:
             logger.error(f"Failed to add AI report generation job: {e}")
+
+        # Release management - auto sync
+        try:
+            release_sync_interval = getattr(settings, 'RELEASE_SYNC_INTERVAL_MINUTES', 30)
+            self.scheduler.add_job(
+                self._sync_release_workflows_job,
+                trigger=IntervalTrigger(minutes=release_sync_interval),
+                id="release_workflow_sync",
+                name="Release Workflow Auto Sync",
+                replace_existing=True,
+            )
+            logger.info(f"Release workflow sync scheduled every {release_sync_interval} minutes")
+        except Exception as e:
+            logger.error(f"Failed to add release sync job: {e}", exc_info=True)
+
+        # Release management - daily AI evaluation
+        try:
+            ai_eval_enabled = getattr(settings, 'RELEASE_AI_EVAL_ENABLED', True)
+            if ai_eval_enabled:
+                self.scheduler.add_job(
+                    self._daily_ai_evaluation_job,
+                    trigger=CronTrigger(hour=6, minute=0, timezone=self._timezone),
+                    id="release_daily_ai_evaluation",
+                    name="Release Daily AI Evaluation",
+                    replace_existing=True,
+                )
+                logger.info("Release daily AI evaluation scheduled at 06:00")
+            else:
+                logger.info("Release daily AI evaluation DISABLED")
+        except Exception as e:
+            logger.error(f"Failed to add daily AI evaluation job: {e}", exc_info=True)
 
     async def apply_db_config_overrides(self) -> None:
         """从数据库读取调度配置，覆盖默认值（异步，仅在事件循环内调用）。
@@ -1659,7 +1693,65 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error("Scheduled AI report generation failed: %s", e, exc_info=True)
 
-# 全局调度器实例
+    async def _sync_release_workflows_job(self):
+        """Periodically sync all release workflow runs from GitHub"""
+        async with SessionLocal() as db:
+            try:
+                if not self.github_client:
+                    self._initialize_github_client()
+                if not self.github_client:
+                    logger.warning("GitHub client not available for release sync")
+                    return
+
+                svc = ReleaseManagementService(db, self.github_client)
+                workflows = await svc.list_workflows(enabled_only=True)
+
+                for wf in workflows:
+                    try:
+                        result = await svc.trigger_sync(wf["id"], days_back=7, max_runs=50)
+                        logger.info(f"Release sync workflow {wf['workflow_name']}: {result['collected']} new runs")
+                    except Exception as e:
+                        logger.error(f"Release sync failed for workflow {wf['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Release sync job failed: {e}", exc_info=True)
+            finally:
+                await db.close()
+
+    async def _daily_ai_evaluation_job(self):
+        """Daily AI trustworthiness evaluation at 6:00 AM"""
+        async with SessionLocal() as db:
+            try:
+                from sqlalchemy import select
+
+                from infrastructure.persistence.models import ReleaseWorkflow
+
+                stmt = select(ReleaseWorkflow.id).where(ReleaseWorkflow.enabled.is_(True))
+                result = await db.execute(stmt)
+                wf_ids = [row[0] for row in result.fetchall()]
+
+                if not wf_ids:
+                    logger.info("No enabled workflows for daily AI evaluation, skipping")
+                    return
+
+                evaluator = TrustworthinessEvaluator(db=db)
+
+                yesterday = date.today() - timedelta(days=1)
+                for wf_id in wf_ids:
+                    try:
+                        _, evaluation, _ = await evaluator.evaluate(
+                            workflow_id=wf_id,
+                            period_start=yesterday.isoformat(),
+                            period_end=date.today().isoformat(),
+                        )
+                        logger.info(f"Daily AI evaluation completed for workflow {wf_id}: trust_score={evaluation.trust_score if evaluation else 'N/A'}")
+                    except Exception as e:
+                        logger.error(f"Daily AI evaluation failed for workflow {wf_id}: {e}")
+            except Exception as e:
+                logger.error(f"Daily AI evaluation job failed: {e}", exc_info=True)
+            finally:
+                await db.close()
+
+    # 全局调度器实例
 _scheduler: DataSyncScheduler | None = None
 
 
