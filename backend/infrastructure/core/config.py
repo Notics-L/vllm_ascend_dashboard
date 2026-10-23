@@ -139,7 +139,10 @@ class Settings(BaseSettings):
     COVERAGE_SYNC_INTERVAL_MINUTES: int = 60
     COVERAGE_DAILY_SYNC_HOUR: int = 3
     COVERAGE_DAILY_SYNC_MINUTE: int = 15
-    COVERAGE_ARCHIVE_RETENTION_DAYS: int = 7
+    # Coverage archives are source artifacts: retaining the newest complete
+    # daily snapshot is sufficient after normalized data reaches MySQL.
+    COVERAGE_ARCHIVE_RETENTION_DAYS: int = 1
+    CLAUDE_LOG_RETENTION_DAYS: int = 7
     PR_COVERAGE_TAR_URL: str = "https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/ci/precision-test/coverage.tar"
     PR_COVERAGE_DOWNLOAD_TIMEOUT_SECONDS: int = 300
     PR_COVERAGE_DOWNLOAD_RETRIES: int = 3
