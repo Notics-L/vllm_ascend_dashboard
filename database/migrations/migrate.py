@@ -41,6 +41,7 @@ from database.migrations.process_runtime import run as migrate_process_runtime
 from database.migrations.resource_metrics_query_indexes import (
     run as migrate_resource_metrics_query_indexes,
 )
+from database.migrations.resource_pod_timeline import run as migrate_resource_pod_timeline
 from database.migrations.service_permissions import run as migrate_service_permissions
 from database.migrations.task_queue import run as migrate_phase_a
 from database.migrations.contributor_board import run as migrate_contributor_board
@@ -81,6 +82,7 @@ async def migrate() -> None:
     await migrate_npu_occupancy_current_snapshot()
     await migrate_github_workflow_run_metadata()
     await migrate_resource_metrics_query_indexes()
+    await migrate_resource_pod_timeline()
     await migrate_ci_npu_facts()
     await migrate_ci_npu_queue_snapshots()
     await migrate_ci_npu_queue_snapshot_physical_running()

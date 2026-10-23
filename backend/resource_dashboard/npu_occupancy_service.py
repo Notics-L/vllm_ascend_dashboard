@@ -82,13 +82,55 @@ def npu_cards(env: dict) -> int:
     return total
 
 
-def project_of(env: dict) -> str:
+def project_identity(env: dict) -> tuple[str | None, str | None]:
+    """Return a canonical GitHub owner/repository pair from upstream metadata.
+
+    Pod history sometimes stores the repository in its legacy hyphenated form
+    (for example ``sgl-project-sglang``).  Keep the conversion at the ingest
+    boundary so grouping and generated GitHub links use the same identity.
+    """
     comments = env.get("extend_env_comments") or {}
-    organization, repository = comments.get("organization"), comments.get("repository")
+    organization = str(comments.get("organization") or "").strip() or None
+    # ARC runner payloads use ``job_repository`` while other producers use
+    # ``repository``.  They describe the same GitHub identity.
+    repository = str(comments.get("repository") or comments.get("job_repository") or "").strip() or None
+
+    if organization and repository:
+        # Some upstreams put the full ``owner/repository`` value in
+        # ``repository`` as well as supplying ``organization`` separately.
+        # Prefer that complete identifier instead of producing invalid paths
+        # such as ``Ascend/Ascend/pytorch``.
+        normalized_repository = repository.strip("/")
+        if "/" in normalized_repository:
+            owner, repo = normalized_repository.split("/", 1)
+            if owner and repo:
+                return owner, repo
+        return organization, repository
+
+    candidate = repository or organization
+    if candidate:
+        normalized = candidate.strip("/")
+        if "/" in normalized:
+            owner, repo = normalized.split("/", 1)
+            if owner and repo:
+                return owner, repo
+        match = re.fullmatch(r"(?P<owner>.+-project)-(?P<repo>.+)", normalized)
+        if match:
+            return match["owner"], match["repo"]
+
+    workflow_ref = str(comments.get("workflow_ref") or "")
+    match = re.match(r"(?P<owner>[^/]+)/(?P<repo>[^/]+)/\.github/workflows/", workflow_ref)
+    if match:
+        return match["owner"], match["repo"]
+    return organization, repository
+
+
+def project_of(env: dict) -> str:
+    organization, repository = project_identity(env)
     if organization and repository:
         return f"{organization}/{repository}"
     if repository:
-        return str(repository)
+        return repository
     groups = env.get("groups") or {}
     return sorted(groups)[0] if groups else "未知"
 
@@ -138,8 +180,7 @@ def normalize_records(envs: list[dict], snapshot_at: datetime) -> list[Occupancy
         elif npu_list is not None:
             npu_list = str(npu_list)
         comments = env.get("extend_env_comments") or {}
-        organization = str(comments.get("organization") or "") or None
-        repository = str(comments.get("repository") or "") or None
+        organization, repository = project_identity(env)
         workflow_run_id = _positive_int(comments.get("workflow_run_id"))
         workflow_ref = str(comments.get("workflow_ref") or "") or None
         workflow = workflow_of(env)

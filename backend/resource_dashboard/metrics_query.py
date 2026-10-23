@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from contracts.schemas import (
     ResourceDashboardResponse,
     ResourceNodeInfo,
     ResourcePodInfo,
+    ResourcePodTimelineResponse,
     ResourceQuantity,
 )
 from infrastructure.persistence.models import (
@@ -54,6 +55,49 @@ class PersistedResourceMetricsService:
     ) -> ClusterResourceSummary:
         summaries = await self._build_summaries(db, [cluster], include_pods)
         return summaries[0]
+
+    async def build_pod_timeline(
+        self,
+        db: AsyncSession,
+        cluster_ids: list[int] | None = None,
+        hours: int = 24,
+    ) -> ResourcePodTimelineResponse:
+        """Merge persisted lifecycle snapshots into one Pod per 24-hour row.
+
+        A Pod is retained when it was observed at least once during the time
+        window. Terminal timestamps come from Kubernetes, not from an inferred
+        disappearance between two collector polls.
+        """
+        generated_at = datetime.now(UTC)
+        window_start = generated_at - timedelta(hours=hours)
+        stmt = select(ResourceNpuMetrics).where(
+            ResourceNpuMetrics.collected_at >= window_start,
+            ResourceNpuMetrics.pod_timeline_json.is_not(None),
+        )
+        if cluster_ids:
+            stmt = stmt.where(ResourceNpuMetrics.cluster_id.in_(cluster_ids))
+        rows = (await db.execute(stmt.order_by(ResourceNpuMetrics.collected_at.asc()))).scalars().all()
+        merged: dict[tuple[int, str, str], dict] = {}
+        for row in rows:
+            for item in row.pod_timeline_json or []:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                key = (row.cluster_id, str(item.get("namespace") or ""), str(item["name"]))
+                current = merged.get(key)
+                if current is None:
+                    current = {"cluster_id": row.cluster_id, "cluster_name": row.cluster_name, **item}
+                    merged[key] = current
+                    continue
+                for field, value in item.items():
+                    if value is not None:
+                        current[field] = value
+
+        pods = [self._pod_from_timeline(item) for item in merged.values()]
+        return ResourcePodTimelineResponse(
+            generated_at=generated_at,
+            window_start=window_start,
+            pods=sorted(pods, key=lambda pod: (pod.created_at or generated_at, pod.name)),
+        )
 
     async def _build_summaries(
         self,
@@ -199,18 +243,35 @@ class PersistedResourceMetricsService:
             if not isinstance(item, dict) or not item.get("name"):
                 continue
             pods.append(
-                ResourcePodInfo(
-                    cluster_id=row.cluster_id,
-                    cluster_name=row.cluster_name,
-                    namespace=str(item.get("namespace") or ""),
-                    name=str(item["name"]),
-                    phase=item.get("phase"),
-                    pr_number=item.get("pr_number"),
-                    pr_url=item.get("pr_url"),
-                    requests=ResourceQuantity(npu=item.get("npu") or 0),
-                )
+                PersistedResourceMetricsService._pod_from_timeline({
+                    "cluster_id": row.cluster_id,
+                    "cluster_name": row.cluster_name,
+                    **item,
+                })
             )
         return pods
+
+    @staticmethod
+    def _pod_from_timeline(item: dict) -> ResourcePodInfo:
+        return ResourcePodInfo(
+            cluster_id=int(item["cluster_id"]),
+            cluster_name=str(item["cluster_name"]),
+            namespace=str(item.get("namespace") or ""),
+            name=str(item["name"]),
+            phase=item.get("phase"),
+            repository=item.get("repository"),
+            repository_url=item.get("repository_url"),
+            workflow_path=item.get("workflow_path"),
+            workflow_url=item.get("workflow_url"),
+            pr_number=item.get("pr_number"),
+            pr_url=item.get("pr_url"),
+            job_workflow_ref=item.get("job_workflow_ref"),
+            created_at=item.get("created_at"),
+            started_at=item.get("started_at"),
+            finished_at=item.get("finished_at"),
+            duration_seconds=item.get("duration_seconds"),
+            requests=ResourceQuantity(npu=item.get("npu") or 0),
+        )
 
     @staticmethod
     def _overall(summaries: Iterable[ClusterResourceSummary]) -> ClusterResourceSummary:

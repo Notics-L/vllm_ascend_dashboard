@@ -10,6 +10,7 @@ import {
   Row,
   Segmented,
   Select,
+  Slider,
   Space,
   Spin,
   Table,
@@ -43,6 +44,8 @@ import {
   getEnabledResourceClusters,
   getNodeUtilizationHeatmap,
   getResourceDashboard,
+  getResourcePodTimeline,
+  type ResourcePodInfo,
 } from "../services/resourceDashboard";
 import { getNpuMetrics } from "../services/resourceMetrics";
 import "./NpuQueueDemand.css";
@@ -50,11 +53,6 @@ import "./NpuQueueDemand.css";
 const { Text } = Typography;
 const number = (value: number) =>
   value.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
-const comparablePoolName = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/^dev[-_]?/, "")
-    .replace(/[^a-z0-9]/g, "");
 const heatColor = (value: number | null) => {
   if (value === null) return "repeating-linear-gradient(135deg, #fff, #fff 4px, #e5e7eb 4px, #e5e7eb 6px)";
   if (value === 0) return "#d9d9d9";
@@ -63,6 +61,30 @@ const heatColor = (value: number | null) => {
   if (value <= 75) return "#8068d9";
   return "#211950";
 };
+
+type TaskPod = ResourcePodInfo & {
+  pool: string;
+  timelineStartedAt: string | null;
+  waitSeconds: number;
+  runSeconds: number | null;
+  severity: "正常" | "关注" | "严重" | "阻塞";
+};
+
+const formatDuration = (seconds: number | null) => {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
+};
+
+const waitSeverity = (seconds: number): TaskPod["severity"] => {
+  if (seconds >= 60 * 60) return "阻塞";
+  if (seconds >= 30 * 60) return "严重";
+  if (seconds >= 5 * 60) return "关注";
+  return "正常";
+};
+
 export default function NpuQueueDemand() {
   const [queuePools, setQueuePools] = useState<string[]>([]);
   const [trendPool, setTrendPool] = useState("all");
@@ -73,9 +95,11 @@ export default function NpuQueueDemand() {
   const [poolMode, setPoolMode] = useState<"current" | "usage" | "machines">("current");
   const [poolModeDirection, setPoolModeDirection] = useState<"forward" | "backward">("forward");
   const [sectionPool, setSectionPool] = useState("all");
+  const [taskPool, setTaskPool] = useState("all");
+  const [minimumWaitSeconds, setMinimumWaitSeconds] = useState(300);
   const [trendMode, setTrendMode] = useState<"current" | "history">("current");
   const [trendModeDirection, setTrendModeDirection] = useState<"forward" | "backward">("forward");
-  const [taskMode, setTaskMode] = useState<"queue" | "cost">("queue");
+  const [taskMode, setTaskMode] = useState<"queue" | "cost">("cost");
   const [costPool, setCostPool] = useState("all");
   const [costDays, setCostDays] = useState<1 | 7>(7);
   const [costScopes, setCostScopes] = useState<Array<"actual" | "full">>([
@@ -101,14 +125,15 @@ export default function NpuQueueDemand() {
     staleTime: 30_000,
     refetchInterval: 30_000,
   });
-  const sectionResourceQuery = useQuery({
-    queryKey: ["npu-pool-resource", sectionPool],
-    queryFn: () =>
-      getResourceDashboard({
-        include_pods: true,
-        cluster_ids: selectedSectionCluster ? [selectedSectionCluster.id] : undefined,
-      }),
-    enabled: sectionPool === "all" || Boolean(selectedSectionCluster),
+  const taskTimelineQuery = useQuery({
+    queryKey: ["npu-pod-timeline", taskPool],
+    queryFn: () => getResourcePodTimeline({
+      cluster_ids: taskPool === "all"
+        ? undefined
+        : clusterConfigQuery.data?.filter((cluster) => cluster.name === taskPool).map((cluster) => cluster.id),
+      hours: 24,
+    }),
+    enabled: taskPool === "all" || Boolean(clusterConfigQuery.data),
     staleTime: 30_000,
     refetchInterval: 30_000,
   });
@@ -222,17 +247,6 @@ export default function NpuQueueDemand() {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([date, cardHours]) => ({ date, cardHours: Math.round(cardHours * 10) / 10 }));
   }, [usageQuery.data]);
-  const totals = useMemo(
-    () => ({
-      waitingJobs: pools.reduce((sum, pool) => sum + pool.waitingJobs, 0),
-      waitingCards: pools.reduce((sum, pool) => sum + pool.waitingCards, 0),
-      oldest: Math.max(
-        ...(data?.queue ?? []).map((item) => item.waitMinutes),
-        0,
-      ),
-    }),
-    [data, pools],
-  );
   const queue = useMemo(
     () =>
       (data?.queue ?? []).filter(
@@ -254,25 +268,103 @@ export default function NpuQueueDemand() {
       ),
     [resourceQuery.data],
   );
+  const timelinePods = useMemo(() => {
+    const historyPods = taskTimelineQuery.data?.pods ?? [];
+    if (historyPods.length) return historyPods;
+    // The lifecycle history starts accumulating only after the new collector
+    // is deployed. Do not leave section 02 blank during that first window.
+    return (resourceQuery.data?.clusters ?? [])
+      .filter((cluster) => taskPool === "all" || cluster.cluster_name === taskPool)
+      .flatMap((cluster) => cluster.executing_pods)
+      .filter((pod) => pod.requests.npu > 0 && ["Pending", "Running"].includes(pod.phase ?? ""));
+  }, [resourceQuery.data, taskPool, taskTimelineQuery.data?.pods]);
+  const taskTimelineGeneratedAt = taskTimelineQuery.data?.pods.length
+    ? taskTimelineQuery.data.generated_at
+    : resourceQuery.data?.generated_at;
+  const totals = useMemo(() => {
+    const snapshotAt = dayjs(taskTimelineGeneratedAt ?? undefined);
+    const recentWindowSeconds = 24 * 60 * 60;
+    const recentWaits = timelinePods.map((pod) => {
+      const createdAt = dayjs(pod.created_at ?? snapshotAt);
+      const waitEnd = pod.started_at ? dayjs(pod.started_at) : snapshotAt;
+      return Math.max(0, Math.min(recentWindowSeconds, waitEnd.diff(createdAt, "second")));
+    });
+    return {
+      waitingJobs: pendingPods.length,
+      waitingCards: pendingPods.reduce((sum, pod) => sum + pod.requests.npu, 0),
+      seriousLast24Hours: recentWaits.filter((seconds) => seconds > 60 * 60).length,
+      longestLast24Hours: Math.max(0, ...recentWaits),
+    };
+  }, [pendingPods, taskTimelineGeneratedAt, timelinePods]);
+  const longestWait = useMemo(() => {
+    const seconds = totals.longestLast24Hours;
+    if (seconds < 60) return { value: number(seconds), unit: "秒" };
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return { value: number(minutes), unit: "分钟" };
+    return { value: `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`, unit: "" };
+  }, [totals.longestLast24Hours]);
+  const taskPods = useMemo(() => {
+    const snapshotAt = dayjs(taskTimelineGeneratedAt ?? undefined);
+    return timelinePods
+      .filter((pod) => pod.requests.npu > 0)
+      .map((pod): TaskPod => {
+            const createdAt = pod.created_at ? dayjs(pod.created_at) : snapshotAt;
+            const startedAt = pod.started_at
+              ? dayjs(pod.started_at)
+              : pod.phase === "Running"
+                ? snapshotAt.subtract(Math.max(60, pod.duration_seconds ?? 0), "second")
+                : null;
+            const waitSeconds = Math.max(0, Math.floor((startedAt ?? snapshotAt).diff(createdAt, "second")));
+            return {
+              ...pod,
+              pool: pod.cluster_name,
+              timelineStartedAt: startedAt?.toISOString() ?? null,
+              waitSeconds,
+              runSeconds: startedAt
+                ? Math.max(0, Math.floor((pod.finished_at ? dayjs(pod.finished_at) : snapshotAt).diff(startedAt, "second")))
+                : null,
+              severity: waitSeverity(waitSeconds),
+            };
+          })
+      .sort((left, right) => right.waitSeconds - left.waitSeconds);
+  }, [taskTimelineGeneratedAt, timelinePods]);
+  const visibleTaskPods = useMemo(
+    () =>
+      taskPods.filter((pod) => pod.waitSeconds >= minimumWaitSeconds),
+    [minimumWaitSeconds, taskPods],
+  );
+  const taskTimelineEnd = useMemo(
+    () => dayjs(taskTimelineGeneratedAt ?? undefined),
+    [taskTimelineGeneratedAt],
+  );
+  const taskTimelineStart = taskTimelineEnd.subtract(24, "hour");
+  const timelineSegmentStyle = (startAt: string | null | undefined, endAt: string | null | undefined) => {
+    if (!startAt || !endAt) return { display: "none" } as const;
+    const start = Math.max(taskTimelineStart.valueOf(), dayjs(startAt).valueOf());
+    const end = Math.min(taskTimelineEnd.valueOf(), dayjs(endAt).valueOf());
+    const visibleStart = end <= start ? Math.max(taskTimelineStart.valueOf(), end - 120_000) : start;
+    const windowMs = taskTimelineEnd.diff(taskTimelineStart);
+    return {
+      left: `${((visibleStart - taskTimelineStart.valueOf()) / windowMs) * 100}%`,
+      width: `${Math.max(0.5, ((end - visibleStart) / windowMs) * 100)}%`,
+    };
+  };
   const physicalRows = useMemo(
     () =>
-      (sectionResourceQuery.data?.clusters ?? []).map((cluster) => {
-        const demand = pools.find(
-          (pool) =>
-            comparablePoolName(pool.name) ===
-            comparablePoolName(cluster.cluster_name),
-        );
+      (resourceQuery.data?.clusters ?? [])
+        .filter((cluster) => sectionPool === "all" || cluster.cluster_name === sectionPool)
+        .map((cluster) => {
         const resourceName =
           clusterConfigQuery.data?.find(
             (item) => item.id === cluster.cluster_id,
           )?.npu_resource_name ?? "未配置资源名";
-        const waitingCards = demand?.waitingCards ?? 0;
         const pods = cluster.executing_pods;
         const pendingPodDetails = pods.filter((pod) => pod.phase === "Pending");
         const pendingCardsFromDetails = pendingPodDetails.reduce(
           (sum, pod) => sum + pod.requests.npu,
           0,
         );
+        const waitingCards = pendingCardsFromDetails;
         const machineRows = (currentMachineQuery.data?.nodes ?? []).filter(
           (node) => node.cluster_id === cluster.cluster_id,
         );
@@ -301,11 +393,6 @@ export default function NpuQueueDemand() {
           pendingPods: pendingPodDetails.length,
           pendingCards: pendingCardsFromDetails,
           pods,
-          queue: (data?.queue ?? []).filter(
-            (item) =>
-              comparablePoolName(item.pool) ===
-              comparablePoolName(cluster.cluster_name),
-          ),
           resourceName,
           error: cluster.error,
           machineUtilizations,
@@ -318,7 +405,7 @@ export default function NpuQueueDemand() {
             : null,
         };
       }),
-    [clusterConfigQuery.data, currentMachineQuery.data?.nodes, data?.queue, pools, sectionResourceQuery.data],
+    [clusterConfigQuery.data, currentMachineQuery.data?.nodes, resourceQuery.data, sectionPool],
   );
   const costData = useMemo(
     () => [...(costQuery.data?.prCosts ?? [])].sort((left, right) => right.allCardHours - left.allCardHours).slice(0, 10),
@@ -393,21 +480,26 @@ export default function NpuQueueDemand() {
                 </strong>
               </div>
               <div>
-                <span>排队 Job</span>
+                <span>等待 Pod</span>
                 <strong>
                   {number(totals.waitingJobs)} <em>个</em>
                 </strong>
               </div>
               <div>
-                <span>最长等待</span>
+                <span>严重等待（近 24h）</span>
                 <strong>
-                  {number(totals.oldest)} <em>min</em>
+                  {number(totals.seriousLast24Hours)} <em>个</em>
+                </strong>
+              </div>
+              <div>
+                <span>最长等待（近 24h）</span>
+                <strong>
+                  {longestWait.value} <em>{longestWait.unit}</em>
                 </strong>
               </div>
             </div>
             <Text className="npu-demand-pressure-note">
-              等待需求仅统计 Kubernetes Pending Pod；尚未创建 Pod 的 CI Job
-              不计入卡等待。
+              当前等待需求仅统计 Kubernetes Pending Pod；尚未创建 Pod 的 CI Job 不计入卡等待。严重等待和最长等待统计近 24 小时内采集到的 Pod 调度等待，严重阈值为超过 60 分钟。
             </Text>
           </section>
         </Col>
@@ -490,13 +582,79 @@ export default function NpuQueueDemand() {
         </Col>
       </Row>
 
+      <section className="npu-demand-task-queue" aria-labelledby="npu-task-queue-title">
+        <div className="npu-demand-section-heading">
+          <div>
+            <h2 id="npu-task-queue-title">02 各任务排队情况</h2>
+            <Text type="secondary">只统计 Kubernetes Pod 从创建到上卡的调度等待；切换资源池后与当前资源汇总使用相同快照。</Text>
+          </div>
+          <Select
+            value={taskPool}
+            style={{ minWidth: 180 }}
+            onChange={setTaskPool}
+            options={[
+              { value: "all", label: "全部资源池" },
+              ...(clusterConfigQuery.data ?? []).map((cluster) => ({ value: cluster.name, label: cluster.name })),
+            ]}
+          />
+        </div>
+        <div className="npu-demand-task-toolbar">
+          <div className="npu-demand-wait-slider">
+            <span>显示等待 ≥ {minimumWaitSeconds} 秒（{number(minimumWaitSeconds / 60)} 分钟）</span>
+            <Slider min={0} max={3600} step={30} value={minimumWaitSeconds} onChange={setMinimumWaitSeconds} tooltip={{ formatter: (value) => `${value ?? 0} 秒` }} />
+          </div>
+        </div>
+        {taskTimelineQuery.isError ? (
+          <Alert type="error" showIcon message="任务资源快照获取失败" />
+        ) : visibleTaskPods.length ? (
+          <div className="npu-demand-timeline" aria-label="最近 24 小时任务等待与运行时间线">
+            <div className="npu-demand-timeline-axis"><span>任务 / 资源</span><div><span>{taskTimelineStart.format("MM-DD HH:mm")}</span><span>{taskTimelineEnd.subtract(18, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(12, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(6, "hour").format("HH:mm")}</span><span>现在</span></div></div>
+            {visibleTaskPods.map((pod) => {
+              const waitingEnd = pod.timelineStartedAt ?? taskTimelineEnd.toISOString();
+              const runningEnd = pod.timelineStartedAt ? (pod.finished_at ?? taskTimelineEnd.toISOString()) : null;
+              return (
+                <div className="npu-demand-timeline-row" key={`${pod.cluster_id}/${pod.namespace}/${pod.name}`}>
+                  <div className="npu-demand-timeline-meta">
+                    <strong className="npu-demand-timeline-pod-name">{pod.name}</strong>
+                    <Tag color={pod.severity === "阻塞" ? "red" : pod.severity === "严重" ? "orange" : pod.severity === "关注" ? "gold" : "default"}>{pod.severity}</Tag>
+                    <div className="npu-demand-timeline-links">
+                      {pod.repository_url ? <a href={pod.repository_url} target="_blank" rel="noreferrer">仓库：{pod.repository ?? "打开"}</a> : <span>仓库：—</span>}
+                      {pod.workflow_url ? <a href={pod.workflow_url} target="_blank" rel="noreferrer">Workflow：{pod.workflow_path ?? "打开"}</a> : <span>Workflow：—</span>}
+                      {pod.pr_url ? <a href={pod.pr_url} target="_blank" rel="noreferrer">PR #{pod.pr_number ?? "详情"}</a> : <span>PR：—</span>}
+                    </div>
+                    <div className="npu-demand-timeline-hover-card" role="tooltip">
+                      <strong>{pod.name}</strong>
+                      <span>{pod.namespace} · {pod.pool} · {number(pod.requests.npu)} NPU</span>
+                      <span>等待 {formatDuration(pod.waitSeconds)}{pod.runSeconds !== null ? ` · 运行 ${formatDuration(pod.runSeconds)}` : ""}</span>
+                      <span>Repository：{pod.repository ?? "未关联"}</span>
+                      <span>Workflow：{pod.workflow_path ?? "未关联"}</span>
+                      <div>
+                        {pod.repository_url ? <a href={pod.repository_url} target="_blank" rel="noreferrer">打开仓库</a> : <span>仓库链接不可用</span>}
+                        {pod.workflow_url ? <a href={pod.workflow_url} target="_blank" rel="noreferrer">打开 Workflow</a> : <span>Workflow 链接不可用</span>}
+                        {pod.pr_url ? <a href={pod.pr_url} target="_blank" rel="noreferrer">打开 PR #{pod.pr_number ?? ""}</a> : <span>未关联 PR</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="npu-demand-timeline-track">
+                    <i className="npu-demand-timeline-wait" style={timelineSegmentStyle(pod.created_at, waitingEnd)} title={`等待调度：${formatDuration(pod.waitSeconds)}`} />
+                    <i className="npu-demand-timeline-run" style={timelineSegmentStyle(pod.timelineStartedAt, runningEnd)} title={`上卡运行：${formatDuration(pod.runSeconds)}`} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <Text type="secondary">当前筛选条件下暂无符合等待阈值的 Pod。</Text>
+        )}
+      </section>
+
       <section
         className="npu-demand-pool-section"
         aria-labelledby="npu-pool-title"
       >
         <div className="npu-demand-section-heading">
           <div>
-            <h2 id="npu-pool-title">02 各资源池资源状态</h2>
+            <h2 id="npu-pool-title">03 当前资源</h2>
             <Text type="secondary">
               Kubernetes 实时资源快照；Pending Pod 单独展示为等待需求。
             </Text>
@@ -540,9 +698,9 @@ export default function NpuQueueDemand() {
             className="npu-demand-pool-table"
             size="middle"
             pagination={false}
-            loading={sectionResourceQuery.isLoading}
+            loading={resourceQuery.isLoading}
             locale={{
-              emptyText: sectionResourceQuery.isError
+              emptyText: resourceQuery.isError
                 ? "Kubernetes 资源快照获取失败"
                 : "暂无已配置的 Kubernetes 资源池",
             }}
@@ -570,10 +728,17 @@ export default function NpuQueueDemand() {
               expandedRowRender: (record) => (
                 <div className="npu-demand-pool-details">
                   <div>
-                    <h4>当前占用 Pod</h4>
+                    <h4>运行中与等待调度的 Pod</h4>
                     <Text type="secondary">资源名：{record.resourceName}</Text>
                     {record.pods.length ? (
                       <div className="npu-demand-pod-list">
+                        <div className="npu-demand-pod-head">
+                          <span>Pod</span>
+                          <span>命名空间</span>
+                          <span>状态</span>
+                          <span>申请卡数</span>
+                          <span>关联链接</span>
+                        </div>
                         {record.pods.map((pod) => (
                           <div
                             className="npu-demand-pod-row"
@@ -583,28 +748,18 @@ export default function NpuQueueDemand() {
                             <span>{pod.namespace || "—"}</span>
                             <span>{pod.phase || "Unknown"}</span>
                             <span>申请 {number(pod.requests.npu)} 卡</span>
+                            <span>
+                              {pod.pr_url ? (
+                                <a href={pod.pr_url} target="_blank" rel="noreferrer">
+                                  PR #{pod.pr_number ?? "详情"}
+                                </a>
+                              ) : "—"}
+                            </span>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <Text type="secondary">暂无执行中 Pod 明细</Text>
-                    )}
-                  </div>
-                  <div>
-                    <h4>等待中的 CI Job</h4>
-                    {record.queue.length ? (
-                      <div className="npu-demand-pod-list">
-                        {record.queue.map((item) => (
-                          <div className="npu-demand-pod-row" key={item.key}>
-                            <strong>{item.job || item.run}</strong>
-                            <span>{item.repository}</span>
-                            <span>等待 {item.waitMinutes} 分钟</span>
-                            <span>申请 {number(item.cards)} 卡</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <Text type="secondary">无等待</Text>
                     )}
                   </div>
                 </div>
@@ -931,15 +1086,12 @@ export default function NpuQueueDemand() {
       >
         <div className="npu-demand-section-heading">
           <div>
-            <h2 id="npu-task-title">04 任务与资源需求分析</h2>
+            <h2 id="npu-task-title">05 任务与资源需求分析</h2>
           </div>
           <Segmented
             value={taskMode}
             onChange={(value) => setTaskMode(value as "queue" | "cost")}
-            options={[
-              { label: "当前排队", value: "queue" },
-              { label: "按 Run 消耗", value: "cost" },
-            ]}
+            options={[{ label: "按 Run 消耗", value: "cost" }]}
           />
         </div>
         {taskMode === "queue" ? (
@@ -1002,6 +1154,16 @@ export default function NpuQueueDemand() {
                       width: 190,
                       render: (value: string | null | undefined) =>
                         value || "—",
+                    },
+                    {
+                      title: "关联链接",
+                      key: "link",
+                      width: 120,
+                      render: (_, pod) => pod.pr_url ? (
+                        <a href={pod.pr_url} target="_blank" rel="noreferrer">
+                          PR #{pod.pr_number ?? "详情"}
+                        </a>
+                      ) : "—",
                     },
                   ]}
                 />

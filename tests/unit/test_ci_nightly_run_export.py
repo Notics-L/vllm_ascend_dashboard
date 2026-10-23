@@ -23,7 +23,7 @@ def test_nightly_runs_xlsx_is_openpyxl_readable_with_links_and_merges():
             "coverage": "A3 / 单机",
             "log_url": "https://github.com/vllm-project/vllm-ascend/actions/runs/1/job/2",
             "model_fo": "FO-A",
-            "ai_analysis": "根因：示例\n建议：重试",
+            "ai_log_url": "https://dashboard.example/api/v1/ci/public/analysis/token/report",
         },
         {
             "time": "2026-10-15 09:00:00",
@@ -32,7 +32,7 @@ def test_nightly_runs_xlsx_is_openpyxl_readable_with_links_and_merges():
             "coverage": "A3 / 双机",
             "log_url": "",
             "model_fo": "FO-B",
-            "ai_analysis": "",
+            "ai_log_url": "",
         },
     ])
 
@@ -41,11 +41,13 @@ def test_nightly_runs_xlsx_is_openpyxl_readable_with_links_and_merges():
 
     assert worksheet.title == "用例运行明细"
     assert [cell.value for cell in worksheet[1]] == [
-        "时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 分析日志",
+        "时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 日志链接",
     ]
     assert worksheet.max_row == 3
     assert worksheet["B2"].value == "single-node (main, Model-A)"
     assert worksheet["E2"].hyperlink is not None
     assert worksheet["E2"].hyperlink.target.endswith("/runs/1/job/2")
-    assert worksheet["G2"].value == "根因：示例\n建议：重试"
+    assert worksheet["G2"].value == "https://dashboard.example/api/v1/ci/public/analysis/token/report"
+    assert worksheet["G2"].hyperlink is not None
+    assert worksheet["G2"].hyperlink.target.endswith("/analysis/token/report")
     assert "A2:A3" in {str(item) for item in worksheet.merged_cells.ranges}

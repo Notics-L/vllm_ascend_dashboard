@@ -92,6 +92,10 @@ export interface ResourcePodInfo {
   started_at?: string | null
   finished_at?: string | null
   duration_seconds?: number | null
+  repository?: string | null
+  repository_url?: string | null
+  workflow_path?: string | null
+  workflow_url?: string | null
   pr_number?: number | null
   pr_url?: string | null
   job_workflow_ref?: string | null
@@ -111,6 +115,12 @@ export interface ResourceDashboardParams {
   cluster_ids?: number[]
   label_selector?: string
   include_pods?: boolean
+}
+
+export interface ResourcePodTimelineResponse {
+  generated_at: string
+  window_start: string
+  pods: ResourcePodInfo[]
 }
 
 export interface NodeUtilizationBucket {
@@ -161,6 +171,17 @@ export const getClusterSummary = async (clusterId: number) => {
 export const getResourceDashboard = async (params: ResourceDashboardParams = {}) => {
   const response = await api.get<ResourceDashboardResponse>('/resource-dashboard/summary', {
     params: buildParams(params),
+  })
+  return response.data
+}
+
+export const getResourcePodTimeline = async (params: { cluster_ids?: number[]; hours?: number } = {}) => {
+  const searchParams = buildParams(params)
+  if (params.hours !== undefined) {
+    searchParams.set('hours', String(params.hours))
+  }
+  const response = await api.get<ResourcePodTimelineResponse>('/resource-dashboard/pod-timeline', {
+    params: searchParams,
   })
   return response.data
 }

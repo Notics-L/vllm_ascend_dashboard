@@ -34,7 +34,7 @@ __all__ = [
     # Resource Dashboard
     "KubernetesClusterCreate", "KubernetesClusterUpdate", "KubernetesClusterResponse",
     "KubernetesClusterTestResponse", "ResourceQuantity", "ClusterResourceSummary",
-    "ResourcePodInfo", "ResourceDashboardResponse",
+    "ResourcePodInfo", "ResourceDashboardResponse", "ResourcePodTimelineResponse",
     "StaleIssue", "PRActionRequest", "TagComparisonRequest", "TagComparisonResult", "CommitInfo",
     # Resource Metrics
     "NpuMetricPoint", "ClusterNpuMetrics", "NpuMetricsResponse",
@@ -1130,6 +1130,7 @@ from .resource_dashboard import (
     ResourceDashboardResponse,
     ResourceNodeInfo,
     ResourcePodInfo,
+    ResourcePodTimelineResponse,
     ResourceQuantity,
 )
 from .resource_metrics import (

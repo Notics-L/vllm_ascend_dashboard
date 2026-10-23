@@ -14,6 +14,7 @@ from contracts.schemas import (
     KubernetesClusterUpdate,
     Message,
     ResourceDashboardResponse,
+    ResourcePodTimelineResponse,
 )
 from infrastructure.clients.kubernetes_client import encrypt_kubeconfig
 from infrastructure.core.config import settings
@@ -127,6 +128,37 @@ async def get_resource_dashboard(
         label_selector=label_selector,
         include_pods=include_pods,
     )
+
+
+@router.get("/pod-timeline", response_model=ResourcePodTimelineResponse)
+async def get_pod_timeline(
+    db: DbSession,
+    current_user: CurrentUser,
+    cluster_ids: Annotated[list[int] | None, Query()] = None,
+    hours: int = Query(24, ge=1, le=72),
+):
+    """Return all Pod lifecycles captured during the requested window."""
+    timeline = await PersistedResourceMetricsService().build_pod_timeline(
+        db, cluster_ids=cluster_ids, hours=hours,
+    )
+    # A development instance may not have collected its first lifecycle
+    # snapshot yet. Keep it useful immediately, then automatically switch to
+    # the complete historical view after the collector has run.
+    if timeline.pods or settings.RESOURCE_METRICS_REMOTE_URL:
+        return timeline
+
+    if not settings.RESOURCE_METRICS_REMOTE_URL:
+        clusters_stmt = select(KubernetesClusterConfig).where(KubernetesClusterConfig.enabled.is_(True))
+        if cluster_ids:
+            clusters_stmt = clusters_stmt.where(KubernetesClusterConfig.id.in_(cluster_ids))
+        clusters = list((await db.execute(clusters_stmt)).scalars().all())
+        dashboard = await ResourceDashboardService().build_dashboard(clusters, include_pods=True)
+        return ResourcePodTimelineResponse(
+            generated_at=datetime.now(UTC),
+            window_start=datetime.now(UTC) - timedelta(hours=hours),
+            pods=[*dashboard.executing_pods, *dashboard.executed_pods],
+        )
+    return timeline
 
 
 @router.get("/cluster/{cluster_id}/summary", response_model=ClusterResourceSummary)

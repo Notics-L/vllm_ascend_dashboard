@@ -86,7 +86,9 @@ class NpuOccupancyRepository:
         }
         if not candidates or not settings.GITHUB_TOKEN:
             return
-        query = text("SELECT run_id FROM github_workflow_run_metadata WHERE run_id IN :run_ids").bindparams(
+        # Failed lookups are not a durable cache entry.  Their repository
+        # identity may have been repaired since the last attempt.
+        query = text("SELECT run_id FROM github_workflow_run_metadata WHERE fetch_status='success' AND run_id IN :run_ids").bindparams(
             bindparam("run_ids", expanding=True)
         )
         async with SessionLocal() as db:
@@ -109,11 +111,19 @@ class NpuOccupancyRepository:
                     "conclusion": run.get("conclusion"), "html_url": run.get("html_url")}
                 statement = text("""INSERT INTO github_workflow_run_metadata
                     (run_id,organization,repository,workflow_name,display_title,run_number,event,head_branch,status,conclusion,html_url,fetch_status)
-                    VALUES (:run_id,:organization,:repository,:workflow_name,:display_title,:run_number,:event,:head_branch,:status,:conclusion,:html_url,'success')""")
+                    VALUES (:run_id,:organization,:repository,:workflow_name,:display_title,:run_number,:event,:head_branch,:status,:conclusion,:html_url,'success')
+                    ON DUPLICATE KEY UPDATE organization=VALUES(organization), repository=VALUES(repository),
+                      workflow_name=VALUES(workflow_name), display_title=VALUES(display_title), run_number=VALUES(run_number),
+                      event=VALUES(event), head_branch=VALUES(head_branch), status=VALUES(status), conclusion=VALUES(conclusion),
+                      html_url=VALUES(html_url), fetch_status='success', error_message=NULL, fetched_at=UTC_TIMESTAMP()""")
             else:
                 values = {"run_id": run_id, "organization": organization, "repository": repository, "error": str(error)[:1000]}
                 statement = text("""INSERT INTO github_workflow_run_metadata (run_id,organization,repository,fetch_status,error_message)
-                    VALUES (:run_id,:organization,:repository,'failed',:error)""")
+                    VALUES (:run_id,:organization,:repository,'failed',:error)
+                    ON DUPLICATE KEY UPDATE organization=VALUES(organization), repository=VALUES(repository),
+                      fetch_status=IF(fetch_status='success', fetch_status, 'failed'),
+                      error_message=IF(fetch_status='success', error_message, VALUES(error_message)),
+                      fetched_at=UTC_TIMESTAMP()""")
             async with SessionLocal() as db:
                 await db.execute(statement, values)
                 await db.commit()

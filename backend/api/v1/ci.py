@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
@@ -60,7 +60,6 @@ from infrastructure.persistence.run_attempts import (
     filter_current_run_attempt,
     is_current_run_attempt,
 )
-from infrastructure.storage.failure_analysis_file_store import FailureAnalysisFileStore
 from tooling.ci_filters import build_workflow_time_filter
 from tooling.ci_version_snapshot import (
     get_version_snapshot,
@@ -696,19 +695,6 @@ def _nightly_export_run_time_bounds(
     return start, end
 
 
-def _format_nightly_ai_analysis(analysis: JobFailureAnalysis | None) -> str:
-    if analysis is None or analysis.analysis_status not in {"completed", "reused"}:
-        return ""
-    parts = []
-    if analysis.problem_category:
-        parts.append(f"分类：{analysis.problem_category}")
-    if analysis.root_cause_summary:
-        parts.append(f"根因：{analysis.root_cause_summary}")
-    if analysis.improvement_measures_summary:
-        parts.append(f"建议：{analysis.improvement_measures_summary}")
-    return "\n".join(parts)
-
-
 def _xlsx_column_name(index: int) -> str:
     result = ""
     while index:
@@ -724,8 +710,8 @@ def _build_nightly_runs_xlsx_legacy(rows: list[dict[str, str]]) -> bytes:
     one seven-column export.  Values are stored as inline strings so long job
     names and AI summaries keep their original text exactly.
     """
-    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 分析日志"]
-    column_widths = [22, 72, 42, 26, 65, 20, 76]
+    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 日志链接"]
+    column_widths = [22, 72, 42, 26, 65, 20, 65]
     hyperlink_relationships: list[tuple[str, str]] = []
     hyperlink_cells: list[tuple[str, str]] = []
     rows_xml: list[str] = []
@@ -737,7 +723,7 @@ def _build_nightly_runs_xlsx_legacy(rows: list[dict[str, str]]) -> bytes:
         escaped = xml_escape(value or "")
         return f'<c{attrs} t="inlineStr"><is><t xml:space="preserve">{escaped}</t></is></c>'
 
-    header_keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_analysis")
+    header_keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_log_url")
     for row_index, values in enumerate([dict(zip(header_keys, headers, strict=True)), *rows], start=1):
         cells = []
         for column_index, key in enumerate(
@@ -748,7 +734,7 @@ def _build_nightly_runs_xlsx_legacy(rows: list[dict[str, str]]) -> bytes:
             value = str(values.get(key) or "")
             relationship_id = None
             style = 0
-            if row_index > 1 and key == "log_url" and value:
+            if row_index > 1 and key in {"log_url", "ai_log_url"} and value:
                 relationship_id = f"rId{len(hyperlink_relationships) + 1}"
                 hyperlink_relationships.append((relationship_id, value))
                 hyperlink_cells.append((ref, relationship_id))
@@ -851,9 +837,9 @@ def _build_nightly_runs_xlsx(rows: list[dict[str, str]]) -> bytes:
     Do not handcraft SpreadsheetML here: Excel validates more than ZIP/XML
     well-formedness, including relationship and schema ordering details.
     """
-    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 分析日志"]
-    widths = [22, 72, 42, 26, 65, 20, 76]
-    keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_analysis")
+    headers = ["时间", "测试内容", "模型", "覆盖机型", "日志链接", "模型 FO", "AI 日志链接"]
+    widths = [22, 72, 42, 26, 65, 20, 65]
+    keys = ("time", "test_content", "model", "coverage", "log_url", "model_fo", "ai_log_url")
 
     workbook = Workbook()
     worksheet = workbook.active
@@ -872,7 +858,11 @@ def _build_nightly_runs_xlsx(rows: list[dict[str, str]]) -> bytes:
             log_cell = worksheet.cell(row=row_index, column=5)
             log_cell.hyperlink = log_url
             log_cell.style = "Hyperlink"
-        worksheet.cell(row=row_index, column=7).alignment = Alignment(wrap_text=True, vertical="top")
+        ai_log_url = str(row.get("ai_log_url") or "")
+        if ai_log_url:
+            ai_log_cell = worksheet.cell(row=row_index, column=7)
+            ai_log_cell.hyperlink = ai_log_url
+            ai_log_cell.style = "Hyperlink"
 
     for index, width in enumerate(widths, start=1):
         worksheet.column_dimensions[get_column_letter(index)].width = width
@@ -3647,6 +3637,7 @@ async def export_nightly_test_cases(
 
 @router.get("/nightly-test-cases/run-export")
 async def export_nightly_test_case_runs(
+    request: Request,
     current_user: CurrentAdminUser,
     db: DbSession,
     format: str = Query("json", pattern="^(json|xlsx)$"),
@@ -3660,8 +3651,8 @@ async def export_nightly_test_case_runs(
 
     The legacy endpoint above deliberately remains an import-compatible
     configuration snapshot export.  This endpoint is for the user-facing
-    run-history report, so it can include GitHub links and persisted AI
-    analysis without changing any database table.
+    run-history report, so it can include GitHub links and an AI report link
+    without embedding the full report in the exported file.
     """
     del current_user
     if start_date:
@@ -3737,13 +3728,12 @@ async def export_nightly_test_case_runs(
             ).scalars().all()
             analysis_by_job_id = {analysis.job_id: analysis for analysis in analyses}
 
-        ai_analysis_by_job_id: dict[int, str] = {}
-        file_store = FailureAnalysisFileStore()
-        for job_id, analysis in analysis_by_job_id.items():
-            report = None
-            if analysis.report_file_path:
-                report = await file_store.read_report_by_path(analysis.report_file_path)
-            ai_analysis_by_job_id[job_id] = report or _format_nightly_ai_analysis(analysis)
+        public_base_url = str(request.base_url).rstrip("/")
+
+        def ai_log_url(analysis: JobFailureAnalysis | None) -> str:
+            if analysis is None or not analysis.share_token:
+                return ""
+            return f"{public_base_url}/api/v1/ci/public/analysis/{analysis.share_token}/report"
 
         def coverage_label(job: CIJob, snapshot: NightlyTestCase) -> str:
             deployment = snapshot.deployment_type or ""
@@ -3765,7 +3755,7 @@ async def export_nightly_test_case_runs(
                     if job.job_id else ""
                 ),
                 "model_fo": snapshot.model_fo or "",
-                "ai_analysis": ai_analysis_by_job_id.get(job.job_id, ""),
+                "ai_log_url": ai_log_url(analysis_by_job_id.get(job.job_id)),
             }
             )
 

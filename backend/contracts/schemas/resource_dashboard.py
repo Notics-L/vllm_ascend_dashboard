@@ -118,6 +118,10 @@ class ResourcePodInfo(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_seconds: int | None = None
+    repository: str | None = None
+    repository_url: str | None = None
+    workflow_path: str | None = None
+    workflow_url: str | None = None
     pr_number: int | None = None
     pr_url: str | None = None
     job_workflow_ref: str | None = None
@@ -147,3 +151,11 @@ class ResourceDashboardResponse(BaseModel):
     clusters: list[ClusterResourceSummary]
     executing_pods: list[ResourcePodInfo]
     executed_pods: list[ResourcePodInfo]
+
+
+class ResourcePodTimelineResponse(BaseModel):
+    """Pod lifecycles observed in a bounded resource-metrics window."""
+
+    generated_at: datetime
+    window_start: datetime
+    pods: list[ResourcePodInfo] = Field(default_factory=list)
