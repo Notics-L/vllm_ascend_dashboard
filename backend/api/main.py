@@ -31,6 +31,7 @@ from api.v1 import (
     code_metrics,
     commit_analysis,
     contributor_board,
+    contributor_scoring,
     daily_report,
     daily_summary,
     issue_diagnosis,
@@ -43,6 +44,7 @@ from api.v1 import (
     performance,
     pr_pipeline,
     project_dashboard,
+    release_management,
     resource_dashboard,
     resource_metrics,
     stats,
@@ -50,7 +52,6 @@ from api.v1 import (
     test_board,
     users,
     workflows,
-    contributor_scoring,
 )
 from infrastructure.core.config import settings
 from infrastructure.core.logging import setup_db_logging
@@ -529,6 +530,7 @@ def create_app() -> FastAPI:
     app.include_router(code_metrics.router, prefix="/api/v1/code-metrics", tags=["代码度量"])
     app.include_router(contributor_board.router, prefix="/api/v1/contributor-board", tags=["贡献者看板"])
     app.include_router(contributor_scoring.router, prefix="/api/v1/contributor-board/scoring", tags=["贡献者评分/权重版本"])
+    app.include_router(release_management.router, prefix="/api/v1", tags=["发布件管理"])
 
     @app.get("/health")
     async def health_check():

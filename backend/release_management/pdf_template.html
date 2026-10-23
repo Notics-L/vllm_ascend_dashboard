@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ workflow_name | e }} - 发布件构建分析报告</title>
+<style>
+  @page {
+    size: A4;
+    margin: 2cm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); font-size: 9px; color: #999; }
+    @bottom-left { content: "vLLM Ascend 发布件管理"; font-size: 8px; color: #bbb; }
+    @bottom-right { content: "{{ generated_at | e }}"; font-size: 8px; color: #bbb; }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "WenQuanYi Micro Hei", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 11px; color: #333; }
+
+  h1 { font-size: 20px; text-align: center; margin: 24px 0 4px; color: #1F4E79; border-bottom: 3px solid #2E75B6; padding-bottom: 10px; }
+  h2 { font-size: 14px; margin: 20px 0 8px; color: #2E75B6; border-left: 3px solid #2E75B6; padding-left: 8px; page-break-before: auto; page-break-inside: avoid; }
+  .meta { text-align: center; color: #666; margin-bottom: 16px; font-size: 10px; }
+
+  .kpi-row { display: flex; gap: 10px; margin: 12px 0 16px; flex-wrap: wrap; }
+  .kpi-card { flex: 1; min-width: 120px; background: #f0f4f8; border-radius: 6px; padding: 10px; text-align: center; border-top: 3px solid #2E75B6; }
+  .kpi-card .value { font-size: 22px; font-weight: bold; color: #1F4E79; }
+  .kpi-card .label { font-size: 10px; color: #666; margin-top: 2px; }
+  .kpi-green { border-top-color: #52c41a; }
+  .kpi-green .value { color: #52c41a; }
+  .kpi-red { border-top-color: #ff4d4f; }
+  .kpi-red .value { color: #ff4d4f; }
+  .kpi-orange { border-top-color: #faad14; }
+  .kpi-orange .value { color: #d48806; }
+  .kpi-cyan { border-top-color: #17a2b8; }
+  .kpi-cyan .value { color: #17a2b8; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 9px; page-break-inside: auto; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+  th { background: #2E75B6; color: white; padding: 5px 3px; text-align: center; font-weight: bold; }
+  td { padding: 3px; border: 1px solid #ddd; text-align: center; }
+  tr:nth-child(even) td { background: #f9f9f9; }
+  td.left { text-align: left; }
+
+  .status-success { color: #52c41a; font-weight: bold; }
+  .status-failure { color: #ff4d4f; font-weight: bold; }
+  .status-cancelled { color: #999; }
+  .status-skipped { color: #bbb; }
+  .status-running { color: #1890ff; }
+  .status-action_required { color: #fa8c16; }
+
+  .risk-high { background: #ff4d4f; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
+  .risk-medium { background: #faad14; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
+  .risk-low { background: #52c41a; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
+
+  .section { margin: 8px 0 16px; }
+  .note { background: #fff7e6; border-left: 3px solid #faad14; padding: 8px; margin: 8px 0; font-size: 10px; border-radius: 0 4px 4px 0; }
+
+  .eval-grid { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  .eval-card { flex: 1; min-width: 100px; background: #f5f5f5; border-radius: 6px; padding: 8px; text-align: center; }
+  .eval-card .score { font-size: 18px; font-weight: bold; color: #1F4E79; }
+  .eval-card .dim { font-size: 10px; color: #666; }
+
+  .stat-table { width: auto; margin: 8px 0; }
+  .stat-table td { padding: 2px 6px; border: 1px solid #ddd; font-size: 9px; }
+  .stat-table td:first-child { font-weight: bold; background: #f0f4f8; text-align: left; }
+</style>
+</head>
+<body>
+
+<h1>{{ workflow_name | e }} 构建分析报告</h1>
+<p class="meta">生成时间: {{ generated_at }}</p>
+
+{# ===== KPI 概览 ===== #}
+<h2>1. 构建概览</h2>
+<table class="stat-table">
+  <tr><td>生成时间</td><td>{{ generated_at }}</td>
+      <td>运行总数</td><td>{{ stats.get('total', 0) }}</td></tr>
+  <tr><td>成功次数</td><td>{{ stats.get('successful', 0) }}</td>
+      <td>失败次数</td><td>{{ stats.get('failed', 0) }}</td></tr>
+  <tr><td>成功率</td><td>{{ stats.get('success_rate', 0) | round(1) }}%</td>
+      <td>平均执行耗时</td><td>{{ fmt_duration(stats.get('avg_exec', 0)) }}</td></tr>
+  <tr><td>最短执行耗时</td><td>{{ fmt_duration(stats.get('min_exec', 0)) }}</td>
+      <td>最长执行耗时</td><td>{{ fmt_duration(stats.get('max_exec', 0)) }}</td></tr>
+  <tr><td>耗时波动率 (CV)</td><td>{{ stats.get('cv_exec', 0) | round(1) }}%</td>
+      <td>平均排队时间</td><td>{{ fmt_duration(stats.get('avg_wait', 0)) }}</td></tr>
+  <tr><td>平均墙钟总耗时</td><td>{{ fmt_duration(stats.get('avg_wall', 0)) }}</td>
+      <td>异常慢构建</td><td>{{ stats.get('abnormal_count', 0) }}</td></tr>
+  <tr><td>严重排队次数</td><td>{{ stats.get('long_wait_count', 0) }}</td>
+      <td></td><td></td></tr>
+</table>
+
+{% if evaluation %}
+<h2>6. AI 可信度评估摘要</h2>
+<div class="eval-grid">
+  <div class="eval-card">
+    <div class="score">{{ evaluation.get('trust_score', 0) | round(1) }}</div>
+    <div class="dim">可信度评分 (/100)</div>
+  </div>
+  <div class="eval-card">
+    <div class="score">{{ evaluation.get('trust_level', 'N/A') }}</div>
+    <div class="dim">可信度等级</div>
+  </div>
+  <div class="eval-card">
+    <div class="score">{{ '是' if evaluation.get('production_ready') else '否' }}</div>
+    <div class="dim">是否生产级</div>
+  </div>
+</div>
+{% if evaluation.get('executive_summary') %}
+<div class="note">
+  <strong>执行摘要:</strong> {{ evaluation.get('executive_summary', '') }}
+</div>
+{% endif %}
+{% endif %}
+
+{# ===== 最近运行记录 ===== #}
+<h2>2. 最近运行记录</h2>
+<div class="section">
+<table>
+  <thead>
+    <tr>
+      <th>运行ID</th><th>状态</th><th>分支</th><th>事件</th>
+      <th>创建时间</th><th>排队</th><th>执行</th><th>墙钟</th><th>Jobs</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.get('github_run_id', '') }}</td>
+      <td class="status-{{ r.get('status', '') }}">{{ status_label(r.get('status', '')) }}</td>
+      <td>{{ r.get('branch', '') }}</td>
+      <td>{{ r.get('event', '') }}</td>
+      <td>{{ r.get('created_at', '') }}</td>
+      <td>{{ fmt_duration(r.get('wait_duration', 0)) }}</td>
+      <td>{{ fmt_duration(r.get('exec_duration', 0)) }}</td>
+      <td>{{ fmt_duration(r.get('wall_duration', 0)) }}</td>
+      <td>{{ r.get('num_jobs', 0) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{# ===== Job Group 层级数据 ===== #}
+{% if groups %}
+<h2>3. Job Group 层级数据</h2>
+<div class="section">
+<table>
+  <thead>
+    <tr>
+      <th>Group</th><th>Target</th><th>OS</th><th>Phase</th>
+      <th>状态</th><th>总耗时</th><th>架构</th><th>Sub-Job</th><th>Steps数</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for g in groups %}
+    <tr>
+      <td class="left">{{ g.get('group_name', '') }}</td>
+      <td>{{ g.get('target', '') }}</td>
+      <td>{{ g.get('os_name', '') }}</td>
+      <td>{{ g.get('phase', '') }}</td>
+      <td class="status-{{ g.get('status', '') }}">{{ status_label(g.get('status', '')) }}</td>
+      <td>{{ fmt_duration(g.get('total_duration', 0)) }}</td>
+      <td>{{ g.get('architecture', '') }}</td>
+      <td class="left">{{ g.get('sub_job_name', '') }}</td>
+      <td>{{ g.get('steps', []) | length }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<div class="note">
+  <strong>报告说明:</strong> 本报告由 vLLM Ascend Dashboard 自动分析生成，数据来源为 GitHub Actions API。<br>
+  耗时 = 各 Step 耗时累加（不含 set up Job 及 post 清理步骤）。
+</div>
+
+</body>
+</html>

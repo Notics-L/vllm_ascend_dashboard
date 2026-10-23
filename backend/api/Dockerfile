@@ -80,6 +80,7 @@ COPY backend/pr_pipeline/ ./pr_pipeline/
 COPY backend/contributor_board/ ./contributor_board/
 COPY backend/nightly_gantt/ ./nightly_gantt/
 COPY backend/npu_queue/ ./npu_queue/
+COPY backend/release_management/ ./release_management/
 COPY backend/resources/ ./resources/
 # The JSON file is an initial seed only. Runtime updates are persisted in the
 # model_fo_mappings table, so keep the seed outside the mounted /app/data volume.

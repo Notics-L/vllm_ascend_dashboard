@@ -22,6 +22,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import backref, declarative_base, relationship
 from sqlalchemy.types import JSON
 
+# 创建基类
+Base = declarative_base()
+
 # 导出所有模型类，方便其他地方导入
 __all__ = [
     "Base", "User", "ModelConfig", "ModelReport", "CIResult", "CIJob",
@@ -44,11 +47,22 @@ __all__ = [
     "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
     "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
     "ContributorAIReport",
+    "ReleaseWorkflow", "ReleaseBuildRun", "ReleaseBuildGroup",
+    "ReleaseThirdPartyVersion", "ReleaseThirdPartyBaseline",
+    "ReleaseAIEvaluation", "ReleaseAnalysisTask",
 ]
 
 
-# 创建基类
-Base = declarative_base()
+# 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
+from infrastructure.persistence.models.release_management import (
+    ReleaseAIEvaluation,
+    ReleaseAnalysisTask,
+    ReleaseBuildGroup,
+    ReleaseBuildRun,
+    ReleaseThirdPartyBaseline,
+    ReleaseThirdPartyVersion,
+    ReleaseWorkflow,
+)
 
 
 class User(Base):
