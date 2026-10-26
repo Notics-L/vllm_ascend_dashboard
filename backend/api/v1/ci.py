@@ -695,6 +695,12 @@ def _nightly_export_run_time_bounds(
     return start, end
 
 
+def _nightly_export_model_fo(snapshot: NightlyTestCase, fo_map: dict[str, str]) -> str:
+    """Keep old snapshot exports complete without overriding stored values."""
+
+    return snapshot.model_fo or lookup_model_fo(fo_map, snapshot.test_model) or ""
+
+
 def _xlsx_column_name(index: int) -> str:
     result = ""
     while index:
@@ -3666,6 +3672,14 @@ async def export_nightly_test_case_runs(
         except ValueError:
             raise HTTPException(status_code=400, detail="end_date 格式须为 YYYY-MM-DD") from None
 
+    # Exports must not depend on a later collector pass to materialize FO on
+    # old snapshots.  The persisted mapping is authoritative; the packaged
+    # JSON keeps exports complete while an older database has not yet been
+    # backfilled.
+    from tooling.parsers.nightly_config_parser import load_model_fo_map
+
+    fo_map = load_model_fo_map()
+    fo_map.update(await load_model_fo_mappings(db))
     snapshots_stmt = select(NightlyTestCase).order_by(NightlyTestCase.report_date.desc())
     if scope == "filtered":
         if start_date:
@@ -3754,7 +3768,7 @@ async def export_nightly_test_case_runs(
                     f"/actions/runs/{job.run_id}/job/{job.job_id}"
                     if job.job_id else ""
                 ),
-                "model_fo": snapshot.model_fo or "",
+                "model_fo": _nightly_export_model_fo(snapshot, fo_map),
                 "ai_log_url": ai_log_url(analysis_by_job_id.get(job.job_id)),
             }
             )
@@ -3857,6 +3871,11 @@ async def sync_test_cases_from_yaml(
     )
 
     seed_count = await seed_missing_model_fo_mappings(db, load_model_fo_map())
+    # This session has autoflush disabled.  Without an explicit flush, a
+    # first JSON import is not visible to the lookup below, leaving today's
+    # existing Nightly rows blank until a later synchronization.
+    if seed_count:
+        await db.flush()
     fo_map = await load_model_fo_mappings(db)
     cache = get_github_cache_for_repo(settings.GITHUB_OWNER, settings.GITHUB_REPO)
     if not cache._is_repo_cloned():
@@ -3912,6 +3931,10 @@ async def sync_test_cases_from_yaml(
             if existing:
                 existing.test_model = c.model_path
                 existing.deployment_type = c.deployment
+                # Keep an explicit, manually maintained FO.  Otherwise a
+                # re-sync must repair older blank snapshots immediately.
+                if not (existing.model_fo or "").strip():
+                    existing.model_fo = lookup_model_fo(fo_map, c.model_path)
                 total_updated += 1
             else:
                 db.add(NightlyTestCase(

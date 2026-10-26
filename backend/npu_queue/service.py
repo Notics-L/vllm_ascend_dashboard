@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.github_run_metadata import build_run_metadata
-from infrastructure.persistence.models import CINpuJobFact, CIResult
+from infrastructure.persistence.models import CIJob, CINpuJobFact, CIResult
 from npu_queue.snapshots import is_running, is_waiting, physical_queue_state, physical_queue_trend
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -82,6 +82,11 @@ async def build_dashboard(
             select(CIResult).where(CIResult.run_id.in_(run_ids))
         )).all())
     results_by_run_id = {result.run_id: result for result in result_rows}
+    fact_job_ids = {fact.job_id for fact in facts}
+    ci_jobs = list((await db.scalars(
+        select(CIJob).where(CIJob.job_id.in_(fact_job_ids))
+    )).all()) if fact_job_ids else []
+    ci_jobs_by_id = {job.job_id: job for job in ci_jobs}
     now = datetime.now(UTC)
     consumption_start = now - timedelta(days=consumption_days)
     queue_window_start, queue_window_end = _queue_delay_window(now)
@@ -126,6 +131,39 @@ async def build_dashboard(
             "pool": fact.pool or "未映射", "cards": fact.mapped_cards or 0,
             "createdAt": _beijing_time(fact.queued_at).isoformat() if fact.queued_at else "—",
             "state": "short" if wait < 2 else "waiting",
+        })
+
+    # CI facts can lag behind the latest CI Job record.  The latter determines
+    # whether a grey CI segment is current or has already ended; stale facts
+    # must never be rendered as a wait extending to "now".
+    ci_waiting_rows = []
+    for fact in sorted((row for row in matched if row.status == "queued"), key=lambda row: row.queued_at or now):
+        ci_job = ci_jobs_by_id.get(fact.job_id)
+        if ci_job is None or fact.queued_at is None:
+            continue
+        current = ci_job.status == "queued" and ci_job.started_at is None and ci_job.completed_at is None
+        ended_at = None if current else (ci_job.started_at or ci_job.completed_at)
+        if not current and ended_at is None:
+            continue
+        if ended_at and _minutes(ended_at, now) is not None and _minutes(ended_at, now) > 24 * 60:
+            continue
+        wait = _minutes(fact.queued_at, ended_at or now) or 0
+        repository_url = f"https://github.com/{fact.repository}" if fact.repository else None
+        ci_waiting_rows.append({
+            "key": f"ci-{fact.run_id}-{fact.job_id}",
+            "waitMinutes": round(wait),
+            "title": fact.job_name or f"Job {fact.job_id}",
+            "repository": fact.repository,
+            "repositoryUrl": repository_url,
+            "pool": fact.pool,
+            "cards": fact.mapped_cards or 0,
+            "createdAt": fact.queued_at.isoformat() if fact.queued_at else None,
+            "endedAt": ended_at.isoformat() if ended_at else None,
+            "isCurrent": current,
+            "workflowName": fact.workflow_name,
+            "runUrl": fact.run_url,
+            "prNumber": fact.pr_number,
+            "prUrl": f"{repository_url}/pull/{fact.pr_number}" if repository_url and fact.pr_number else None,
         })
 
     physical_state, pending_pods = await physical_queue_state(db)
@@ -302,7 +340,7 @@ async def build_dashboard(
     return {
         "generatedAt": now.isoformat(), "pools": sorted(pool_rows, key=lambda row: row["name"]),
         "trend": trend, "dailyQueue": daily_queue_rows, "queueDelaySummary": queue_delay_summary,
-        "dailyUsage": daily_usage_rows, "queue": queue_rows,
+        "dailyUsage": daily_usage_rows, "queue": queue_rows, "ciWaiting": ci_waiting_rows,
         "prCosts": sorted(pr_cost_rows, key=lambda row: row["allCardHours"], reverse=True)[:10],
         "usagePeriod": usage_period,
         "dataQuality": {"matched_jobs": len(matched), "unmatched_jobs": len(facts) - len(matched)},

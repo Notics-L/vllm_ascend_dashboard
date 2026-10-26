@@ -36,6 +36,7 @@ import {
   getNpuQueueDashboard,
   getNpuQueueTrend,
   getNpuQueueTrendDetail,
+  type CiWaitingItem,
   type QueueItem,
   type QueueTrendPod,
   type QueueTrendPoint,
@@ -67,7 +68,9 @@ type TaskPod = ResourcePodInfo & {
   timelineStartedAt: string | null;
   waitSeconds: number;
   runSeconds: number | null;
-  severity: "正常" | "关注" | "严重" | "阻塞";
+  isCurrentPending: boolean;
+  isHistoricalPending: boolean;
+  severity: "正常" | "关注" | "严重" | "阻塞" | "历史";
 };
 
 const formatDuration = (seconds: number | null) => {
@@ -268,16 +271,51 @@ export default function NpuQueueDemand() {
       ),
     [resourceQuery.data],
   );
+  const selectedPendingPods = useMemo(
+    () => pendingPods.filter((pod) => taskPool === "all" || pod.pool === taskPool),
+    [pendingPods, taskPool],
+  );
+  const currentPendingPodKeys = useMemo(
+    () => new Set(selectedPendingPods.map((pod) => `${pod.cluster_id}/${pod.namespace}/${pod.name}`)),
+    [selectedPendingPods],
+  );
   const timelinePods = useMemo(() => {
     const historyPods = taskTimelineQuery.data?.pods ?? [];
-    if (historyPods.length) return historyPods;
+    if (historyPods.length) {
+      // Always merge the latest Kubernetes Pending set.  Timeline snapshots
+      // are historical, while section 03 is a current snapshot; using this
+      // merge keeps the two sections on one Pending-Pod definition.
+      const pods = new Map(historyPods.map((pod) => [
+        `${pod.cluster_id}/${pod.namespace}/${pod.name}`,
+        pod,
+      ]));
+      selectedPendingPods.forEach((pod) => {
+        const key = `${pod.cluster_id}/${pod.namespace}/${pod.name}`;
+        const history = pods.get(key);
+        // The live K8s response owns phase and resources, while the timeline
+        // response may already contain pod-history CI links.
+        pods.set(key, {
+          ...history,
+          ...pod,
+          repository: pod.repository ?? history?.repository,
+          repository_url: pod.repository_url ?? history?.repository_url,
+          workflow_path: pod.workflow_path ?? history?.workflow_path,
+          workflow_url: pod.workflow_url ?? history?.workflow_url,
+          workflow_run_id: pod.workflow_run_id ?? history?.workflow_run_id,
+          run_url: pod.run_url ?? history?.run_url,
+          pr_number: pod.pr_number ?? history?.pr_number,
+          pr_url: pod.pr_url ?? history?.pr_url,
+        });
+      });
+      return [...pods.values()];
+    }
     // The lifecycle history starts accumulating only after the new collector
     // is deployed. Do not leave section 02 blank during that first window.
     return (resourceQuery.data?.clusters ?? [])
       .filter((cluster) => taskPool === "all" || cluster.cluster_name === taskPool)
       .flatMap((cluster) => cluster.executing_pods)
       .filter((pod) => pod.requests.npu > 0 && ["Pending", "Running"].includes(pod.phase ?? ""));
-  }, [resourceQuery.data, taskPool, taskTimelineQuery.data?.pods]);
+  }, [resourceQuery.data, selectedPendingPods, taskPool, taskTimelineQuery.data?.pods]);
   const taskTimelineGeneratedAt = taskTimelineQuery.data?.pods.length
     ? taskTimelineQuery.data.generated_at
     : resourceQuery.data?.generated_at;
@@ -308,13 +346,25 @@ export default function NpuQueueDemand() {
     return timelinePods
       .filter((pod) => pod.requests.npu > 0)
       .map((pod): TaskPod => {
+            const key = `${pod.cluster_id}/${pod.namespace}/${pod.name}`;
+            const isCurrentPending = pod.phase === "Pending" && currentPendingPodKeys.has(key);
+            const isHistoricalPending = pod.phase === "Pending" && !isCurrentPending;
             const createdAt = pod.created_at ? dayjs(pod.created_at) : snapshotAt;
             const startedAt = pod.started_at
               ? dayjs(pod.started_at)
               : pod.phase === "Running"
                 ? snapshotAt.subtract(Math.max(60, pod.duration_seconds ?? 0), "second")
                 : null;
-            const waitSeconds = Math.max(0, Math.floor((startedAt ?? snapshotAt).diff(createdAt, "second")));
+            // A Pending Pod absent from the latest resource snapshot is a
+            // historical observation, not a current blocker.  Stop its bar
+            // at the last collection that saw it instead of extending it to
+            // "now" and inflating the current queue.
+            const pendingEnd = isCurrentPending
+              ? snapshotAt
+              : pod.last_observed_at
+                ? dayjs(pod.last_observed_at)
+                : snapshotAt;
+            const waitSeconds = Math.max(0, Math.floor((startedAt ?? pendingEnd).diff(createdAt, "second")));
             return {
               ...pod,
               pool: pod.cluster_name,
@@ -323,15 +373,23 @@ export default function NpuQueueDemand() {
               runSeconds: startedAt
                 ? Math.max(0, Math.floor((pod.finished_at ? dayjs(pod.finished_at) : snapshotAt).diff(startedAt, "second")))
                 : null,
-              severity: waitSeverity(waitSeconds),
+              isCurrentPending,
+              isHistoricalPending,
+              severity: isHistoricalPending ? "历史" : waitSeverity(waitSeconds),
             };
           })
       .sort((left, right) => right.waitSeconds - left.waitSeconds);
-  }, [taskTimelineGeneratedAt, timelinePods]);
+  }, [currentPendingPodKeys, taskTimelineGeneratedAt, timelinePods]);
   const visibleTaskPods = useMemo(
     () =>
       taskPods.filter((pod) => pod.waitSeconds >= minimumWaitSeconds),
     [minimumWaitSeconds, taskPods],
+  );
+  const visibleCiWaitingJobs = useMemo(
+    () => (data?.ciWaiting ?? []).filter((job) =>
+      (taskPool === "all" || job.pool === taskPool) && job.waitMinutes * 60 >= minimumWaitSeconds,
+    ),
+    [data?.ciWaiting, minimumWaitSeconds, taskPool],
   );
   const taskTimelineEnd = useMemo(
     () => dayjs(taskTimelineGeneratedAt ?? undefined),
@@ -606,20 +664,24 @@ export default function NpuQueueDemand() {
         </div>
         {taskTimelineQuery.isError ? (
           <Alert type="error" showIcon message="任务资源快照获取失败" />
-        ) : visibleTaskPods.length ? (
+        ) : visibleTaskPods.length || visibleCiWaitingJobs.length ? (
           <div className="npu-demand-timeline" aria-label="最近 24 小时任务等待与运行时间线">
             <div className="npu-demand-timeline-axis"><span>任务 / 资源</span><div><span>{taskTimelineStart.format("MM-DD HH:mm")}</span><span>{taskTimelineEnd.subtract(18, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(12, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(6, "hour").format("HH:mm")}</span><span>现在</span></div></div>
             {visibleTaskPods.map((pod) => {
-              const waitingEnd = pod.timelineStartedAt ?? taskTimelineEnd.toISOString();
+              const waitingEnd = pod.timelineStartedAt ?? (
+                pod.isCurrentPending
+                  ? taskTimelineEnd.toISOString()
+                  : pod.last_observed_at ?? taskTimelineEnd.toISOString()
+              );
               const runningEnd = pod.timelineStartedAt ? (pod.finished_at ?? taskTimelineEnd.toISOString()) : null;
               return (
                 <div className="npu-demand-timeline-row" key={`${pod.cluster_id}/${pod.namespace}/${pod.name}`}>
                   <div className="npu-demand-timeline-meta">
                     <strong className="npu-demand-timeline-pod-name">{pod.name}</strong>
-                    <Tag color={pod.severity === "阻塞" ? "red" : pod.severity === "严重" ? "orange" : pod.severity === "关注" ? "gold" : "default"}>{pod.severity}</Tag>
                     <div className="npu-demand-timeline-links">
                       {pod.repository_url ? <a href={pod.repository_url} target="_blank" rel="noreferrer">仓库：{pod.repository ?? "打开"}</a> : <span>仓库：—</span>}
                       {pod.workflow_url ? <a href={pod.workflow_url} target="_blank" rel="noreferrer">Workflow：{pod.workflow_path ?? "打开"}</a> : <span>Workflow：—</span>}
+                      {pod.run_url ? <a href={pod.run_url} target="_blank" rel="noreferrer">Run #{pod.workflow_run_id ?? "详情"}</a> : null}
                       {pod.pr_url ? <a href={pod.pr_url} target="_blank" rel="noreferrer">PR #{pod.pr_number ?? "详情"}</a> : <span>PR：—</span>}
                     </div>
                     <div className="npu-demand-timeline-hover-card" role="tooltip">
@@ -631,13 +693,42 @@ export default function NpuQueueDemand() {
                       <div>
                         {pod.repository_url ? <a href={pod.repository_url} target="_blank" rel="noreferrer">打开仓库</a> : <span>仓库链接不可用</span>}
                         {pod.workflow_url ? <a href={pod.workflow_url} target="_blank" rel="noreferrer">打开 Workflow</a> : <span>Workflow 链接不可用</span>}
+                        {pod.run_url ? <a href={pod.run_url} target="_blank" rel="noreferrer">打开 Run #{pod.workflow_run_id ?? ""}</a> : null}
                         {pod.pr_url ? <a href={pod.pr_url} target="_blank" rel="noreferrer">打开 PR #{pod.pr_number ?? ""}</a> : <span>未关联 PR</span>}
                       </div>
                     </div>
                   </div>
+                  <Tag className="npu-demand-timeline-status" color={pod.severity === "阻塞" ? "red" : pod.severity === "严重" ? "orange" : pod.severity === "关注" ? "gold" : "default"}>{pod.severity}</Tag>
                   <div className="npu-demand-timeline-track">
-                    <i className="npu-demand-timeline-wait" style={timelineSegmentStyle(pod.created_at, waitingEnd)} title={`等待调度：${formatDuration(pod.waitSeconds)}`} />
+                    <i className={`npu-demand-timeline-wait${pod.isHistoricalPending ? " is-historical" : ""}`} style={timelineSegmentStyle(pod.created_at, waitingEnd)} title={`${pod.isHistoricalPending ? "历史 Pending 观察" : "等待调度"}：${formatDuration(pod.waitSeconds)}`} />
                     <i className="npu-demand-timeline-run" style={timelineSegmentStyle(pod.timelineStartedAt, runningEnd)} title={`上卡运行：${formatDuration(pod.runSeconds)}`} />
+                  </div>
+                </div>
+              );
+            })}
+            {visibleCiWaitingJobs.map((job: CiWaitingItem) => {
+              const createdAt = job.createdAt ?? taskTimelineEnd.toISOString();
+              const endedAt = job.endedAt ?? taskTimelineEnd.toISOString();
+              const waitSeconds = Math.max(0, Math.floor(dayjs(endedAt).diff(dayjs(createdAt), "second")));
+              return (
+                <div className="npu-demand-timeline-row" key={job.key}>
+                  <div className="npu-demand-timeline-meta">
+                    <strong className="npu-demand-timeline-pod-name">{job.title}</strong>
+                    <div className="npu-demand-timeline-links">
+                      {job.repositoryUrl ? <a href={job.repositoryUrl} target="_blank" rel="noreferrer">仓库：{job.repository}</a> : <span>仓库：—</span>}
+                      {job.workflowName ? <span>Workflow：{job.workflowName}</span> : <span>Workflow：—</span>}
+                      {job.runUrl ? <a href={job.runUrl} target="_blank" rel="noreferrer">Run</a> : <span>Run：—</span>}
+                      {job.prUrl ? <a href={job.prUrl} target="_blank" rel="noreferrer">PR #{job.prNumber}</a> : <span>PR：—</span>}
+                    </div>
+                    <div className="npu-demand-timeline-hover-card" role="tooltip">
+                      <strong>{job.title}</strong>
+                      <span>{job.isCurrent ? "GitHub Job 尚未开始，尚未产生 Kubernetes Pod。" : "该 GitHub Job 已离开 queued 状态。"}</span>
+                      <span>CI 等待 {formatDuration(waitSeconds)}{job.cards ? ` · 映射 ${number(job.cards)} NPU` : ""}</span>
+                    </div>
+                  </div>
+                  <Tag className="npu-demand-timeline-status">{job.isCurrent ? "CI 等待" : "CI 已结束"}</Tag>
+                  <div className="npu-demand-timeline-track">
+                    <i className="npu-demand-timeline-ci-wait" style={timelineSegmentStyle(createdAt, endedAt)} title={`CI 等待：${formatDuration(waitSeconds)}`} />
                   </div>
                 </div>
               );

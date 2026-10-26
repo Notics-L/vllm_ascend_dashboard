@@ -67,7 +67,12 @@ async def seed_missing_model_fo_mappings(
     db: AsyncSession,
     file_mapping: Mapping[str, str],
 ) -> int:
-    """Import only missing JSON entries; never overwrite database values."""
+    """Synchronize the versioned JSON mapping into the runtime mapping table.
+
+    The JSON file is the source of truth for its own model keys.  Updating a
+    mapped FO therefore repairs an existing stale mapping as well as adding a
+    missing one; runtime-only keys are deliberately left untouched.
+    """
 
     normalized: dict[str, str] = {}
     for model_path, model_fo in file_mapping.items():
@@ -80,17 +85,21 @@ async def seed_missing_model_fo_mappings(
         return 0
 
     result = await db.execute(
-        select(ModelFoMapping.model_key).where(ModelFoMapping.model_key.in_(normalized))
+        select(ModelFoMapping).where(ModelFoMapping.model_key.in_(normalized))
     )
-    existing_keys = set(result.scalars().all())
-    added = 0
+    existing = {row.model_key: row for row in result.scalars().all()}
+    changed = 0
     for model_key, model_fo in normalized.items():
-        if model_key in existing_keys:
+        mapping = existing.get(model_key)
+        if mapping is None:
+            db.add(ModelFoMapping(model_key=model_key, model_fo=model_fo))
+            changed += 1
             continue
-        db.add(ModelFoMapping(model_key=model_key, model_fo=model_fo))
-        existing_keys.add(model_key)
-        added += 1
-    return added
+        if mapping.model_fo == model_fo:
+            continue
+        mapping.model_fo = model_fo
+        changed += 1
+    return changed
 
 
 async def set_model_fo_mapping(

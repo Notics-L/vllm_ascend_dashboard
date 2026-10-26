@@ -337,20 +337,46 @@ class ResourceDashboardService:
 
     def _pod_workflow_info(
         self,
-        pod_namespace: str,
-        pod_name: str,
+        pod: Any,
         runner_workflow_info: dict[str, dict[str, Any]],
     ) -> dict[str, Any] | None:
+        """Resolve GitHub metadata directly from a workload Pod when present.
+
+        ARC runner Pods can be matched by name, but workload Pods created by
+        a CI step usually have a different name.  Their workflow reference is
+        commonly propagated as a label or annotation, so prefer that exact
+        source before falling back to the runner-name convention.
+        """
+        metadata = pod.metadata
+        labels = metadata.labels or {}
+        annotations = getattr(metadata, "annotations", None) or {}
+        reference_keys = (
+            "jobWorkflowRef", "job_workflow_ref", "job-workflow-ref",
+            "actions.github.com/jobWorkflowRef",
+            "actions.github.com/job-workflow-ref",
+        )
+        for source in (annotations, labels):
+            for key in reference_keys:
+                info = parse_job_workflow_ref(source.get(key))
+                if info is not None:
+                    info["job_workflow_ref"] = source[key]
+                    return info
+
+        pod_namespace = metadata.namespace
+        pod_name = metadata.name
         namespaced_pod_name = f"{pod_namespace}/{pod_name}"
-        if namespaced_pod_name in runner_workflow_info:
-            return runner_workflow_info[namespaced_pod_name]
-        if pod_name in runner_workflow_info:
-            return runner_workflow_info[pod_name]
+        runner_names = [namespaced_pod_name, pod_name]
+        for key in (
+            "actions.github.com/runner-name", "runner-name",
+            "actions.github.com/ephemeral-runner",
+        ):
+            runner_name = labels.get(key)
+            if runner_name:
+                runner_names.extend((f"{pod_namespace}/{runner_name}", runner_name))
         if pod_name.endswith("-workflow"):
             runner_name = pod_name[: -len("-workflow")]
-            namespaced_runner_name = f"{pod_namespace}/{runner_name}"
-            if namespaced_runner_name in runner_workflow_info:
-                return runner_workflow_info[namespaced_runner_name]
+            runner_names.extend((f"{pod_namespace}/{runner_name}", runner_name))
+        for runner_name in runner_names:
             if runner_name in runner_workflow_info:
                 return runner_workflow_info[runner_name]
         return None
@@ -371,7 +397,7 @@ class ResourceDashboardService:
             end_time = finished_at or datetime.now(UTC)
             duration_seconds = int((end_time - started_at).total_seconds())
 
-        workflow_info = self._pod_workflow_info(pod.metadata.namespace, pod.metadata.name, runner_workflow_info) if pod.metadata else None
+        workflow_info = self._pod_workflow_info(pod, runner_workflow_info) if pod.metadata else None
 
         return ResourcePodInfo(
             cluster_id=cluster.id,

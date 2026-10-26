@@ -76,8 +76,8 @@ class ResourceMetricsCollector:
                     npu_utilization=self._percentage(summary.used.npu, summary.total.npu),
                     executing_pods_count=summary.executing_pods_count,
                     pr_count=len({pod.pr_number for pod in pods if pod.pr_number}),
-                    top_pods_json=[self._serialize_pod(pod) for pod in resource_pods],
-                    pod_timeline_json=[self._serialize_pod(pod) for pod in timeline_pods],
+                    top_pods_json=[self._serialize_pod(pod, now) for pod in resource_pods],
+                    pod_timeline_json=[self._serialize_pod(pod, now) for pod in timeline_pods],
                     collected_at=now,
                 )
             )
@@ -151,7 +151,7 @@ class ResourceMetricsCollector:
         }
 
     @staticmethod
-    def _serialize_pod(pod) -> dict:
+    def _serialize_pod(pod, observed_at: datetime) -> dict:
         """Keep enough lifecycle state to render the 24-hour Pod timeline."""
         return {
             "name": pod.name,
@@ -164,10 +164,13 @@ class ResourceMetricsCollector:
             "pr_number": pod.pr_number,
             "pr_url": pod.pr_url,
             "job_workflow_ref": pod.job_workflow_ref,
+            "workflow_run_id": pod.workflow_run_id,
+            "run_url": pod.run_url,
             "phase": pod.phase,
             "created_at": pod.created_at.isoformat() if pod.created_at else None,
             "started_at": pod.started_at.isoformat() if pod.started_at else None,
             "finished_at": pod.finished_at.isoformat() if pod.finished_at else None,
+            "last_observed_at": observed_at.isoformat(),
             "duration_seconds": pod.duration_seconds,
         }
 

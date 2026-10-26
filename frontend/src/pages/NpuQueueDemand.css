@@ -41,15 +41,19 @@
 .npu-demand-pressure-metrics div { display: grid; gap: 5px; }
 .npu-demand-pressure-metrics span { color: #7a8596; font-size: 13px; }
 .npu-demand-pressure-metrics strong {
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
   color: #1d2a3d;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size: 25px;
   font-weight: 650;
   letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
 }
 .npu-demand-pressure-metrics em {
   color: #667085;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: inherit;
   font-size: 14px;
   font-style: normal;
   font-weight: 500;
@@ -88,11 +92,11 @@
 .npu-demand-timeline-axis { color: #98a2b3; font-size: 11px; }
 .npu-demand-timeline-axis > span { padding: 0 12px 8px 0; }
 .npu-demand-timeline-axis > div { display: flex; justify-content: space-between; padding: 0 0 8px 12px; }
-.npu-demand-timeline-row { min-height: 78px; border-top: 1px solid #edf0f4; }
-.npu-demand-timeline-meta { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; min-width: 0; column-gap: 6px; padding: 8px 10px 8px 0; }
+.npu-demand-timeline-row { position: relative; min-height: 64px; border-top: 1px solid #edf0f4; }
+.npu-demand-timeline-meta { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; min-width: 0; padding: 5px 10px 3px 0; }
 .npu-demand-timeline-pod-name { min-width: 0; color: #4b55f5; font-size: 12px; font-weight: 500; white-space: nowrap; }
-.npu-demand-timeline-meta .ant-tag { align-self: center; margin-inline-end: 0; }
-.npu-demand-timeline-links { display: flex; grid-column: 1 / -1; flex-wrap: wrap; min-width: 0; gap: 2px 7px; padding-top: 2px; }
+.npu-demand-timeline-status { position: absolute; z-index: 3; top: 5px; right: 10px; margin-inline-end: 0 !important; }
+.npu-demand-timeline-links { display: flex; flex-wrap: wrap; min-width: 0; gap: 1px 7px; padding-top: 1px; }
 .npu-demand-timeline-links span, .npu-demand-timeline-links a { color: #98a2b3; font-size: 11px; overflow-wrap: anywhere; }
 .npu-demand-timeline-links a { flex: 0 0 auto; color: #4b55f5; }
 .npu-demand-timeline-hover-card { position: absolute; z-index: 5; top: calc(100% - 4px); left: 0; display: none; width: 280px; padding: 10px 12px; border: 1px solid rgb(255 255 255 / 60%); border-radius: 8px; background: rgb(255 255 255 / 72%); box-shadow: 0 10px 26px rgb(16 24 40 / 15%); backdrop-filter: blur(12px); color: #475467; font-size: 12px; line-height: 1.55; }
@@ -101,10 +105,12 @@
 .npu-demand-timeline-hover-card > div { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 3px; }
 .npu-demand-timeline-hover-card a { color: #4b55f5; }
 .npu-demand-timeline-hover-card span { color: #667085; }
-.npu-demand-timeline-track { position: relative; min-height: 78px; background-image: linear-gradient(to right, transparent calc(25% - 1px), #e8edf3 calc(25% - 1px), #e8edf3 25%, transparent 25%), linear-gradient(to right, transparent calc(50% - 1px), #e8edf3 calc(50% - 1px), #e8edf3 50%, transparent 50%), linear-gradient(to right, transparent calc(75% - 1px), #e8edf3 calc(75% - 1px), #e8edf3 75%, transparent 75%); }
-.npu-demand-timeline-track::before { position: absolute; top: 52px; right: 0; left: 0; height: 1px; background: #f0f2f5; content: ""; }
-.npu-demand-timeline-track i { position: absolute; z-index: 1; top: 47px; display: block; height: 10px; min-width: 2px; border-radius: 0; }
+.npu-demand-timeline-track { position: relative; min-height: 64px; background-image: linear-gradient(to right, transparent calc(25% - 1px), #e8edf3 calc(25% - 1px), #e8edf3 25%, transparent 25%), linear-gradient(to right, transparent calc(50% - 1px), #e8edf3 calc(50% - 1px), #e8edf3 50%, transparent 50%), linear-gradient(to right, transparent calc(75% - 1px), #e8edf3 calc(75% - 1px), #e8edf3 75%, transparent 75%); }
+.npu-demand-timeline-track::before { position: absolute; top: 41px; right: 0; left: 0; height: 1px; background: #f0f2f5; content: ""; }
+.npu-demand-timeline-track i { position: absolute; z-index: 1; top: 36px; display: block; height: 10px; min-width: 2px; border-radius: 0; }
 .npu-demand-timeline-wait { background: #f5b642; }
+.npu-demand-timeline-wait.is-historical { background: #98a2b3; }
+.npu-demand-timeline-ci-wait { background: #98a2b3; }
 .npu-demand-timeline-run { background: #316dff; }
 .npu-demand-section-scroll {
   overflow-x: auto;

@@ -1,6 +1,8 @@
 """Build resource dashboard responses from persisted metric snapshots."""
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
@@ -17,9 +19,11 @@ from contracts.schemas import (
 )
 from infrastructure.persistence.models import (
     KubernetesClusterConfig,
+    NpuOccupancyRawEnv,
     ResourceNodeMetrics,
     ResourceNpuMetrics,
 )
+from resource_dashboard.service import parse_job_workflow_ref
 
 
 class PersistedResourceMetricsService:
@@ -85,19 +89,93 @@ class PersistedResourceMetricsService:
                 key = (row.cluster_id, str(item.get("namespace") or ""), str(item["name"]))
                 current = merged.get(key)
                 if current is None:
-                    current = {"cluster_id": row.cluster_id, "cluster_name": row.cluster_name, **item}
+                    current = {
+                        "cluster_id": row.cluster_id,
+                        "cluster_name": row.cluster_name,
+                        **item,
+                        "last_observed_at": row.collected_at.isoformat(),
+                    }
                     merged[key] = current
                     continue
                 for field, value in item.items():
                     if value is not None:
                         current[field] = value
+                # The JSON payload is intentionally forward compatible.  Old
+                # snapshots have no observation timestamp, while new ones
+                # preserve the final moment at which this Pod was seen.
+                current["last_observed_at"] = row.collected_at.isoformat()
 
         pods = [self._pod_from_timeline(item) for item in merged.values()]
+        await self.enrich_pods_from_history(db, pods)
         return ResourcePodTimelineResponse(
             generated_at=generated_at,
             window_start=window_start,
             pods=sorted(pods, key=lambda pod: (pod.created_at or generated_at, pod.name)),
         )
+
+    async def enrich_pods_from_history(
+        self,
+        db: AsyncSession,
+        pods: list[ResourcePodInfo],
+    ) -> None:
+        """Fill CI links only for one unambiguous pod-history namespace/name match."""
+        names = sorted({pod.name for pod in pods if pod.name})
+        if not names:
+            return
+        rows = (
+            await db.execute(
+                select(NpuOccupancyRawEnv.payload).where(NpuOccupancyRawEnv.pod_name.in_(names))
+            )
+        ).scalars().all()
+        metadata_by_key = self._history_metadata_by_pod_key(rows)
+        for pod in pods:
+            metadata = metadata_by_key.get((pod.namespace, pod.name))
+            if metadata is None:
+                continue
+            for field, value in metadata.items():
+                if value is not None and getattr(pod, field, None) is None:
+                    setattr(pod, field, value)
+
+    @staticmethod
+    def _history_metadata_by_pod_key(payloads: Iterable[object]) -> dict[tuple[str, str], dict]:
+        """Return only one-to-one ``namespace + pod name`` pod-history matches.
+
+        pod-history currently has no Kubernetes UID or dashboard cluster ID.
+        Therefore a duplicate candidate deliberately produces no association.
+        """
+        candidates: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for raw_payload in payloads:
+            if isinstance(raw_payload, str):
+                try:
+                    payload = json.loads(raw_payload)
+                except json.JSONDecodeError:
+                    continue
+            else:
+                payload = raw_payload
+            if not isinstance(payload, dict) or payload.get("source") != "github-action":
+                continue
+            name = payload.get("name")
+            comments = payload.get("extend_env_comments")
+            groups = payload.get("groups")
+            if not isinstance(name, str) or not isinstance(comments, dict) or not isinstance(groups, dict):
+                continue
+            workflow_ref = comments.get("workflow_ref")
+            workflow = parse_job_workflow_ref(workflow_ref)
+            if workflow is None:
+                continue
+            run_id = comments.get("workflow_run_id")
+            try:
+                run_id = int(str(run_id)) if run_id is not None else None
+            except (TypeError, ValueError):
+                run_id = None
+            if run_id and workflow.get("repository_url"):
+                workflow["workflow_run_id"] = run_id
+                workflow["run_url"] = f"{workflow['repository_url']}/actions/runs/{run_id}"
+            workflow["job_workflow_ref"] = workflow_ref
+            for namespace in groups:
+                if isinstance(namespace, str) and namespace:
+                    candidates[(namespace, name)].append(workflow)
+        return {key: records[0] for key, records in candidates.items() if len(records) == 1}
 
     async def _build_summaries(
         self,
@@ -266,9 +344,12 @@ class PersistedResourceMetricsService:
             pr_number=item.get("pr_number"),
             pr_url=item.get("pr_url"),
             job_workflow_ref=item.get("job_workflow_ref"),
+            workflow_run_id=item.get("workflow_run_id"),
+            run_url=item.get("run_url"),
             created_at=item.get("created_at"),
             started_at=item.get("started_at"),
             finished_at=item.get("finished_at"),
+            last_observed_at=item.get("last_observed_at"),
             duration_seconds=item.get("duration_seconds"),
             requests=ResourceQuantity(npu=item.get("npu") or 0),
         )

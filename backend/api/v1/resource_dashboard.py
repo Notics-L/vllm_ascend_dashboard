@@ -123,11 +123,15 @@ async def get_resource_dashboard(
         )
 
     service = ResourceDashboardService()
-    return await service.build_dashboard(
+    dashboard = await service.build_dashboard(
         clusters,
         label_selector=label_selector,
         include_pods=include_pods,
     )
+    await PersistedResourceMetricsService().enrich_pods_from_history(
+        db, dashboard.executing_pods,
+    )
+    return dashboard
 
 
 @router.get("/pod-timeline", response_model=ResourcePodTimelineResponse)
