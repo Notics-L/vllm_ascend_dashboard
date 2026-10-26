@@ -313,17 +313,19 @@ export default function ThirdPartyTab({ selectedIds }: ThirdPartyTabProps) {
   const [baselineModalOpen, setBaselineModalOpen] = useState(false)
   const [editingBaseline, setEditingBaseline] = useState<ThirdPartyBaseline | null>(null)
 
-  const loadComponents = useCallback(() => {
-    if (!selectedIds || selectedIds.length === 0) {
+  const [initialized, setInitialized] = useState(false)
+
+  const loadComponents = useCallback((ids: number[] | null) => {
+    if (!ids || ids.length === 0) {
       setComponents([])
       return
     }
     setLoading(true)
-    getThirdPartyOverview(selectedIds)
+    getThirdPartyOverview(ids)
       .then(setComponents)
       .catch(() => message.error('加载三方件数据失败'))
       .finally(() => setLoading(false))
-  }, [selectedIds])
+  }, [])
 
   const loadBaselines = useCallback(() => {
     getBaselines()
@@ -331,10 +333,24 @@ export default function ThirdPartyTab({ selectedIds }: ThirdPartyTabProps) {
       .catch(() => message.error('加载基线数据失败'))
   }, [])
 
+  /* Lazy-load: only fetch when first rendered with valid selectedIds */
   useEffect(() => {
-    loadComponents()
+    if (initialized || !selectedIds || selectedIds.length === 0) return
+    setInitialized(true)
+    loadComponents(selectedIds)
     loadBaselines()
-  }, [loadComponents, loadBaselines])
+  }, [selectedIds, initialized, loadComponents, loadBaselines])
+
+  /* Reload when sync completes (listen for parent event) */
+  useEffect(() => {
+    const handler = () => {
+      if (selectedIds && selectedIds.length > 0) {
+        loadComponents(selectedIds)
+      }
+    }
+    window.addEventListener('release-sync-completed', handler)
+    return () => window.removeEventListener('release-sync-completed', handler)
+  }, [selectedIds, loadComponents])
 
   const kpiData = useMemo(() => {
     const total = components.length
@@ -443,7 +459,7 @@ export default function ThirdPartyTab({ selectedIds }: ThirdPartyTabProps) {
         <Card
           bordered={false}
           extra={
-            <Button size="small" icon={<ReloadOutlined />} onClick={loadComponents}>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => { setInitialized(false); loadComponents(selectedIds); }}>
               刷新
             </Button>
           }

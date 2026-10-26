@@ -59,6 +59,7 @@ from infrastructure.persistence.models.release_management import (
     ReleaseAnalysisTask,
     ReleaseBuildGroup,
     ReleaseBuildRun,
+    ReleaseSyncSchedule,
     ReleaseThirdPartyBaseline,
     ReleaseThirdPartyVersion,
     ReleaseWorkflow,

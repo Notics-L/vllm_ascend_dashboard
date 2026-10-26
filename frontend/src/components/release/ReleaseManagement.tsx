@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dayjs from 'dayjs'
 import * as echarts from 'echarts'
 import {
   Alert,
@@ -6,16 +7,21 @@ import {
   Card,
   Collapse,
   Col,
+  DatePicker,
   Descriptions,
+  Divider,
   Form,
   Input,
+  InputNumber,
   Modal,
   message,
   Progress,
+  Radio,
   Row,
   Select,
   Space,
   Spin,
+  Switch,
   Tabs,
   Table,
   Tag,
@@ -24,14 +30,21 @@ import {
 import {
   ArrowLeftOutlined,
   BarChartOutlined,
+  CalendarOutlined,
+  CloudUploadOutlined,
+  ClockCircleOutlined,
+  DatabaseOutlined,
   DownloadOutlined,
   ExclamationCircleOutlined,
   ExperimentOutlined,
-  GlobalOutlined,
   FilePdfOutlined,
+  GithubOutlined,
+  GlobalOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RocketOutlined,
   SafetyOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 
 import {
@@ -59,6 +72,7 @@ import ThirdPartyTab from './ThirdPartyTab'
 import AIEvaluationTab from './AIEvaluationTab'
 import SyncHistoryTab from './SyncHistoryTab'
 import ComparisonTab from './ComparisonTab'
+import ScheduleSettingsPanel from './ScheduleSettingsPanel'
 
 const { Title, Text } = Typography
 const { Option } = Select
@@ -155,7 +169,10 @@ function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
 export default function ReleaseManagement() {
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [selectedWfId, setSelectedWfId] = useState<number | null>(null)
+  const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null)
   const [daysBack, setDaysBack] = useState(30)
+  const [syncMode, setSyncMode] = useState<'full' | 'incremental' | 'range'>('incremental')
+  const [singleDate, setSingleDate] = useState<dayjs.Dayjs | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [overview, setOverview] = useState<OverviewData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -168,7 +185,7 @@ export default function ReleaseManagement() {
   const [runDetailOpen, setRunDetailOpen] = useState(false)
   const [runDetailData, setRunDetailData] = useState<{ run: BuildRun; groups: BuildGroup[] } | null>(null)
   const [runDetailLoading, setRunDetailLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState('build')
+  const [activeTab, setActiveTab] = useState('sync-manage')
   const activeTabRef = useRef(activeTab)
   activeTabRef.current = activeTab
 
@@ -226,6 +243,8 @@ export default function ReleaseManagement() {
             message.success('同步完成')
             setSyncTasks(await (await getSyncTasks(null, null, 20, 0)).tasks)
             loadAnalysisFromSync()
+            /* Notify child tabs that sync data is fresh */
+            window.dispatchEvent(new Event('release-sync-completed'))
           } else if (task.status === 'cancelled') {
             message.info('同步任务已终止')
             setSyncTasks(await (await getSyncTasks(null, null, 20, 0)).tasks)
@@ -307,14 +326,44 @@ export default function ReleaseManagement() {
   const displayRuns = analysisData?.runs || []
   const displayTotal = analysisData?.total_runs || 0
 
+  const computeSyncParams = () => {
+    if (syncMode === 'full') {
+      return { daysBack: 365, sinceDate: undefined, untilDate: undefined }
+    }
+    if (syncMode === 'incremental') {
+      const sd = singleDate ? singleDate.format('YYYY-MM-DD') : undefined
+      if (!sd) return { daysBack: daysBack, sinceDate: undefined, untilDate: undefined }
+      return { daysBack: Math.max(1, Math.ceil((Date.now() - new Date(sd).getTime()) / 86400000) + 1), sinceDate: sd, untilDate: undefined }
+    }
+    // range
+    if (dateRange && dateRange[0] && dateRange[1]) {
+      const sd = dateRange[0].format('YYYY-MM-DD')
+      const ed = dateRange[1].format('YYYY-MM-DD')
+      return { daysBack: Math.max(1, Math.ceil(Math.abs(dateRange[0].diff(dateRange[1], 'day'))) + 1), sinceDate: sd, untilDate: ed }
+    }
+    return { daysBack: daysBack, sinceDate: undefined, untilDate: undefined }
+  }
+
   const handleSync = async () => {
-    if (!selectedWfId) return
+    if (!selectedWfId) {
+      message.warning('请选择工作流')
+      return
+    }
+    if (syncMode === 'incremental' && !singleDate) {
+      message.warning('请选择起始日期')
+      return
+    }
+    if (syncMode === 'range' && (!dateRange || !dateRange[0] || !dateRange[1])) {
+      message.warning('请选择完整的时间范围')
+      return
+    }
     if (hasActiveTask) {
       message.warning('该工作流已有同步任务正在执行中')
       return
     }
     try {
-      const result = await triggerSync(selectedWfId, daysBack, 100)
+      const { daysBack: db, sinceDate, untilDate } = computeSyncParams()
+      const result = await triggerSync(selectedWfId, db, 100, syncMode, sinceDate, untilDate)
       if (result.task_id) {
         startPollSync(result.task_id)
       }
@@ -454,68 +503,220 @@ export default function ReleaseManagement() {
         onChange={setActiveTab}
         size="large"
         items={[
+          /* 1. 同步管理 — 数据仓库同步入口（含子Tab） */
+          {
+            key: 'sync-manage',
+            label: <><CloudUploadOutlined /> 同步管理</>,
+            children: (
+              <Card size="small" bordered={false} style={{ borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }} bodyStyle={{ padding: 0 }}>
+                <Tabs
+                  tabPosition="left"
+                  destroyInactiveTabPane
+                  items={[
+                    {
+                      key: 'manual',
+                      label: <span><CloudUploadOutlined /> 手动同步</span>,
+                      children: (
+                        <div style={{ padding: '16px 24px' }}>
+                          <Row gutter={[16, 16]}>
+                            <Col xs={24} md={8}>
+                              <Card size="small" title={
+                                <><CloudUploadOutlined style={{ marginRight: 6, color: '#1890ff' }} />同步模式</>
+                              }
+                              style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #f0f0f0' }}
+                              bodyStyle={{ padding: '16px 20px' }}>
+                                <Radio.Group
+                                  value={syncMode}
+                                  onChange={(e) => { if (!hasActiveTask) setSyncMode(e.target.value) }}
+                                  disabled={hasActiveTask}
+                                  optionType="button"
+                                  buttonStyle="solid"
+                                  size="middle"
+                                >
+                                  <Radio.Button value="full">全量</Radio.Button>
+                                  <Radio.Button value="incremental">增量</Radio.Button>
+                                  <Radio.Button value="range">范围</Radio.Button>
+                                </Radio.Group>
+                              </Card>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Card size="small" title={
+                                <><CalendarOutlined style={{ marginRight: 6, color: '#52c41a' }} />{syncMode === 'incremental' ? '起始日期' : syncMode === 'full' ? '说明' : '时间范围'}</>
+                              }
+                              style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #f0f0f0' }}
+                              bodyStyle={{ padding: '16px 20px' }}>
+                                {syncMode === 'full' ? (
+                                  <Alert message="拉取该工作流的全部历史构建记录，耗时较长" type="info" showIcon style={{ fontSize: 13 }} />
+                                ) : syncMode === 'incremental' ? (
+                                  <DatePicker
+                                    value={singleDate}
+                                    onChange={(d) => setSingleDate(d)}
+                                    placeholder="选择起始日期"
+                                    style={{ width: 220 }}
+                                    disabledDate={(current) => current && current && current > dayjs().endOf('day')}
+                                  />
+                                ) : (
+                                  <DatePicker.RangePicker
+                                    value={dateRange}
+                                    onChange={(dates) => {
+                                      if (dates && dates.length === 2) {
+                                        setDateRange(dates as [dayjs.Dayjs, dayjs.Dayjs])
+                                      } else {
+                                        setDateRange(null)
+                                      }
+                                    }}
+                                    placeholder={['起始日期', '截止日期']}
+                                    style={{ width: 340 }}
+                                  />
+                                )}
+                              </Card>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Card size="small" title={
+                                <><GithubOutlined style={{ marginRight: 6, color: '#722ed1' }} />目标工作流</>
+                              }
+                              extra={
+                                <Space>
+                                  {workflows.length > 1 ? (
+                                    <Button icon={<GlobalOutlined />} onClick={() => { discoverForm.setFieldsValue({ owner: configCheck?.github_owner, repo: configCheck?.github_repo }); setDiscoverModalOpen(true); }}>
+                                      发现
+                                    </Button>
+                                  ) : (
+                                    <Button icon={<GlobalOutlined />} type="link" onClick={() => { discoverForm.setFieldsValue({ owner: configCheck?.github_owner, repo: configCheck?.github_repo }); setDiscoverModalOpen(true); }}>
+                                      发现工作流
+                                    </Button>
+                                  )}
+                                  <Button
+                                    type="primary"
+                                    icon={<CloudUploadOutlined />}
+                                    loading={activeSyncTask !== null}
+                                    disabled={!selectedWfId || hasActiveTask}
+                                    onClick={handleSync}
+                                  >
+                                    {activeSyncTask ? '同步中' : '开始'}
+                                  </Button>
+                                </Space>
+                              }
+                              style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #f0f0f0' }}
+                              bodyStyle={{ padding: '16px 20px' }}>
+                                <Select
+                                  placeholder="选择工作流（留空则同步全部）"
+                                  value={selectedWfId}
+                                  onChange={setSelectedWfId}
+                                  style={{ width: '100%' }}
+                                  allowClear
+                                  showSearch
+                                  filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+                                  suffixIcon={<SearchOutlined />}
+                                >
+                                  {workflows.filter((w) => w.enabled).map((w) => (<Option key={w.id} value={w.id} label={w.workflow_name}>{w.workflow_name}</Option>))}
+                                </Select>
+                              </Card>
+                            </Col>
+                          </Row>
+
+                          {activeSyncTask && (
+                            <Card size="small" style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #f0f0f0', marginTop: 16 }}
+                              bodyStyle={{ padding: '16px 20px' }}>
+                              <Space style={{ marginBottom: 6 }}>
+                                {(activeSyncTask.status === 'running' || activeSyncTask.status === 'pending')
+                                  ? <Tag color="processing"><ClockCircleOutlined /> 执行中</Tag>
+                                  : <Tag color="default"><ClockCircleOutlined /> 等待中</Tag>}
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {activeSyncTask.processed_items}/{activeSyncTask.total_items} 构建记录
+                                </Text>
+                              </Space>
+                              <Progress
+                                percent={activeSyncTask.progress || 0}
+                                status={activeSyncTask.status === 'failed' ? 'exception' : 'active'}
+                                strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                                size="small"
+                              />
+                            </Card>
+                          )}
+                          {!selectedWfId && configCheck?.github_configured && (
+                            <Alert message="请先选择工作流" description="选择一个工作流后点击「开始」同步采集构建记录。" type="info" showIcon style={{ marginTop: 16 }} />
+                          )}
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'history',
+                      label: <span><ReloadOutlined /> 同步记录</span>,
+                      children: <SyncHistoryTab />,
+                    },
+                    {
+                      key: 'schedule',
+                      label: <span><ClockCircleOutlined /> 定时设置</span>,
+                      children: (
+                        <div style={{ padding: '0 24px' }}>
+                          <ScheduleSettingsPanel
+                            workflows={workflows.filter((w) => w.enabled).map((w) => ({ id: w.id, workflow_name: w.workflow_name }))}
+                          />
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </Card>
+            ),
+          },
+          /* 2. 构建分析 — 纯查询 */
           {
             key: 'build',
             label: <><BarChartOutlined /> 构建分析</>,
             children: (
               <>
                 <Card bordered={false} style={{ marginBottom: 16 }}>
-                  <Row gutter={16} align="middle">
-                    <Col><Text strong>工作流:</Text></Col>
-                    <Col span={6}>
-                      <Select placeholder="选择工作流" value={selectedWfId} onChange={setSelectedWfId} style={{ width: '100%' }} showSearch filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}>
-                        {workflows.filter((w) => w.enabled).map((w) => (<Option key={w.id} value={w.id} label={w.workflow_name}>{w.workflow_name}</Option>))}
-                      </Select>
-                    </Col>
-                    <Col><Text strong>天数:</Text></Col>
-                    <Col span={3}>
-                      <Select value={daysBack} onChange={setDaysBack} style={{ width: 100 }}>
+                  <Space wrap size="middle" align="center" style={{ marginBottom: 8 }}>
+                    <Text strong>工作流:</Text>
+                    <Select placeholder="选择工作流" value={selectedWfId} onChange={setSelectedWfId} style={{ width: 260 }} showSearch filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}>
+                      {workflows.filter((w) => w.enabled).map((w) => (<Option key={w.id} value={w.id} label={w.workflow_name}>{w.workflow_name}</Option>))}
+                    </Select>
+                    <Text strong>日期范围:</Text>
+                    <DatePicker.RangePicker
+                      value={dateRange}
+                      onChange={(dates) => {
+                        if (dates && dates.length === 2) {
+                          setDateRange(dates as [dayjs.Dayjs, dayjs.Dayjs])
+                        } else {
+                          setDateRange(null)
+                        }
+                      }}
+                      presets={[
+                        { label: '最近7天', value: [dayjs().subtract(7, 'day'), dayjs()] },
+                        { label: '最近14天', value: [dayjs().subtract(14, 'day'), dayjs()] },
+                        { label: '最近30天', value: [dayjs().subtract(30, 'day'), dayjs()] },
+                        { label: '最近60天', value: [dayjs().subtract(60, 'day'), dayjs()] },
+                        { label: '最近90天', value: [dayjs().subtract(90, 'day'), dayjs()] },
+                      ]}
+                    />
+                    {!dateRange && (
+                      <Select value={daysBack} onChange={setDaysBack} style={{ width: 80 }}>
                         <Option value={7}>7 天</Option>
                         <Option value={14}>14 天</Option>
                         <Option value={30}>30 天</Option>
                         <Option value={60}>60 天</Option>
                         <Option value={90}>90 天</Option>
                       </Select>
-                    </Col>
-                    <Col><Text strong>状态:</Text></Col>
-                    <Col span={3}>
-                      <Select allowClear placeholder="全部" value={statusFilter} onChange={(v) => setStatusFilter(v)} style={{ width: 120 }}>
-                        <Option value="success">成功</Option>
-                        <Option value="failure">失败</Option>
-                        <Option value="cancelled">取消</Option>
-                      </Select>
-                    </Col>
-                    <Col flex="auto" style={{ textAlign: 'right' }}>
-                      <Space>
-                        <Button icon={<GlobalOutlined />} onClick={() => { discoverForm.setFieldsValue({ owner: configCheck?.github_owner, repo: configCheck?.github_repo }); setDiscoverModalOpen(true); }}>
-                          发现工作流
-                        </Button>
-                        <Button icon={<Spin size="small" spinning={!!activeSyncTask} />} onClick={handleSync} disabled={!selectedWfId || hasActiveTask}>
-                          同步数据{activeSyncTask ? ` (${activeSyncTask.processed_items}/${activeSyncTask.total_items})` : ''}
-                        </Button>
-                        <Button icon={<DownloadOutlined />} onClick={handleExportExcel} disabled={!displayOverview || !displayOverview.stats.total}>
-                          导出 Excel
-                        </Button>
-                        <Button icon={<FilePdfOutlined />} onClick={handleExportPdf} disabled={!displayOverview || !displayOverview.stats.total}>
-                          导出 PDF
-                        </Button>
-                      </Space>
-                    </Col>
-                  </Row>
-                  {activeSyncTask && (
-                    <div style={{ marginTop: 8 }}>
-                      <Progress
-                        percent={activeSyncTask.progress || 0}
-                        status={activeSyncTask.status === 'failed' ? 'exception' : 'active'}
-                        format={(percent) => `${activeSyncTask.processed_items}/${activeSyncTask.total_items} (${percent}%)`}
-                      />
-                    </div>
-                  )}
+                    )}
+                    <Text strong>状态:</Text>
+                    <Select allowClear placeholder="全部" value={statusFilter} onChange={(v) => setStatusFilter(v)} style={{ width: 120 }}>
+                      <Option value="success">成功</Option>
+                      <Option value="failure">失败</Option>
+                      <Option value="cancelled">取消</Option>
+                    </Select>
+                    <Button type="primary" icon={<SearchOutlined />} onClick={loadAnalysisFromSync}>
+                      查询
+                    </Button>
+                    <Button icon={<DownloadOutlined />} onClick={handleExportExcel} disabled={!displayOverview || !displayOverview.stats.total}>
+                      导出 Excel
+                    </Button>
+                    <Button icon={<FilePdfOutlined />} onClick={handleExportPdf} disabled={!displayOverview || !displayOverview.stats.total}>
+                      导出 PDF
+                    </Button>
+                  </Space>
                 </Card>
-
-                {!selectedWfId && configCheck?.github_configured && (
-                  <Alert message="没有可用的工作流" description="请先点击「同步数据」或在系统配置中添加 GitHub Token 后发现工作流。" type="info" showIcon />
-                )}
 
                 {displayOverview && (
                   <>
@@ -568,7 +769,6 @@ export default function ReleaseManagement() {
                                   series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'], data: displayOverview.phase_data.map((d, i) => ({ name: d.name, value: d.total, itemStyle: { color: ['#5b8ff9', '#5ada7a', '#fd9a31', '#e06024', '#9f7aea', '#17a2b8'][i % 6] } })), label: { formatter: '{b} {d}%', fontSize: 11 } }],
                                 }}
                               />
-                              {/* Phase stats table */}
                               <Table dataSource={displayOverview.phase_data} rowKey="name" size="small" pagination={false} bordered
                                 style={{ marginTop: 8 }}
                                 columns={[
@@ -639,21 +839,22 @@ export default function ReleaseManagement() {
                   </>
                 )}
 
-                <Card bordered={false} title={`运行记录 (${displayTotal})`}>
+                {displayOverview && (
+                  <Card bordered={false} title={`运行记录 (${displayTotal})`}>
                     <Table
                       dataSource={displayRuns}
-                    rowKey="id"
-                    size="small"
-                    scroll={{ x: 900 }}
-                    pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
-                    columns={runsColumns}
-                    onRow={(record) => ({ style: { cursor: 'pointer' }, onClick: () => handleViewRunDetail(record.id) })}
-                  />
-                </Card>
+                      rowKey="id"
+                      size="small"
+                      scroll={{ x: 900 }}
+                      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+                      columns={runsColumns}
+                      onRow={(record) => ({ style: { cursor: 'pointer' }, onClick: () => handleViewRunDetail(record.id) })}
+                    />
+                  </Card>
+                )}
               </>
             ),
           },
-          { key: 'sync-history', label: <><ReloadOutlined /> 同步记录</>, children: <SyncHistoryTab /> },
           { key: 'comparison', label: <><GlobalOutlined /> 多工作流对比</>, children: <ComparisonTab /> },
           { key: 'third-party', label: <><SafetyOutlined /> 三方件监控</>, children: <ThirdPartyTab selectedIds={selectedWfId ? [selectedWfId] : null} /> },
           { key: 'ai-evaluation', label: <><ExperimentOutlined /> AI 评估</>, children: <AIEvaluationTab selectedIds={selectedWfId ? [selectedWfId] : null} workflows={workflows} /> },

@@ -318,10 +318,12 @@ export const toggleWorkflow = async (workflowId: number, enabled: boolean) => {
   return response.data
 }
 
-export const triggerSync = async (workflowId: number, daysBack = 30, maxRuns = 100) => {
-  const response = await api.post('/release-management/sync', null, {
-    params: { workflow_id: workflowId, days_back: daysBack, max_runs: maxRuns },
-  })
+export const triggerSync = async (workflowId: number, daysBack = 30, maxRuns = 100,
+  syncMode = 'incremental', sinceDate?: string, untilDate?: string) => {
+  const params: Record<string, unknown> = { workflow_id: workflowId, days_back: daysBack, max_runs: maxRuns, sync_mode: syncMode }
+  if (sinceDate) params.since_date = sinceDate
+  if (untilDate) params.until_date = untilDate
+  const response = await api.post('/release-management/sync', null, { params })
   return response.data
 }
 

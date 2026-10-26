@@ -42,11 +42,30 @@ class ThirdPartyService:
         self, run_id: int, log_content: str
     ) -> list[dict[str, Any]]:
         """从构建日志中检测三方件版本"""
-        detected = []
+        from sqlalchemy import delete as sa_delete
+
+        # Remove old detections for this run (same job may be re-synced)
+        # We keep the first detection per (run_id, component_name, component_version)
+        await self.db.execute(
+            sa_delete(ReleaseThirdPartyVersion).where(
+                ReleaseThirdPartyVersion.run_id == run_id
+            )
+        )
+        await self.db.flush()
+
+        # De-duplicate within the same log
+        seen: set[tuple[str, str]] = set()
+        detected: list[dict[str, Any]] = []
+
         for component, pattern in DETECTION_PATTERNS.items():
             matches = re.finditer(pattern, log_content, re.IGNORECASE)
             for match in matches:
                 version = match.group(1).strip().lstrip("v")
+                key = (component, version)
+                if key in seen:
+                    continue
+                seen.add(key)
+
                 record = ReleaseThirdPartyVersion(
                     run_id=run_id,
                     component_name=component,
@@ -175,15 +194,28 @@ class ThirdPartyService:
         result = await self.db.execute(stmt)
         rows = result.all()
 
+        # Load active baselines for status check
+        baselines_result = await self.db.execute(
+            select(ReleaseThirdPartyBaseline).where(ReleaseThirdPartyBaseline.is_active)
+        )
+        baseline_map = {b.component_name: b for b in baselines_result.scalars().all()}
+
         component_map: dict[str, dict] = {}
         for r in rows:
             name = r.component_name
             if name not in component_map:
+                baseline = baseline_map.get(name)
+                status = "no_baseline"
+                if baseline:
+                    # Check if the latest version is compliant
+                    status = "compliant" if self._check_compliance(r.component_version, baseline) else "violation"
+
                 component_map[name] = {
                     "component_name": name,
                     "component_category": r.component_category,
                     "versions": [],
                     "latest_version": r.component_version,
+                    "baseline_status": status,
                 }
             component_map[name]["versions"].append({
                 "version": r.component_version,

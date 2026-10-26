@@ -21,6 +21,7 @@ from infrastructure.persistence.models import (
     ReleaseWorkflow,
 )
 from release_management.parser import JobNameParser
+from release_management.third_party_service import ThirdPartyService
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +91,15 @@ class ReleaseWorkflowCollector:
 
     async def sync_workflow_runs(
         self, workflow_config: ReleaseWorkflow, api_task_id: int,
-        days_back: int = 30, max_runs: int = 100
+        days_back: int = 30, max_runs: int = 100,
+        sync_mode: str = "incremental", since_date: str | None = None,
+        until_date: str | None = None
     ) -> int:
         """同步指定 workflow 的构建记录到数据库
+        
+        sync_mode: 'full' | 'incremental' | 'range'
+        since_date: YYYY-MM-DD (for incremental: start from this date; for range: start)
+        until_date: YYYY-MM-DD (for range only: end date)
         
         Args:
             api_task_id: API 层创建的 ReleaseAnalysisTask 的 ID，用于更新进度
@@ -102,16 +109,56 @@ class ReleaseWorkflowCollector:
         from sqlalchemy import update as sa_update, text
         
         collected = 0
+        new_runs_for_tp: list[tuple[int, list[dict]]] = []
+        
+        # Determine sync window based on mode
+        if sync_mode == 'full':
+            since_str = None  # no date filter — full sync
+            days_back = 365   # max range for full history
+        elif sync_mode == 'range' and since_date:
+            since_str = since_date
+            if until_date:
+                days_back = max(1, (datetime.strptime(since_date, '%Y-%m-%d') - datetime.strptime(until_date, '%Y-%m-%d')).days) if since_date > until_date else max(1, (datetime.strptime(until_date, '%Y-%m-%d') - datetime.strptime(since_date, '%Y-%m-%d')).days)
+            else:
+                days_back = max(1, (datetime.now(UTC) - datetime.strptime(since_date, '%Y-%m-%d')).days)
+        elif sync_mode == 'incremental' and since_date:
+            since_str = since_date
+            days_back = max(1, (datetime.now(UTC) - datetime.strptime(since_date, '%Y-%m-%d')).days)
+        else:
+            # Fallback: incremental from last_sync_at
+            since_dt = workflow_config.last_sync_at
+            if since_dt:
+                since_str = since_dt.strftime('%Y-%m-%d')
+            else:
+                since_str = (datetime.now(UTC) - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        
         try:
             runs = await self.github.get_workflow_runs(
                 workflow_id_or_name=str(workflow_config.workflow_id),
                 days_back=days_back,
                 per_page=max_runs,
+                created=since_str if since_str else None,
+                until=until_date if sync_mode == 'range' and until_date else None,
             )
+
+            # Filter out runs already synced (incremental)
+            if since_dt:
+                # Ensure since_dt is timezone-aware for comparison
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=UTC)
+                filtered_runs = []
+                for run in runs:
+                    run_created = _to_dt(run.get("created_at", ""))
+                    if run_created and run_created > since_dt:
+                        filtered_runs.append(run)
+                    elif not filtered_runs:
+                        # Always keep the newest run if nothing is truly new
+                        filtered_runs.append(run)
+                runs = filtered_runs
 
             total_runs = max(len(runs), 1)
             for idx, run in enumerate(runs):
-                # 检查是否被取消
+                # Check cancelled
                 if self._is_task_cancelled(api_task_id):
                     logger.info(f"Sync task {api_task_id} cancelled during run loop")
                     break
@@ -127,23 +174,25 @@ class ReleaseWorkflowCollector:
                     ).scalar_one_or_none()
 
                     jobs = await self.github.get_job_list(run["id"])
-                    # Rate limit: avoid hammering GitHub API (1 req/s)
-                    await asyncio.sleep(0.5)
 
+                    run_record_id = None
                     if existing:
                         from sqlalchemy import delete as sa_delete
                         await self.db.execute(
                             sa_delete(ReleaseBuildGroup).where(ReleaseBuildGroup.run_id == existing.id)
                         )
                         await self._update_run_record(existing, workflow_config, run, jobs)
+                        run_record_id = existing.id
                         collected += 1
                         self._update_api_task(api_task_id, idx + 1, total_runs, f"已更新 {collected} 条记录...")
                     else:
-                        await self._persist_run_data(workflow_config, run, jobs)
+                        run_record_id = await self._persist_run_data(workflow_config, run, jobs)
+                        new_runs_for_tp.append((run_record_id, jobs))
                         collected += 1
                         self._update_api_task(api_task_id, idx + 1, total_runs, f"已采集 {collected} 条新记录...")
 
-                    # Each run commits its own changes to avoid lock wait timeouts
+                    # Flush progress immediately so poll sees it
+                    await self.db.flush()
                     await self.db.commit()
                 except Exception as e:
                     logger.error(f"Error processing run {run.get('id')}: {e}")
@@ -153,13 +202,19 @@ class ReleaseWorkflowCollector:
                         pass
                     continue
 
-            # Only update last_sync_at if not cancelled; no need to commit since each run committed above
+            # Update last_sync_at before returning (so next sync is incremental)
             if not self._is_task_cancelled(api_task_id):
                 workflow_config.last_sync_at = datetime.now(UTC)
                 try:
                     await self.db.commit()
                 except Exception:
                     pass
+
+            # Fire-and-forget third-party detection (don't block sync response)
+            if new_runs_for_tp:
+                latest_run_id, latest_jobs = new_runs_for_tp[0]
+                asyncio.create_task(self._detect_third_party_bg(latest_run_id, latest_jobs))
+
             return collected
 
         except GitHubAuthenticationError:
@@ -275,8 +330,8 @@ class ReleaseWorkflowCollector:
 
     async def _persist_run_data(
         self, workflow_config: ReleaseWorkflow, run: dict[str, Any], jobs: list[dict]
-    ):
-        """持久化单次运行的数据"""
+    ) -> int:
+        """持久化单次运行的数据，返回 run_record.id"""
         created = run.get("created_at", "")
         started = run.get("run_started_at", created) or created
         updated = run.get("updated_at", "")
@@ -332,6 +387,49 @@ class ReleaseWorkflowCollector:
                 steps_json=json.dumps(steps_data),
             )
             self.db.add(group)
+
+        return run_record.id
+
+    async def _detect_third_party(self, run_record_id: int, jobs: list[dict]):
+        """从单个 build job 的日志中检测三方件版本（只拉 1 次 API）"""
+        if not jobs:
+            return
+
+        keywords = ["build", "install", "compile", "dependency"]
+        scored_jobs: list[tuple[int, dict]] = []
+        for job in jobs:
+            name_lower = (job.get("name") or "").lower()
+            score = sum(1 for kw in keywords if kw in name_lower)
+            if score > 0:
+                scored_jobs.append((score, job))
+        scored_jobs.sort(key=lambda x: -x[0])
+
+        target = scored_jobs[0][1] if scored_jobs else jobs[0]
+        job_id = target.get("id")
+        job_name = target.get("name") or ""
+
+        if not job_id:
+            return
+
+        tp_service = ThirdPartyService(self.db)
+        try:
+            log_content = await self.github.get_job_logs(job_id)
+            if log_content:
+                detected = await tp_service.detect_from_logs(run_record_id, log_content)
+                if detected:
+                    logger.info(
+                        f"Detected {len(detected)} third-party components "
+                        f"from run {run_record_id} job [{job_name}]"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to detect third-party from job {job_name}: {e}")
+
+    async def _detect_third_party_bg(self, run_record_id: int, jobs: list[dict]):
+        """后台执行三方件检测，不阻塞主流程"""
+        try:
+            await self._detect_third_party(run_record_id, jobs)
+        except Exception as e:
+            logger.warning(f"Background third-party detection failed: {e}")
 
     @staticmethod
     def _build_conclusion_summary(jobs: list[dict]) -> dict:

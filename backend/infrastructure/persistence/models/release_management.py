@@ -174,3 +174,18 @@ class ReleaseAnalysisTask(Base):
     __table_args__ = (
         Index("ix_release_task_workflow_status", "workflow_id", "status"),
     )
+
+
+class ReleaseSyncSchedule(Base):
+    """发布件定时同步配置表（每工作流一条）"""
+    __tablename__ = "release_sync_schedules"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    workflow_id = Column(BigInteger, ForeignKey("release_workflows.id"), nullable=False, unique=True, index=True)
+    sync_mode = Column(String(20), default="incremental")  # full / incremental / recent_days
+    recent_days = Column(Integer, default=30)
+    cron_expression = Column(String(50), default="0 2 * * *")
+    is_active = Column(Boolean, default=False)
+    last_triggered_at = Column(DateTime)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))

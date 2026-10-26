@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Card, Row, Col, Table, Tag, Button, Space, Select, Dropdown,
-  message, Progress, Modal, Descriptions, Empty, Typography, Alert,
+  Card, Row, Col, Table, Tag, Button, Space, Select,
+  message, Progress, Modal, Descriptions, Empty, Typography, Alert, Tooltip,
 } from 'antd'
-import type { MenuProps } from 'antd'
 import {
   ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined,
   ClockCircleOutlined, EyeOutlined, StopOutlined, FlagOutlined,
-  DownOutlined, FolderOpenOutlined, DownloadOutlined, FilePdfOutlined,
+  FolderOpenOutlined, FileExcelOutlined, FilePdfOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
@@ -246,10 +245,7 @@ export default function SyncHistoryTab() {
   }
 
   // Row-level style based on status
-  const getRowStyle = (record: SyncTask) => {
-    const cfg = statusConfig[record.status]
-    return cfg ? { background: cfg.bg, transition: 'background 0.2s' } : {}
-  }
+   const getRowStyle = (_record: SyncTask) => ({})
 
   const columns = [
     {
@@ -288,10 +284,10 @@ export default function SyncHistoryTab() {
       },
     },
     {
-      title: '天数',
+      title: '范围(天)',
       dataIndex: 'days_back',
       key: 'days_back',
-      width: 60,
+      width: 80,
       align: 'right' as const,
       render: (v: number) => v || '-',
     },
@@ -345,74 +341,62 @@ export default function SyncHistoryTab() {
     {
       title: '操作',
       key: 'action',
-      width: 180,
+      width: 200,
       fixed: 'right' as const,
       render: (_: unknown, r: SyncTask) => {
-        const canExport = r.status === 'completed'
         const isActive = r.status === 'running' || r.status === 'pending'
-
-        const exportItems: MenuProps['items'] = [
-          {
-            key: 'analysis',
-            label: '查看构建分析',
-            icon: <FolderOpenOutlined />,
-            onClick: () => handleViewBuildAnalysis(r),
-            disabled: r.status !== 'completed',
-          },
-          { type: 'divider' },
-          {
-            key: 'excel',
-            label: '导出 Excel',
-            icon: <DownloadOutlined />,
-            onClick: () => handleExportExcel(r),
-            disabled: !canExport,
-          },
-          {
-            key: 'pdf',
-            label: '导出 PDF',
-            icon: <FilePdfOutlined />,
-            onClick: () => handleExportPdf(r),
-            disabled: !canExport,
-          },
-        ]
+        const isCompleted = r.status === 'completed'
+        const isFailed = r.status === 'failed'
 
         return (
           <Space size="small">
             {isActive && (
-              <Button
-                size="small"
-                danger
-                icon={<StopOutlined />}
-                onClick={() => handleCancel(r)}
-              >
-                终止
-              </Button>
+              <Tooltip title="终止任务">
+                <Tag color="red" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}>
+                  <StopOutlined /> 终止
+                </Tag>
+              </Tooltip>
             )}
-            {r.status === 'failed' && (
-              <>
-                <Button
-                  size="small"
-                  danger
-                  icon={<CloseCircleOutlined />}
-                  onClick={() => { setErrorTask(r); setErrorDetailOpen(true); }}
-                >
-                  失败详情
-                </Button>
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<ReloadOutlined />}
-                  onClick={() => handleRetry(r)}
-                  loading={retryingId === r.id}
-                >
-                  重试
-                </Button>
-              </>
+            {isFailed && (
+              <Tooltip title="查看失败详情">
+                <Tag color="blue" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => { setErrorTask(r); setErrorDetailOpen(true); }}>
+                  <EyeOutlined /> 错误
+                </Tag>
+              </Tooltip>
             )}
-            <Dropdown menu={{ items: exportItems }} trigger={['click']}
-              disabled={r.status === 'pending'}>
-              <Button size="small" icon={<DownOutlined />}>操作</Button>
-            </Dropdown>
+            {isFailed && (
+              <Tooltip title="重新同步">
+                <Tag color="orange" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => handleRetry(r)}>
+                  <ReloadOutlined /> 重试
+                </Tag>
+              </Tooltip>
+            )}
+            {isCompleted && (
+              <Tooltip title="查看构建分析">
+                <Tag color="cyan" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => handleViewBuildAnalysis(r)}>
+                  <FolderOpenOutlined /> 分析
+                </Tag>
+              </Tooltip>
+            )}
+            {isCompleted && (
+              <Tooltip title="导出 Excel">
+                <Tag color="green" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => handleExportExcel(r)}>
+                  <FileExcelOutlined />
+                </Tag>
+              </Tooltip>
+            )}
+            {isCompleted && (
+              <Tooltip title="导出 PDF">
+                <Tag color="red" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => handleExportPdf(r)}>
+                  <FilePdfOutlined />
+                </Tag>
+              </Tooltip>
+            )}
           </Space>
         )
       },

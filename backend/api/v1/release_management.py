@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 from sqlalchemy import func, select
 
@@ -17,6 +17,7 @@ from infrastructure.persistence.models import (
     ReleaseAnalysisTask,
     ReleaseAIEvaluation,
     ReleaseBuildRun,
+    ReleaseSyncSchedule,
     ReleaseWorkflow,
 )
 from release_management.ai_evaluator import TrustworthinessEvaluator
@@ -187,8 +188,8 @@ def _task_to_dict(task: ReleaseAnalysisTask, workflow_name: str | None = None) -
     }
 
 
-async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_runs: int):
-    """后台执行同步任务 — 直接更新 API 层任务记录"""
+async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_runs: int, sync_mode: str = "incremental", since_date: str | None = None, until_date: str | None = None):
+    """后台执行同步任务 — 支持全量/增量/范围三种模式"""
     from infrastructure.db.base import SessionLocal as AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
@@ -203,7 +204,7 @@ async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_run
 
             # 标记为 running
             task.status = "running"
-            task.progress_message = "初始化同步任务..."
+            task.progress_message = f"初始化同步任务 (模式: {sync_mode})..."
             await db.commit()
 
             wf = await db.get(ReleaseWorkflow, workflow_id)
@@ -222,7 +223,8 @@ async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_run
             )
             collector = ReleaseWorkflowCollector(db, github)
             collected = await collector.sync_workflow_runs(
-                wf, api_task_id=task_id, days_back=days_back, max_runs=max_runs
+                wf, api_task_id=task_id, days_back=days_back, max_runs=max_runs,
+                sync_mode=sync_mode, since_date=since_date, until_date=until_date
             )
 
             # 检查是否在执行过程中被取消
@@ -263,8 +265,11 @@ async def trigger_sync(
     workflow_id: int = Query(...),
     days_back: int = Query(30, ge=1, le=365),
     max_runs: int = Query(100, ge=1, le=500),
+    sync_mode: str = Query("incremental"),
+    since_date: str | None = Query(None),
+    until_date: str | None = Query(None),
 ):
-    """触发异步同步任务 - 同一 workflow 有 running/pending 任务时拒绝"""
+    """触发异步同步任务 - 支持 全量/增量/范围 三种模式"""
     import asyncio
     token = settings.GITHUB_TOKEN
     if not token:
@@ -295,7 +300,7 @@ async def trigger_sync(
     await db.commit()
     await db.refresh(task)
 
-    asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs))
+    asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs, sync_mode, since_date, until_date))
 
     return {
         "task_id": task.id,
@@ -612,6 +617,83 @@ async def get_sync_summary(
         "last_sync_at": last_task.created_at.isoformat() if last_task else None,
         "last_sync_status": last_task.status if last_task else None,
     }
+
+
+# ==================== Sync Schedule ====================
+
+@router.get("/release-management/sync/schedules")
+async def list_sync_schedules(db: DbSession, current_user: CurrentUser):
+    """Get all sync schedules with workflow names"""
+    result = await db.execute(select(ReleaseSyncSchedule))
+    schedules = result.scalars().all()
+
+    wf_map = {}
+    if schedules:
+        wf_result = await db.execute(
+            select(ReleaseWorkflow).where(ReleaseWorkflow.id.in_([s.workflow_id for s in schedules]))
+        )
+        wf_map = {w.id: w.workflow_name for w in wf_result.scalars().all()}
+
+    return [dict(
+        id=s.id,
+        workflow_id=s.workflow_id,
+        workflow_name=wf_map.get(s.workflow_id, ''),
+        sync_mode=s.sync_mode,
+        recent_days=s.recent_days,
+        cron_expression=s.cron_expression,
+        is_active=s.is_active,
+        last_triggered_at=s.last_triggered_at.isoformat() if s.last_triggered_at else None,
+        created_at=s.created_at.isoformat() if s.created_at else None,
+        updated_at=s.updated_at.isoformat() if s.updated_at else None,
+    ) for s in schedules]
+
+
+@router.post("/release-management/sync/schedules")
+async def create_update_schedule(db: DbSession, current_user: CurrentUser, body: dict = Body(...)):
+    """Create or update a schedule for a workflow"""
+    wf_id = body.get("workflow_id")
+    if not wf_id:
+        raise HTTPException(status_code=400, detail="workflow_id is required")
+
+    existing = (
+        await db.execute(
+            select(ReleaseSyncSchedule).where(ReleaseSyncSchedule.workflow_id == wf_id)
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        existing.sync_mode = body.get("sync_mode", existing.sync_mode)
+        existing.recent_days = body.get("recent_days", existing.recent_days)
+        existing.cron_expression = body.get("cron_expression", existing.cron_expression)
+        existing.is_active = body.get("is_active", existing.is_active)
+    else:
+        existing = ReleaseSyncSchedule(
+            workflow_id=wf_id,
+            sync_mode=body.get("sync_mode", "incremental"),
+            recent_days=body.get("recent_days", 30),
+            cron_expression=body.get("cron_expression", "0 2 * * *"),
+            is_active=body.get("is_active", False),
+        )
+        db.add(existing)
+
+    await db.commit()
+    await db.refresh(existing)
+    return {"id": existing.id, "workflow_id": existing.workflow_id, "message": "ok"}
+
+
+@router.delete("/release-management/sync/schedules/{schedule_id}")
+async def delete_schedule(db: DbSession, current_user: CurrentUser, schedule_id: int):
+    """Delete a schedule"""
+    schedule = (
+        await db.execute(
+            select(ReleaseSyncSchedule).where(ReleaseSyncSchedule.id == schedule_id)
+        )
+    ).scalar_one_or_none()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await db.delete(schedule)
+    await db.commit()
+    return {"message": "deleted"}
 
 
 # ==================== Overview & Runs ====================
