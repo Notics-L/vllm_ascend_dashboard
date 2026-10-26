@@ -262,10 +262,16 @@ async def trigger_sync(
 
     异步执行：立即返回 record_id，同步任务在后台执行
     """
+    import logging
     from fastapi import HTTPException
 
+    logger = logging.getLogger(__name__)
     service = get_contributor_board_service()
     try:
+        logger.info(
+            "Triggering sync: repo=%s, full_resync=%s, since=%s, until=%s",
+            request.repo_name, request.full_resync, request.since_date, request.until_date
+        )
         return await service.trigger_sync(
             db=db,
             since_date=request.since_date,
@@ -274,7 +280,16 @@ async def trigger_sync(
             repo_name=request.repo_name,
         )
     except ValueError as e:
+        # 业务异常：任务已在运行
+        logger.warning("Sync trigger failed (business error): %s", e)
         raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        # 其他异常：记录详细日志并重新抛出
+        logger.error(
+            "Sync trigger failed (unexpected error): %s",
+            e, exc_info=True
+        )
+        raise
 
 
 @router.get("/sync/status/{record_id}", response_model=ContributorSyncRecordResponse)

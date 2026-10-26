@@ -1129,84 +1129,107 @@ class ContributorBoardService:
         from datetime import UTC, datetime, time
         from infrastructure.tasks.background_task import BackgroundTaskTracker, TaskStatus
 
-        # 确保任务追踪表存在
-        await BackgroundTaskTracker.ensure_table(db)
+        try:
+            # 确保任务追踪表存在
+            await BackgroundTaskTracker.ensure_table(db)
 
-        # 检查是否有正在运行的同类任务（防重复提交）
-        # 运行超过 6 小时的任务视为超时，自动清理
-        active = await BackgroundTaskTracker.get_active_task(db, "contributor_sync", repo_name)
-        if active:
-            from datetime import timedelta as td
-            created = active.get("created_at")
-            if created and (datetime.now(UTC) - created) > td(hours=6):
-                logger.warning("Found stale running task id=%s, auto-clearing", active["id"])
-                await BackgroundTaskTracker.update_status(
-                    active["id"], TaskStatus.FAILED, "Task timeout (auto-cleared)"
-                )
-                active = None
+            # 检查是否有正在运行的同类任务（防重复提交）
+            # 运行超过 6 小时的任务视为超时，自动清理
+            active = await BackgroundTaskTracker.get_active_task(db, "contributor_sync", repo_name)
+            if active:
+                from datetime import timedelta as td
+                created = active.get("created_at")
+                if created and (datetime.now(UTC) - created) > td(hours=6):
+                    logger.warning("Found stale running task id=%s, auto-clearing", active["id"])
+                    await BackgroundTaskTracker.update_status(
+                        active["id"], TaskStatus.FAILED, "Task timeout (auto-cleared)"
+                    )
+                    active = None
+                else:
+                    raise ValueError(
+                        f"同步任务已在运行中 (task_id={active['id']})，请稍后再试"
+                    )
+
+            if full_resync:
+                since_dt = None
+            elif since_date is None:
+                since_dt = datetime(2024, 1, 1, tzinfo=UTC)
             else:
-                raise ValueError(
-                    f"同步任务已在运行中 (task_id={active['id']})，请稍后再试"
-                )
+                since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
 
-        if full_resync:
-            since_dt = None
-        elif since_date is None:
-            since_dt = datetime(2024, 1, 1, tzinfo=UTC)
-        else:
-            since_dt = datetime.combine(since_date, time.min, tzinfo=UTC)
+            until_dt: datetime | None = None
+            if until_date:
+                until_dt = datetime.combine(until_date, time(23, 59, 59), tzinfo=UTC)
 
-        until_dt: datetime | None = None
-        if until_date:
-            until_dt = datetime.combine(until_date, time(23, 59, 59), tzinfo=UTC)
+            # 同步类型判断
+            if full_resync:
+                sync_type = "full"
+            elif since_date and until_date:
+                sync_type = "range"
+            elif since_date:
+                sync_type = "incremental"
+            else:
+                sync_type = "full"
 
-        # 同步类型判断
-        if full_resync:
-            sync_type = "full"
-        elif since_date and until_date:
-            sync_type = "range"
-        elif since_date:
-            sync_type = "incremental"
-        else:
-            sync_type = "full"
+            # 创建 ContributorSyncRecord (pending 状态)
+            record = ContributorSyncRecord(
+                repo_name=repo_name,
+                sync_type=sync_type,
+                status=TaskStatus.PENDING,
+                since_date=since_date,
+                until_date=until_date,
+                trigger_source=trigger_source,
+                progress_percent=0,
+                progress_message="任务已创建，等待执行",
+            )
+            db.add(record)
+            await db.flush()
+            record_id = record.id
 
-        # 创建 ContributorSyncRecord (pending 状态)
-        record = ContributorSyncRecord(
-            repo_name=repo_name,
-            sync_type=sync_type,
-            status=TaskStatus.PENDING,
-            since_date=since_date,
-            until_date=until_date,
-            trigger_source=trigger_source,
-            progress_percent=0,
-            progress_message="任务已创建，等待执行",
-        )
-        db.add(record)
-        await db.flush()
-        record_id = record.id
+            logger.info(
+                "Created sync record %d for repo %s (type=%s)",
+                record_id, repo_name, sync_type
+            )
 
-        # 同时创建 BackgroundTaskTracker 记录
-        task_params = {
-            "sync_record_id": record_id,
-            "repo_name": repo_name,
-            "since_date": since_date.isoformat() if since_date else None,
-            "until_date": until_date.isoformat() if until_date else None,
-        }
+            # 同时创建 BackgroundTaskTracker 记录
+            task_params = {
+                "sync_record_id": record_id,
+                "repo_name": repo_name,
+                "since_date": since_date.isoformat() if since_date else None,
+                "until_date": until_date.isoformat() if until_date else None,
+            }
 
-        task_id = await BackgroundTaskTracker.create_and_run(
-            task_type="contributor_sync",
-            task_func=ContributorBoardService._run_contributor_sync,
-            task_params=task_params,
-            repo_name=repo_name,
-            db=db,
-        )
+            task_id = await BackgroundTaskTracker.create_and_run(
+                task_type="contributor_sync",
+                task_func=ContributorBoardService._run_contributor_sync,
+                task_params=task_params,
+                repo_name=repo_name,
+                db=db,
+            )
 
-        # 将 task_id 写回 ContributorSyncRecord
-        # (通过 background task 更新)
+            logger.info(
+                "Scheduled background task %d for sync record %d",
+                task_id, record_id
+            )
 
-        return ContributorSyncResponse(
-            record_id=record_id,
-        )
+            return ContributorSyncResponse(
+                record_id=record_id,
+            )
+
+        except ValueError:
+            # 重新抛出业务异常（如任务已在运行）
+            raise
+        except Exception as e:
+            logger.error(
+                "Failed to trigger sync for repo %s: %s",
+                repo_name, e, exc_info=True
+            )
+            # 回滚数据库事务
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     async def _run_contributor_sync(
