@@ -46,22 +46,24 @@ const { Option } = Select
 
 function GaugeChart({ score }: { score: number | null }) {
   const domRef = useRef<HTMLDivElement | null>(null)
+  const color = score !== null ? trustScoreColor(score) : '#8c8c8c'
 
   useEffect(() => {
     if (!domRef.current || score === null) return
     const chart = echarts.init(domRef.current)
-    const color = trustScoreColor(score)
     chart.setOption({
       series: [{
         type: 'gauge',
         min: 0,
         max: 100,
-        radius: '90%',
-        center: ['50%', '60%'],
-        pointer: { show: true, length: '60%', width: 8, itemStyle: { color } },
+        radius: '75%',
+        center: ['50%', '65%'],
+        startAngle: 200,
+        endAngle: -20,
+        pointer: { show: true, length: '60%', width: 10, itemStyle: { color } },
         axisLine: {
           lineStyle: {
-            width: 20,
+            width: 30,
             color: [
               [0.4, '#ff4d4f'],
               [0.6, '#faad14'],
@@ -72,26 +74,27 @@ function GaugeChart({ score }: { score: number | null }) {
         },
         axisTick: { show: false },
         splitLine: { show: false },
-        axisLabel: { color: '#8c8c8c', fontSize: 11, distance: -24 },
-        detail: {
-          valueAnimation: true,
-          formatter: '{value}',
-          fontSize: 36,
-          fontWeight: 700,
-          color,
-          offsetCenter: [0, '70%'],
-        },
-        data: [{ value: score, name: '可信度评分' }],
-        title: { show: true, offsetCenter: [0, '90%'], fontSize: 12, color: '#8c8c8c' },
+        axisLabel: { show: false },
+        detail: { show: false },
+        data: [{ value: score }],
+        title: { show: false },
+        animationDuration: 800,
       }],
     })
     window.addEventListener('resize', () => chart.resize())
     return () => {
+      window.removeEventListener('resize', () => chart.resize())
       chart.dispose()
     }
   }, [score])
 
-  return <div ref={domRef} style={{ width: '100%', height: 200 }} />
+  return (
+    <div style={{ width: '100%', textAlign: 'center' }}>
+      <div ref={domRef} style={{ width: '100%', height: 220 }} />
+      <div style={{ fontSize: 48, fontWeight: 700, color, lineHeight: 1 }}>{score ?? '-'}</div>
+      <div style={{ fontSize: 13, color: '#8c8c8c', marginTop: 4 }}>可信度评分</div>
+    </div>
+  )
 }
 
 /* ===================== 评估触发区 ===================== */
@@ -104,13 +107,14 @@ interface TriggerFormValues {
 }
 
 function TriggerFormSelector({
-  onTrigger, triggerLoading, defaultWorkflow, workflows, defaultRange,
+  onTrigger, triggerLoading, defaultWorkflow, workflows, defaultRange, onWorkflowChange,
 }: {
   onTrigger: (v: TriggerFormValues) => void
   triggerLoading: boolean
   defaultWorkflow: number | null
   workflows: Workflow[]
   defaultRange: [Dayjs | null, Dayjs | null]
+  onWorkflowChange: (id: number | undefined) => void
 }) {
   const [wfId, setWorkflowId] = useState<number | undefined>(defaultWorkflow || undefined)
   const [evalType, setEvalType] = useState('trustworthiness')
@@ -122,12 +126,17 @@ function TriggerFormSelector({
       <Col>
         <Select
           value={wfId}
-          onChange={setWorkflowId}
+          onChange={(v) => { setWorkflowId(v); onWorkflowChange(v) }}
           style={{ width: 220 }}
           placeholder="选择工作流"
+          showSearch
+          filterOption={(input, option) =>
+            String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+          }
+          optionFilterProp="label"
         >
           {workflows.map((w) => (
-            <Option key={w.id} value={w.id}>{w.workflow_name}</Option>
+            <Option key={w.id} value={w.id} label={w.workflow_name}>{w.workflow_name}</Option>
           ))}
         </Select>
       </Col>
@@ -206,7 +215,7 @@ function LatestEvaluationPanel({
   return (
     <Spin spinning={detailLoading}>
       {/* Score + Summary */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }} align="stretch">
         <Col span={8}>
           <Card bordered={false} title="可信度评分">
             <div style={{ textAlign: 'center' }}>
@@ -327,17 +336,28 @@ function LatestEvaluationPanel({
       )}
 
       {/* Report content */}
-      {ev.report_content && (
-        <Card bordered={false} title="完整报告" style={{ marginBottom: 16 }}>
-          <pre style={{
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
-            maxHeight: 400, overflow: 'auto', background: '#fafafa', padding: 12, borderRadius: 6,
-          }}>
-            {ev.report_content}
-          </pre>
-        </Card>
-      )}
+      {ev.report_content && (() => {
+        let content = ev.report_content
+        try {
+          const parsed = JSON.parse(content)
+          if (typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+            content = JSON.stringify(parsed, null, 2)
+          }
+        } catch {
+          // keep as-is
+        }
+        return (
+          <Card bordered={false} title="完整报告" style={{ marginBottom: 16 }}>
+            <pre style={{
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
+              maxHeight: 400, overflow: 'auto', background: '#fafafa', padding: 12, borderRadius: 6,
+            }}>
+              {content}
+            </pre>
+          </Card>
+        )
+      })()}
     </Spin>
   )
 }
@@ -464,14 +484,24 @@ export default function AIEvaluationTab({ selectedIds, workflows }: AIEvaluation
   const [latest, setLatest] = useState<AIEvaluationSummary | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [triggerLoading, setTriggerLoading] = useState(false)
+  const [aiWorkflowId, setAiWorkflowIdState] = useState<number | null>(selectedIds?.[0] ?? null)
 
-  const selectedWorkflowId = selectedIds?.[0] ?? null
+  const setAiWorkflowId = (id: number | undefined) => {
+    setAiWorkflowIdState(id ?? null)
+  }
+
+  // Sync with external selection when it changes
+  useEffect(() => {
+    if (selectedIds?.[0]) {
+      setAiWorkflowIdState(selectedIds[0])
+    }
+  }, [selectedIds])
 
   const loadLatest = useCallback(() => {
-    getLatestEvaluation(selectedWorkflowId)
+    getLatestEvaluation(aiWorkflowId)
       .then(setLatest)
       .catch(() => {})
-  }, [selectedWorkflowId])
+  }, [aiWorkflowId])
 
   useEffect(() => {
     loadLatest()
@@ -513,9 +543,10 @@ export default function AIEvaluationTab({ selectedIds, workflows }: AIEvaluation
         <TriggerFormSelector
           onTrigger={handleTrigger}
           triggerLoading={triggerLoading}
-          defaultWorkflow={selectedWorkflowId}
+          defaultWorkflow={aiWorkflowId}
           workflows={workflows}
           defaultRange={[dayjs().subtract(30, 'day'), dayjs()]}
+          onWorkflowChange={setAiWorkflowId}
         />
       </Card>
 
@@ -524,7 +555,7 @@ export default function AIEvaluationTab({ selectedIds, workflows }: AIEvaluation
 
       {/* History Table */}
       <HistoryTable
-        workflowId={selectedWorkflowId}
+        workflowId={aiWorkflowId}
         onEvalClick={() => {}}
         reloadKey={reloadKey}
       />

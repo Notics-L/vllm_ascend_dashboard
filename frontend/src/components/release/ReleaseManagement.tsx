@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import * as echarts from 'echarts'
 import {
   Alert,
   Button,
   Card,
+  Collapse,
   Col,
+  Descriptions,
   Form,
   Input,
   Modal,
@@ -21,6 +22,7 @@ import {
   Typography,
 } from 'antd'
 import {
+  ArrowLeftOutlined,
   BarChartOutlined,
   DownloadOutlined,
   ExclamationCircleOutlined,
@@ -44,10 +46,12 @@ import {
   discoverWorkflows,
   exportExcel,
   exportPdf,
+  getRunDetail,
   ConfigCheckResult,
   getConfigCheck,
   OverviewData,
   BuildRun,
+  BuildGroup,
   SyncTask,
   type Workflow,
 } from '../../services/releaseManagement'
@@ -93,10 +97,16 @@ function KPICard({ label, value, color, sub }: KPIProps) {
 /**
  * Generic ECharts component — safe for lazy-loaded Tabs.
  * Renders chart only after the DOM element is actually visible.
+ * Uses ResizeObserver + setTimeout to ensure correct size after re-init.
  */
 function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
   const domRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
+
+  // Stable option identity — only rebuild when JSON changes
+  const optionRef = useRef(option)
+  const needUpdate = JSON.stringify(option) !== JSON.stringify(optionRef.current)
+  if (needUpdate) optionRef.current = option
 
   useEffect(() => {
     if (!domRef.current) return
@@ -105,6 +115,8 @@ function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
     if (chartRef.current && option) {
       chartRef.current.setOption(option)
     }
+    // Defer a resize so the container has its final dimensions
+    requestAnimationFrame(() => chartRef.current?.resize())
     const onResize = () => chartRef.current?.resize()
     window.addEventListener('resize', onResize)
     return () => {
@@ -112,13 +124,13 @@ function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
       chartRef.current?.dispose()
       chartRef.current = null
     }
-  }, [option])
+    // Rebuild when the option actually changes
+  }, [JSON.stringify(option)])
 
   return <div ref={domRef} style={{ width: '100%', height }} />
 }
 
 export default function ReleaseManagement() {
-  const navigate = useNavigate()
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [selectedWfId, setSelectedWfId] = useState<number | null>(null)
   const [daysBack, setDaysBack] = useState(30)
@@ -130,11 +142,50 @@ export default function ReleaseManagement() {
   const [syncTasks, setSyncTasks] = useState<SyncTask[]>([])
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [runsData, setRunsData] = useState<{ runs: BuildRun[]; total: number }>({ runs: [], total: 0 })
+  const [analysisData, setAnalysisData] = useState<{ workflow_id: number; workflow_name: string | null; overview: OverviewData; runs: BuildRun[]; total_runs: number } | null>(null)
+  const [runDetailOpen, setRunDetailOpen] = useState(false)
+  const [runDetailData, setRunDetailData] = useState<{ run: BuildRun; groups: BuildGroup[] } | null>(null)
+  const [runDetailLoading, setRunDetailLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('build')
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
 
-  // Cleanup poll timer on unmount
+  // Restore analysis data from sessionStorage on page refresh
   useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem('release-analysis-data')
+      if (saved) {
+        const data = JSON.parse(saved)
+        setAnalysisData(data)
+        setSelectedWfId(data.workflow_id)
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  // Cleanup poll timer + cross-tab events (including new release-view-archive)
+  useEffect(() => {
+    const handleViewArchive = (e: Event) => {
+      const data = (e as CustomEvent).detail
+      setSelectedWfId(data.workflow_id)
+      setAnalysisData(data)
+      setActiveTab('build')
+      message.info('已加载同步采集的数据')
+      try {
+        sessionStorage.setItem('release-analysis-data', JSON.stringify(data))
+      } catch { /* ignore */ }
+    }
+    const handleSyncTaskUpdate = (e: Event) => {
+      const task = (e as CustomEvent).detail
+      if (task.status === 'running' || task.status === 'pending') {
+        setActiveSyncTask(task)
+      }
+    }
+    window.addEventListener('release-view-archive', handleViewArchive)
+    window.addEventListener('release-sync-task-update', handleSyncTaskUpdate)
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      window.removeEventListener('release-view-archive', handleViewArchive)
+      window.removeEventListener('release-sync-task-update', handleSyncTaskUpdate)
     }
   }, [])
 
@@ -145,16 +196,23 @@ export default function ReleaseManagement() {
       try {
         const task = await getSyncTask(taskId)
         setActiveSyncTask(task)
-        if (['completed', 'failed'].includes(task.status)) {
+        if (['completed', 'failed', 'cancelled'].includes(task.status)) {
           if (pollTimerRef.current) clearInterval(pollTimerRef.current)
           pollTimerRef.current = null
-          setActiveSyncTask(null)
+          // Don't clear immediately — keep showing the final state briefly
           if (task.status === 'completed') {
             message.success('同步完成')
-            getOverview(selectedWfId ? [selectedWfId] : null, daysBack).then(ov => setOverview(ov)).catch(() => {})
+            setSyncTasks(await (await getSyncTasks(null, null, 20, 0)).tasks)
+            loadAnalysisFromSync()
+          } else if (task.status === 'cancelled') {
+            message.info('同步任务已终止')
+            setSyncTasks(await (await getSyncTasks(null, null, 20, 0)).tasks)
           } else {
             message.error(`同步失败: ${task.error_message || '未知错误'}`)
+            setSyncTasks(await (await getSyncTasks(null, null, 20, 0)).tasks)
           }
+          // Clear active task after a delay so UI shows final state
+          setTimeout(() => setActiveSyncTask(null), 3000)
         }
       } catch { /* polling error */ }
     }, 2000)
@@ -169,10 +227,14 @@ export default function ReleaseManagement() {
         setWorkflows(w)
       } catch { /* ignore */ }
       try {
-        const tasksResult = await getSyncTasks(null, null, 10)
+        const tasksResult = await getSyncTasks(null, null, 20, 0)
         setSyncTasks(tasksResult.tasks)
+        // Restore running/pending task so progress bar survives page refresh
         const running = tasksResult.tasks.find((t: SyncTask) => t.status === 'running' || t.status === 'pending')
-        if (running) startPollSync(running.id)
+        if (running) {
+          setActiveSyncTask(running)
+          startPollSync(running.id)
+        }
       } catch { /* ignore */ }
     }
     loadAll()
@@ -188,26 +250,47 @@ export default function ReleaseManagement() {
     }
   }, [workflows])
 
-  // Load overview when selection changes
-  useEffect(() => {
-    if (!configCheck?.github_configured) return
+  // NO auto-load: data only shows after sync completes or "查看构建分析" is used
+  // When sync completes, load data from API:
+  const loadAnalysisFromSync = useCallback(() => {
     if (!selectedWfId) return
-
     setLoading(true)
     Promise.all([
       getOverview([selectedWfId], daysBack),
       getRuns([selectedWfId], statusFilter, null, 1, 50),
     ])
       .then(([ov, rd]) => {
-        setOverview(ov)
-        setRunsData({ runs: rd.runs, total: rd.total })
+        const data = {
+          workflow_id: selectedWfId,
+          workflow_name: workflows.find(w => w.id === selectedWfId)?.workflow_name || null,
+          overview: ov,
+          runs: rd.runs,
+          total_runs: rd.total,
+        }
+        setAnalysisData(data)
+        try {
+          sessionStorage.setItem('release-analysis-data', JSON.stringify(data))
+        } catch { /* ignore */ }
       })
       .catch(() => message.error('加载数据失败'))
       .finally(() => setLoading(false))
-  }, [selectedWfId, daysBack, statusFilter, configCheck?.github_configured])
+  }, [selectedWfId, daysBack, statusFilter, workflows])
+
+  const hasActiveTask = syncTasks.some((t: SyncTask) =>
+    t.workflow_id === selectedWfId && (t.status === 'running' || t.status === 'pending')
+  )
+
+  // Derive display data from analysisData (set by sync or 查看构建分析)
+  const displayOverview = analysisData?.overview || null
+  const displayRuns = analysisData?.runs || []
+  const displayTotal = analysisData?.total_runs || 0
 
   const handleSync = async () => {
     if (!selectedWfId) return
+    if (hasActiveTask) {
+      message.warning('该工作流已有同步任务正在执行中')
+      return
+    }
     try {
       const result = await triggerSync(selectedWfId, daysBack, 100)
       if (result.task_id) {
@@ -276,15 +359,45 @@ export default function ReleaseManagement() {
     }
   }
 
+  const statusLabelMap: Record<string, string> = {
+    success: '成功', failure: '失败', cancelled: '已取消', skipped: '已跳过',
+    completed: '已完成', in_progress: '进行中', running: '运行中', queued: '排队中',
+    action_required: '需操作', timed_out: '超时',
+  }
+
+  // Compute stats for color thresholds
+  const avgWall = displayOverview?.stats?.avg_wall || 0
+  const maxWall = displayOverview?.stats?.max_wall || 0
+
+  const getDurationColor = (val: number, avg: number, maxVal: number) => {
+    if (!avg || !maxVal) return undefined
+    const threshold = avg * 1.5
+    if (val > threshold) return '#ff4d4f'
+    return undefined
+  }
+
+  const handleViewRunDetail = async (runId: number) => {
+    setRunDetailOpen(true)
+    setRunDetailLoading(true)
+    try {
+      const data = await getRunDetail(runId)
+      setRunDetailData(data)
+    } catch {
+      message.error('加载运行详情失败')
+    } finally {
+      setRunDetailLoading(false)
+    }
+  }
+
   const runsColumns = [
     { title: 'Run ID', dataIndex: 'github_run_id', width: 100, sorter: (a: BuildRun, b: BuildRun) => a.github_run_id - b.github_run_id },
-    { title: '状态', dataIndex: 'status', width: 100, render: (s: string) => <Tag color={getStatusColor(s)}>{s}</Tag> },
+    { title: '状态', dataIndex: 'status', width: 100, render: (s: string) => <Tag color={getStatusColor(s)}>{statusLabelMap[s?.toLowerCase()] || s}</Tag> },
     { title: '分支', dataIndex: 'branch', width: 150, ellipsis: true },
     { title: '事件', dataIndex: 'event', width: 80 },
     { title: '创建时间', dataIndex: 'created_at', width: 180, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '' },
-    { title: '排队', dataIndex: 'wait_duration', width: 80, render: (v: number) => fmtDuration(v) },
-    { title: '执行', dataIndex: 'exec_duration', width: 80, render: (v: number) => fmtDuration(v) },
-    { title: '总耗时', dataIndex: 'wall_duration', width: 80, render: (v: number) => fmtDuration(v) },
+    { title: '排队', dataIndex: 'wait_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.wait_duration, displayOverview?.stats?.avg_wait || 0, displayOverview?.stats?.max_wait || 0) }}>{fmtDuration(v)}</span> },
+    { title: '执行', dataIndex: 'exec_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.exec_duration, avgWall, maxWall) }}>{fmtDuration(v)}</span> },
+    { title: '总耗时', dataIndex: 'wall_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.wall_duration, avgWall, maxWall) }}>{fmtDuration(v)}</span> },
     { title: 'Job数', dataIndex: 'num_jobs', width: 60 },
   ]
 
@@ -315,6 +428,8 @@ export default function ReleaseManagement() {
       </div>
 
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         size="large"
         items={[
           {
@@ -353,13 +468,13 @@ export default function ReleaseManagement() {
                         <Button icon={<GlobalOutlined />} onClick={() => { discoverForm.setFieldsValue({ owner: configCheck?.github_owner, repo: configCheck?.github_repo }); setDiscoverModalOpen(true); }}>
                           发现工作流
                         </Button>
-                        <Button icon={<Spin size="small" spinning={!!activeSyncTask} />} onClick={handleSync} disabled={!selectedWfId}>
+                        <Button icon={<Spin size="small" spinning={!!activeSyncTask} />} onClick={handleSync} disabled={!selectedWfId || hasActiveTask}>
                           同步数据{activeSyncTask ? ` (${activeSyncTask.processed_items}/${activeSyncTask.total_items})` : ''}
                         </Button>
-                        <Button icon={<DownloadOutlined />} onClick={handleExportExcel} disabled={!overview || !overview.stats.total}>
+                        <Button icon={<DownloadOutlined />} onClick={handleExportExcel} disabled={!displayOverview || !displayOverview.stats.total}>
                           导出 Excel
                         </Button>
-                        <Button icon={<FilePdfOutlined />} onClick={handleExportPdf} disabled={!overview || !overview.stats.total}>
+                        <Button icon={<FilePdfOutlined />} onClick={handleExportPdf} disabled={!displayOverview || !displayOverview.stats.total}>
                           导出 PDF
                         </Button>
                       </Space>
@@ -380,38 +495,38 @@ export default function ReleaseManagement() {
                   <Alert message="没有可用的工作流" description="请先点击「同步数据」或在系统配置中添加 GitHub Token 后发现工作流。" type="info" showIcon />
                 )}
 
-                {overview && (
+                {displayOverview && (
                   <>
                     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
                       <Col span={6}>
-                        <KPICard label="总运行次数" value={overview.stats.total} color="#1890ff" sub={`成功 ${overview.stats.successful} / 失败 ${overview.stats.failed}`} />
+                        <KPICard label="总运行次数" value={displayOverview.stats.total} color="#1890ff" sub={`成功 ${displayOverview.stats.successful} / 失败 ${displayOverview.stats.failed}`} />
                       </Col>
                       <Col span={6}>
-                        <KPICard label="成功率" value={`${overview.stats.success_rate}%`} color={overview.stats.success_rate >= 80 ? '#52c41a' : '#ff4d4f'} sub={`异常慢构建 ${overview.stats.abnormal_count} 次`} />
+                        <KPICard label="成功率" value={`${displayOverview.stats.success_rate}%`} color={displayOverview.stats.success_rate >= 80 ? '#52c41a' : '#ff4d4f'} sub={`异常慢构建 ${displayOverview.stats.abnormal_count} 次`} />
                       </Col>
                       <Col span={6}>
-                        <KPICard label="平均执行耗时" value={fmtDuration(overview.stats.avg_exec)} color="#722ed1" sub={`最短 ${fmtDuration(overview.stats.min_exec)} / 最长 ${fmtDuration(overview.stats.max_exec)}`} />
+                        <KPICard label="平均执行耗时" value={fmtDuration(displayOverview.stats.avg_exec)} color="#722ed1" sub={`最短 ${fmtDuration(displayOverview.stats.min_exec)} / 最长 ${fmtDuration(displayOverview.stats.max_exec)}`} />
                       </Col>
                       <Col span={6}>
-                        <KPICard label="耗时波动系数" value={`${overview.stats.cv_exec}%`} color={overview.stats.cv_exec > 50 ? '#ff4d4f' : overview.stats.cv_exec > 30 ? '#faad14' : '#52c41a'} sub={`平均排队 ${fmtDuration(overview.stats.avg_wait)}`} />
+                        <KPICard label="耗时波动系数" value={`${displayOverview.stats.cv_exec}%`} color={displayOverview.stats.cv_exec > 50 ? '#ff4d4f' : displayOverview.stats.cv_exec > 30 ? '#faad14' : '#52c41a'} sub={`平均排队 ${fmtDuration(displayOverview.stats.avg_wait)}`} />
                       </Col>
                     </Row>
 
                     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
                       <Col span={16}>
                         <Card bordered={false} title="构建耗时趋势（排队 vs 执行）">
-                          {overview.timeline?.length ? (
+                          {displayOverview.timeline?.length ? (
                             <EChartBox
-                              height={320}
+                              height={400}
                               option={{
-                                tooltip: { trigger: 'axis', formatter: (p: any[]) => { const item = p[0]; const idx = parseInt(item.dataIndex); return `${item.name}<br/>排队 ${fmtDuration(overview.timeline[idx].wait)}<br/>执行 ${fmtDuration(overview.timeline[idx].exec)}<br/>合计 ${fmtDuration(overview.timeline[idx].wall)}`; } },
+                                tooltip: { trigger: 'axis', formatter: (p: any[]) => { const item = p[0]; const idx = parseInt(item.dataIndex); return `${item.name}<br/>排队 ${fmtDuration(displayOverview.timeline[idx].wait)}<br/>执行 ${fmtDuration(displayOverview.timeline[idx].exec)}<br/>合计 ${fmtDuration(displayOverview.timeline[idx].wall)}`; } },
                                 legend: { data: ['排队等待', '实际执行'], top: 0, textStyle: { fontSize: 11 } },
                                 grid: { left: 50, right: 16, top: 36, bottom: 40 },
-                                xAxis: { type: 'category', data: overview.timeline.map((d) => `${d.date} #${String(d.run_id).slice(-4)}`), axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(overview.timeline!.length / 15) - 1), rotate: 30 } },
+                                xAxis: { type: 'category', data: displayOverview.timeline.map((d) => `${d.date_full || d.date} #${String(d.run_id).slice(-4)}`), axisLabel: { fontSize: 9, interval: Math.max(0, Math.floor(displayOverview.timeline!.length / 15) - 1), rotate: 30 } },
                                 yAxis: { type: 'value', name: '秒' },
                                 series: [
-                                  { name: '排队等待', type: 'bar', stack: 't', data: overview.timeline.map((d) => d.wait), itemStyle: { color: 'rgba(250,173,20,0.7)' } },
-                                  { name: '实际执行', type: 'bar', stack: 't', data: overview.timeline.map((d) => d.exec), itemStyle: { color: 'rgba(24,144,255,0.7)' } },
+                                  { name: '排队等待', type: 'bar', stack: 't', data: displayOverview.timeline.map((d) => d.wait), itemStyle: { color: 'rgba(250,173,20,0.7)' } },
+                                  { name: '实际执行', type: 'bar', stack: 't', data: displayOverview.timeline.map((d) => d.exec), itemStyle: { color: 'rgba(24,144,255,0.7)' } },
                                 ],
                               }}
                             />
@@ -422,14 +537,25 @@ export default function ReleaseManagement() {
                       </Col>
                       <Col span={8}>
                         <Card bordered={false} title="Phase 耗时分布">
-                          {overview.phase_data?.length ? (
-                            <EChartBox
-                              height={320}
-                              option={{
-                                tooltip: { formatter: (p: any) => `${p.name}: 平均 ${fmtDuration(p.value)}, 共 ${overview.phase_data.find((d) => d.name === p.name)?.count} 次` },
-                                series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'], data: overview.phase_data.map((d, i) => ({ name: d.name, value: d.total, itemStyle: { color: ['#5b8ff9', '#5ada7a', '#fd9a31', '#e06024', '#9f7aea', '#17a2b8'][i % 6] } })), label: { fontSize: 11 } }],
-                              }}
-                            />
+                          {displayOverview.phase_data?.length ? (
+                            <div>
+                              <EChartBox
+                                height={200}
+                                option={{
+                                  tooltip: { formatter: (p: any) => { const pd = displayOverview.phase_data.find((d) => d.name === p.name); const totalAll = displayOverview.phase_data.reduce((s, d) => s + d.total, 0); return `${p.name}<br/>总耗时: ${fmtDuration(p.value)}<br/>占比: ${(p.value / totalAll * 100).toFixed(1)}%<br/>次数: ${pd?.count || 0}<br/>平均: ${fmtDuration(pd?.avg || 0)}<br/>最长: ${fmtDuration(pd?.max || 0)}`; } },
+                                  series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'], data: displayOverview.phase_data.map((d, i) => ({ name: d.name, value: d.total, itemStyle: { color: ['#5b8ff9', '#5ada7a', '#fd9a31', '#e06024', '#9f7aea', '#17a2b8'][i % 6] } })), label: { formatter: '{b} {d}%', fontSize: 11 } }],
+                                }}
+                              />
+                              {/* Phase stats table */}
+                              <Table dataSource={displayOverview.phase_data} rowKey="name" size="small" pagination={false} bordered
+                                style={{ marginTop: 8 }}
+                                columns={[
+                                  { title: 'Phase', dataIndex: 'name', key: 'name', render: (v: string) => <Text strong style={{ fontSize: 12 }}>{v}</Text> },
+                                  { title: '次数', dataIndex: 'count', key: 'count', width: 50, align: 'center' as const, render: (v: number) => <Text style={{ fontSize: 12 }}>{v}</Text> },
+                                  { title: '平均', dataIndex: 'avg', key: 'avg', width: 70, render: (v: number) => <Text style={{ fontSize: 12 }}>{fmtDuration(v)}</Text> },
+                                  { title: '最长', dataIndex: 'max', key: 'max', width: 70, render: (v: number) => <Text style={{ fontSize: 12 }}>{fmtDuration(v)}</Text> },
+                                ]} />
+                            </div>
                           ) : (
                             <div style={{ textAlign: 'center', padding: 40, color: '#bfbfbf' }}>暂无数据</div>
                           )}
@@ -440,15 +566,15 @@ export default function ReleaseManagement() {
                     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
                       <Col span={12}>
                         <Card bordered={false} title="架构耗时对比">
-                          {overview.arch_data?.length ? (
+                          {displayOverview.arch_data?.length ? (
                             <EChartBox
                               height={280}
                               option={{
                                 tooltip: { formatter: (p: any) => `${p.name}: 总耗时 ${fmtDuration(p.data.value)}` },
                                 grid: { left: 60, right: 20, top: 20, bottom: 30 },
-                                xAxis: { type: 'category', data: overview.arch_data.map((d) => d.name) },
+                                xAxis: { type: 'category', data: displayOverview.arch_data.map((d) => d.name) },
                                 yAxis: { type: 'value', name: '秒' },
-                                series: [{ type: 'bar', data: overview.arch_data.map((d) => d.total), name: '总耗时' }],
+                                series: [{ type: 'bar', data: displayOverview.arch_data.map((d) => d.total), name: '总耗时' }],
                               }}
                             />
                           ) : (
@@ -458,15 +584,15 @@ export default function ReleaseManagement() {
                       </Col>
                       <Col span={12}>
                         <Card bordered={false} title="Top 15 最耗时 Step">
-                          {overview.step_data?.length ? (
+                          {displayOverview.step_data?.length ? (
                             <EChartBox
                               height={280}
                               option={{
                                 tooltip: { formatter: (p: any) => `${p.data.name}: 平均 ${fmtDuration(p.data.value)}, 共 ${p.data.count} 次` },
                                 grid: { left: 160, right: 60, top: 10, bottom: 20 },
                                 xAxis: { type: 'value', name: '秒' },
-                                yAxis: { type: 'category', data: overview.step_data.slice(0, 15).map((d) => d.name), axisLabel: { fontSize: 10 } },
-                                series: [{ type: 'bar', data: overview.step_data.slice(0, 15).map((d) => ({ value: d.avg, name: d.name, count: d.count, itemStyle: { color: '#fd9a31' } })) }],
+                                yAxis: { type: 'category', data: displayOverview.step_data.slice(0, 15).map((d) => d.name), axisLabel: { fontSize: 10 } },
+                                series: [{ type: 'bar', data: displayOverview.step_data.slice(0, 15).map((d) => ({ value: d.avg, name: d.name, count: d.count, itemStyle: { color: '#fd9a31' } })) }],
                               }}
                             />
                           ) : (
@@ -476,9 +602,9 @@ export default function ReleaseManagement() {
                       </Col>
                     </Row>
 
-                    {overview.target_data.length > 0 && (
+                    {displayOverview.target_data.length > 0 && (
                       <Card bordered={false} title="Target/OS 组合耗时" style={{ marginBottom: 16 }}>
-                        <Table dataSource={overview.target_data} rowKey="name" size="small" pagination={false} columns={[
+                        <Table dataSource={displayOverview.target_data} rowKey="name" size="small" pagination={false} columns={[
                           { title: 'Target', dataIndex: 'name', key: 'name' },
                           { title: '次数', dataIndex: 'count', key: 'count', width: 60 },
                           { title: '平均', dataIndex: 'avg', key: 'avg', render: (v: number) => fmtDuration(v) },
@@ -491,15 +617,15 @@ export default function ReleaseManagement() {
                   </>
                 )}
 
-                <Card bordered={false} title={`运行记录 (${runsData.total})`}>
-                  <Table
-                    dataSource={runsData.runs}
+                <Card bordered={false} title={`运行记录 (${displayTotal})`}>
+                    <Table
+                      dataSource={displayRuns}
                     rowKey="id"
                     size="small"
                     scroll={{ x: 900 }}
                     pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
                     columns={runsColumns}
-                    onRow={(record) => ({ style: { cursor: 'pointer' }, onClick: () => navigate(`/release-management/runs/${record.id}`) })}
+                    onRow={(record) => ({ style: { cursor: 'pointer' }, onClick: () => handleViewRunDetail(record.id) })}
                   />
                 </Card>
               </>
@@ -511,6 +637,105 @@ export default function ReleaseManagement() {
           { key: 'ai-evaluation', label: <><ExperimentOutlined /> AI 评估</>, children: <AIEvaluationTab selectedIds={selectedWfId ? [selectedWfId] : null} workflows={workflows} /> },
         ]}
       />
+
+      {/* Run Detail Modal */}
+      <Modal
+        title={
+          <Space>
+            <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => setRunDetailOpen(false)} />
+            构建运行详情 #{runDetailData?.run?.id || runDetailData?.run?.github_run_id}
+          </Space>
+        }
+        open={runDetailOpen}
+        onCancel={() => setRunDetailOpen(false)}
+        footer={null}
+        width={960}
+        destroyOnClose
+      >
+        <Spin spinning={runDetailLoading}>
+          {runDetailData?.run && (
+            <>
+              <Descriptions column={{ xs: 1, sm: 2, md: 4 }} bordered size="small" style={{ marginBottom: 16 }}>
+                <Descriptions.Item label="状态">
+                  <Tag color={getStatusColor(runDetailData.run.status)}>
+                    {statusLabelMap[runDetailData.run.status?.toLowerCase()] || runDetailData.run.status}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="分支">{runDetailData.run.branch}</Descriptions.Item>
+                <Descriptions.Item label="事件">{runDetailData.run.event}</Descriptions.Item>
+                <Descriptions.Item label="Commit">{runDetailData.run.commit_sha?.slice(0, 8)}</Descriptions.Item>
+                <Descriptions.Item label="创建时间">
+                  {runDetailData.run.created_at ? new Date(runDetailData.run.created_at).toLocaleString('zh-CN') : '-'}
+                </Descriptions.Item>
+                <Descriptions.Item label="开始时间">
+                  {runDetailData.run.started_at ? new Date(runDetailData.run.started_at).toLocaleString('zh-CN') : '-'}
+                </Descriptions.Item>
+                <Descriptions.Item label="结束时间">
+                  {runDetailData.run.completed_at ? new Date(runDetailData.run.completed_at).toLocaleString('zh-CN') : '-'}
+                </Descriptions.Item>
+              </Descriptions>
+
+              <Space size="middle" style={{ width: '100%', justifyContent: 'space-around', marginBottom: 24 }}>
+                {[
+                  { label: '排队时间', value: fmtDuration(runDetailData.run.wait_duration) },
+                  { label: '执行时间', value: fmtDuration(runDetailData.run.exec_duration) },
+                  { label: '总耗时', value: fmtDuration(runDetailData.run.wall_duration) },
+                  { label: 'Job 数', value: runDetailData.run.num_jobs },
+                ].map((c) => (
+                  <Card key={c.label} bordered={false} style={{ flex: 1, textAlign: 'center', borderRadius: 8, background: '#fafafa' }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: '#1890ff' }}>{c.value}</div>
+                    <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 4 }}>{c.label}</div>
+                  </Card>
+                ))}
+              </Space>
+
+              {runDetailData.run.conclusion_summary && Object.keys(runDetailData.run.conclusion_summary).length > 0 && (
+                <Card bordered={false} title="结果汇总" style={{ marginBottom: 16 }}>
+                  <Space wrap>
+                    {Object.entries(runDetailData.run.conclusion_summary).map(([key, val]) => (
+                      <Tag key={key} color={getStatusColor(key)}>{key}: {val}</Tag>
+                    ))}
+                  </Space>
+                </Card>
+              )}
+
+              {runDetailData.groups.length > 0 ? (
+                <Card bordered={false} title={`Jobs (${runDetailData.groups.length})`}>
+                  <Collapse
+                    items={runDetailData.groups.map((g) => ({
+                      key: `${g.id}`,
+                      label: (
+                        <Space>
+                          <Text strong>{g.group_name}</Text>
+                          {g.sub_job_name && <><Text type="secondary">·</Text><Text>{g.sub_job_name}</Text></>}
+                          <Tag color="blue">{g.phase}</Tag>
+                          <Tag color={getStatusColor(g.status)}>
+                            {statusLabelMap[g.status?.toLowerCase()] || g.status}
+                          </Tag>
+                          <Text type="secondary">{fmtDuration(g.total_duration)}</Text>
+                          {g.architecture && <Tag>{g.architecture}</Tag>}
+                          {g.target && <Text type="secondary">{g.target}</Text>}
+                        </Space>
+                      ),
+                      children: (
+                        <Table rowKey="number" size="small" dataSource={g.steps} pagination={false} scroll={{ y: 320 }} columns={[
+                          { title: '步骤名称', dataIndex: 'name', key: 'name', ellipsis: true },
+                          { title: '编号', dataIndex: 'number', key: 'number', width: 80, align: 'center' as const },
+                          { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (s: string) => <Tag color={getStatusColor(s)}>{statusLabelMap[s?.toLowerCase()] || s}</Tag> },
+                          { title: '耗时', dataIndex: 'duration', key: 'duration', width: 100, render: (v: number) => fmtDuration(v) },
+                        ]} />
+                      ),
+                    }))}
+                    defaultActiveKey={[String(runDetailData.groups[0]?.id)]}
+                  />
+                </Card>
+              ) : !runDetailLoading && (
+                <Text type="secondary">暂无 Job 数据</Text>
+              )}
+            </>
+          )}
+        </Spin>
+      </Modal>
 
       {/* Workflow Discover Modal */}
       <Modal

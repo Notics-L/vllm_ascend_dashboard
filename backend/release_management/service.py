@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.persistence.models import (
+    ReleaseAnalysisTask,
     ReleaseWorkflow,
 )
 from release_management.analyzer import ReleaseAnalyzer
@@ -60,16 +61,35 @@ class ReleaseManagementService:
     # --- Sync ---
 
     async def trigger_sync(
-        self, workflow_id: int, days_back: int = 30, max_runs: int = 100
+        self, workflow_id: int, days_back: int = 30, max_runs: int = 100,
+        trigger_source: str = "scheduled"
     ) -> dict[str, Any]:
-        wf = await self.db.get(ReleaseWorkflow, workflow_id)
-        if not wf:
-            return {"error": "工作流不存在"}
-        collected, task = await self.collector.sync_workflow_runs(
-            wf, days_back=days_back, max_runs=max_runs
+        """触发同步并返回创建的 task_id（供 scheduler 调用）"""
+        from datetime import UTC, datetime
+        import asyncio
+        
+        task = ReleaseAnalysisTask(
+            workflow_id=workflow_id,
+            task_type="sync_runs",
+            trigger_source=trigger_source,
+            status="pending",
+            progress=0,
+            progress_message="等待执行...",
+            total_items=max_runs,
+            days_back=days_back,
+            max_runs=max_runs,
+            started_at=datetime.now(UTC),
         )
+        self.db.add(task)
+        await self.db.commit()
+        await self.db.refresh(task)
+        
+        # Import here to avoid circular imports
+        from api.v1.release_management import _run_sync_task
+        asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs))
+        
         return {
-            "collected": collected,
+            "collected": 0,
             "task_id": task.id,
             "status": task.status,
         }

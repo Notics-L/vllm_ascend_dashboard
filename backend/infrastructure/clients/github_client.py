@@ -245,7 +245,9 @@ class GitHubClient:
         Returns:
             workflow runs 列表
         """
-        url = f"/repos/{self.owner}/{self.repo}/actions/workflows/{workflow_id_or_name}/runs"
+        from urllib.parse import quote
+        encoded_workflow = quote(workflow_id_or_name, safe='')
+        url = f"/repos/{self.owner}/{self.repo}/actions/workflows/{encoded_workflow}/runs"
 
         params = {
             "per_page": min(per_page, 100),

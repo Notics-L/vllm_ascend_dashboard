@@ -68,6 +68,7 @@ export interface OverviewStats {
   avg_wait: number
   max_wait: number
   avg_wall: number
+  max_wall: number
   abnormal_count: number
   long_wait_count: number
 }
@@ -84,6 +85,7 @@ export interface OverviewData {
 
 export interface TimelinePoint {
   date: string
+  date_full: string
   created: string
   run_id: number
   status: string
@@ -344,6 +346,30 @@ export const getSyncSummary = async () => {
 export const retrySync = async (taskId: number) => {
   const response = await api.post(`/release-management/sync/retry/${taskId}`)
   return response.data
+}
+
+export const cancelSync = async (taskId: number) => {
+  const response = await api.post(`/release-management/sync/cancel/${taskId}`)
+  return response.data
+}
+
+export const archiveSyncTask = async (taskId: number) => {
+  const response = await api.get(`/release-management/sync/archive/${taskId}`)
+  return response.data
+}
+
+export const exportSyncExcel = async (taskId: number): Promise<Blob> => {
+  const response = await api.get(`/release-management/sync/excel/${taskId}`, {
+    responseType: 'blob' as const,
+  })
+  return response.data as Blob
+}
+
+export const exportSyncPdf = async (taskId: number): Promise<Blob> => {
+  const response = await api.post(`/release-management/sync/pdf/${taskId}`, undefined, {
+    responseType: 'blob' as const,
+  })
+  return response.data as Blob
 }
 
 export const getOverview = async (workflowIds: number[] | null, daysBack = 30) => {

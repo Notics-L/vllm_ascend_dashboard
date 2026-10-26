@@ -178,7 +178,7 @@ export default function BuildRunDetail() {
       <div style={{ padding: 24 }}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Text type="secondary">无效的 Run ID</Text>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/release-management')}>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
             返回
           </Button>
         </Space>
@@ -222,7 +222,7 @@ export default function BuildRunDetail() {
         <Button
           type="text"
           icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/release-management')}
+          onClick={() => navigate(-1)}
         >
           返回
         </Button>

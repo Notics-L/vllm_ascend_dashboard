@@ -142,6 +142,7 @@ class ReleaseAnalyzer:
 
         wall_durs = [r.wall_duration for r in runs if r.wall_duration > 0]
         avg_wall = sum(wall_durs) / len(wall_durs) if wall_durs else 0
+        max_wall = max(wall_durs) if wall_durs else 0
 
         success_rate = successful / max(total, 1) * 100
 
@@ -164,6 +165,7 @@ class ReleaseAnalyzer:
             "avg_wait": round(avg_wait, 2),
             "max_wait": round(max_wait, 2),
             "avg_wall": round(avg_wall, 2),
+            "max_wall": round(max_wall, 2),
             "abnormal_count": abnormal_count,
             "long_wait_count": long_wait_count,
         }
@@ -173,6 +175,7 @@ class ReleaseAnalyzer:
         return [
             {
                 "date": r.created_at_remote.strftime("%Y-%m-%d") if r.created_at_remote else "",
+                "date_full": r.created_at_remote.strftime("%Y-%m-%d %H:%M:%S") if r.created_at_remote else "",
                 "created": (r.created_at_remote or datetime.min).isoformat(),
                 "run_id": r.github_run_id,
                 "status": r.status,
@@ -280,7 +283,7 @@ class ReleaseAnalyzer:
             "stats": {
                 "total": 0, "successful": 0, "failed": 0, "cancelled": 0,
                 "success_rate": 0, "avg_exec": 0, "min_exec": 0, "max_exec": 0,
-                "cv_exec": 0, "avg_wait": 0, "max_wait": 0, "avg_wall": 0,
+                "cv_exec": 0, "avg_wait": 0, "max_wait": 0, "avg_wall": 0, "max_wall": 0,
                 "abnormal_count": 0, "long_wait_count": 0,
             },
             "timeline": [], "phase_data": [], "target_data": [],

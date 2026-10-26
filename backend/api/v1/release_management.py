@@ -155,7 +155,15 @@ async def toggle_workflow(
 def _task_to_dict(task: ReleaseAnalysisTask, workflow_name: str | None = None) -> dict[str, Any]:
     duration = 0.0
     if task.started_at and task.completed_at:
-        duration = (task.completed_at - task.started_at).total_seconds()
+        try:
+            s = task.started_at.replace(tzinfo=None) if task.started_at.tzinfo is None else task.started_at
+            e = task.completed_at.replace(tzinfo=None) if task.completed_at.tzinfo is None else task.completed_at
+            if s.tzinfo != e.tzinfo:
+                s = s.replace(tzinfo=None)
+                e = e.replace(tzinfo=None)
+            duration = (e - s).total_seconds()
+        except Exception:
+            duration = task.duration_seconds or 0.0
     return {
         "id": task.id,
         "workflow_id": task.workflow_id,
@@ -180,15 +188,22 @@ def _task_to_dict(task: ReleaseAnalysisTask, workflow_name: str | None = None) -
 
 
 async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_runs: int):
-    """后台执行同步任务"""
+    """后台执行同步任务 — 直接更新 API 层任务记录"""
     from infrastructure.db.base import SessionLocal as AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
             task = await db.get(ReleaseAnalysisTask, task_id)
             if not task:
                 return
+
+            # 检查是否已被取消
+            if task.status == "cancelled":
+                logger.info(f"Sync task {task_id} was cancelled before execution")
+                return
+
+            # 标记为 running
             task.status = "running"
-            task.progress_message = "正在初始化同步任务..."
+            task.progress_message = "初始化同步任务..."
             await db.commit()
 
             wf = await db.get(ReleaseWorkflow, workflow_id)
@@ -206,33 +221,31 @@ async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_run
                 repo=wf.repo_name,
             )
             collector = ReleaseWorkflowCollector(db, github)
-            collected, _collector_task = await collector.sync_workflow_runs(
-                wf, days_back=days_back, max_runs=max_runs
+            collected = await collector.sync_workflow_runs(
+                wf, api_task_id=task_id, days_back=days_back, max_runs=max_runs
             )
 
-            # Sync collector task state to the API-level task (task A)
-            # and delete the collector-created duplicate task (task B)
-            task.collected_items = collected
-            task.processed_items = _collector_task.processed_items
-            task.total_items = _collector_task.total_items
-            task.status = _collector_task.status
-            task.progress = _collector_task.progress
-            task.error_message = _collector_task.error_message
-            if _collector_task.status == "completed":
-                task.progress_message = f"同步完成，采集 {collected} 条新记录"
-            elif _collector_task.error_message:
-                task.progress_message = f"同步失败: {_collector_task.error_message[:200]}"
-            task.completed_at = _collector_task.completed_at
+            # 检查是否在执行过程中被取消
+            task = await db.get(ReleaseAnalysisTask, task_id)
+            if task and task.status == "cancelled":
+                logger.info(f"Sync task {task_id} was cancelled during execution")
+                return
 
-            # Remove duplicate collector task
-            if _collector_task.id != task.id:
-                await db.delete(_collector_task)
-
-            await db.commit()
+            # 更新 API 任务为完成状态
+            if task and task.status != "cancelled":
+                task.collected_items = collected or 0
+                task.total_items = max_runs
+                task.processed_items = max_runs
+                task.status = "completed"
+                task.progress = 100
+                task.progress_message = f"同步完成，采集 {collected or 0} 条新记录"
+                task.completed_at = datetime.now(UTC)
+                await db.commit()
         except Exception as e:
+            # collector 中已处理失败标记，这里做兜底
             try:
                 task = await db.get(ReleaseAnalysisTask, task_id)
-                if task:
+                if task and task.status not in ("failed", "cancelled"):
                     task.status = "failed"
                     task.error_message = str(e)
                     task.progress_message = f"同步失败: {str(e)[:200]}"
@@ -251,11 +264,20 @@ async def trigger_sync(
     days_back: int = Query(30, ge=1, le=365),
     max_runs: int = Query(100, ge=1, le=500),
 ):
-    """触发异步同步任务 - 立即返回 task_id"""
+    """触发异步同步任务 - 同一 workflow 有 running/pending 任务时拒绝"""
     import asyncio
     token = settings.GITHUB_TOKEN
     if not token:
         raise HTTPException(400, "GitHub Token 未配置")
+
+    # 检查是否有 running/pending 任务
+    active_stmt = select(ReleaseAnalysisTask).where(
+        ReleaseAnalysisTask.workflow_id == workflow_id,
+        ReleaseAnalysisTask.status.in_(["running", "pending"]),
+    )
+    active_result = await db.execute(active_stmt)
+    if active_result.scalar_one_or_none():
+        raise HTTPException(409, "该工作流已有同步任务正在执行中，请稍后再试")
 
     task = ReleaseAnalysisTask(
         workflow_id=workflow_id,
@@ -302,6 +324,15 @@ async def retry_sync(
     max_runs = old_task.max_runs or 100
     workflow_id = old_task.workflow_id
 
+    # 检查是否有 running/pending 任务
+    active_stmt = select(ReleaseAnalysisTask).where(
+        ReleaseAnalysisTask.workflow_id == workflow_id,
+        ReleaseAnalysisTask.status.in_(["running", "pending"]),
+    )
+    active_result = await db.execute(active_stmt)
+    if active_result.scalar_one_or_none():
+        raise HTTPException(409, "该工作流已有同步任务正在执行中，请稍后再试")
+
     task = ReleaseAnalysisTask(
         workflow_id=workflow_id,
         task_type="sync_runs",
@@ -327,6 +358,26 @@ async def retry_sync(
     }
 
 
+@router.post("/release-management/sync/cancel/{task_id}")
+async def cancel_sync_task(
+    db: DbSession,
+    current_user: CurrentUser,
+    task_id: int,
+):
+    """取消/终止正在执行的同步任务"""
+    task = await db.get(ReleaseAnalysisTask, task_id)
+    if not task:
+        raise HTTPException(404, f"同步任务 {task_id} 不存在")
+    if task.status not in ("running", "pending"):
+        raise HTTPException(400, f"任务状态为 {task.status}，无法取消")
+    task.status = "cancelled"
+    task.progress_message = "已手动终止"
+    task.completed_at = datetime.now(UTC)
+    await db.commit()
+    wf = await db.get(ReleaseWorkflow, task.workflow_id)
+    return _task_to_dict(task, wf.workflow_name if wf else None)
+
+
 @router.get("/release-management/sync/task-by-id/{task_id}")
 async def get_sync_task(
     db: DbSession,
@@ -339,6 +390,153 @@ async def get_sync_task(
         raise HTTPException(404, f"同步任务 {task_id} 不存在")
     wf = await db.get(ReleaseWorkflow, task.workflow_id)
     return _task_to_dict(task, wf.workflow_name if wf else None)
+
+
+@router.get("/release-management/sync/archive/{task_id}")
+async def archive_sync_task(
+    db: DbSession,
+    current_user: CurrentUser,
+    task_id: int,
+):
+    """归档：将同步采集的记录回填到构建分析中（返回 overview + runs 供前端展示）"""
+    task = await db.get(ReleaseAnalysisTask, task_id)
+    if not task or task.status != "completed":
+        raise HTTPException(400, "只有已完成的同步任务可以查看")
+
+    wf = await db.get(ReleaseWorkflow, task.workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow 不存在")
+
+    svc = ReleaseManagementService(db, _make_github())
+    overview = await svc.get_overview(workflow_ids=[task.workflow_id], days_back=task.days_back or 30)
+    runs_data = await svc.get_runs(workflow_ids=[task.workflow_id], page=1, page_size=200)
+
+    total_runs = runs_data.get("total", 0)
+    if total_runs == 0:
+        raise HTTPException(400, "该工作流暂无构建数据，请先执行一次同步采集")
+
+    return {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "workflow_name": wf.workflow_name,
+        "overview": overview,
+        "runs": runs_data.get("runs", []),
+        "total_runs": runs_data.get("total", 0),
+    }
+
+
+@router.get("/release-management/sync/excel/{task_id}")
+async def export_sync_excel(
+    db: DbSession,
+    current_user: CurrentUser,
+    task_id: int,
+):
+    """导出同步任务的采集记录为 Excel"""
+    from io import BytesIO
+
+    task = await db.get(ReleaseAnalysisTask, task_id)
+    if not task:
+        raise HTTPException(404, f"同步任务 {task_id} 不存在")
+    if task.status == "pending":
+        raise HTTPException(400, "任务还在等待中，无法导出")
+
+    wf = await db.get(ReleaseWorkflow, task.workflow_id)
+    wf_name = wf.workflow_name if wf else f"workflow_{task.workflow_id}"
+
+    svc = ReleaseManagementService(db, _make_github())
+    overview = await svc.get_overview(workflow_ids=[task.workflow_id], days_back=task.days_back or 30)
+
+    runs_data = await svc.get_runs(workflow_ids=[task.workflow_id], page=1, page_size=500)
+    runs = runs_data.get("runs", [])
+
+    groups_stmt = (
+        select(ReleaseBuildRun)
+        .where(ReleaseBuildRun.workflow_id == task.workflow_id)
+        .order_by(ReleaseBuildRun.created_at_remote.desc())
+        .limit(100)
+    )
+    run_records = (await db.execute(groups_stmt)).scalars().all()
+
+    from release_management.analyzer import ReleaseAnalyzer
+
+    analyzer = ReleaseAnalyzer(db)
+    all_groups = []
+    for run_rec in run_records:
+        detail = await analyzer.get_run_detail(run_rec.id)
+        if detail:
+            all_groups.extend(detail.get("groups", []))
+
+    rg = ReportGenerator()
+    excel_bytes = await rg.generate_excel(
+        workflow_name=wf_name,
+        stats=overview.get("stats", {}),
+        runs=runs,
+        groups=all_groups,
+        evaluation=overview.get("evaluation"),
+    )
+
+    return StreamingResponse(
+        BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=release_sync_{task_id}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}.xlsx"},
+    )
+
+
+@router.post("/release-management/sync/pdf/{task_id}")
+async def export_sync_pdf(
+    db: DbSession,
+    current_user: CurrentUser,
+    task_id: int,
+):
+    """导出同步任务的采集记录为 PDF"""
+    from io import BytesIO
+
+    task = await db.get(ReleaseAnalysisTask, task_id)
+    if not task:
+        raise HTTPException(404, f"同步任务 {task_id} 不存在")
+    if task.status == "pending":
+        raise HTTPException(400, "任务还在等待中，无法导出")
+
+    wf = await db.get(ReleaseWorkflow, task.workflow_id)
+    wf_name = wf.workflow_name if wf else f"workflow_{task.workflow_id}"
+
+    svc = ReleaseManagementService(db, _make_github())
+    overview = await svc.get_overview(workflow_ids=[task.workflow_id], days_back=task.days_back or 30)
+
+    runs_data = await svc.get_runs(workflow_ids=[task.workflow_id], page=1, page_size=500)
+    runs = runs_data.get("runs", [])
+
+    groups_stmt = (
+        select(ReleaseBuildRun)
+        .where(ReleaseBuildRun.workflow_id == task.workflow_id)
+        .order_by(ReleaseBuildRun.created_at_remote.desc())
+        .limit(100)
+    )
+    run_records = (await db.execute(groups_stmt)).scalars().all()
+
+    from release_management.analyzer import ReleaseAnalyzer
+
+    analyzer = ReleaseAnalyzer(db)
+    all_groups = []
+    for run_rec in run_records:
+        detail = await analyzer.get_run_detail(run_rec.id)
+        if detail:
+            all_groups.extend(detail.get("groups", []))
+
+    rg = ReportGenerator()
+    pdf_bytes, filename = await rg.generate_pdf(
+        workflow_name=wf_name,
+        stats=overview.get("stats", {}),
+        runs=runs,
+        groups=all_groups,
+        evaluation=overview.get("evaluation"),
+    )
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get("/release-management/sync/tasks")
@@ -498,7 +696,7 @@ async def get_duration_trend(
     current_user: CurrentUser,
     workflow_ids: str = Query(None),
     days_back: int = Query(30, ge=1, le=365),
-    aggregate: str = Query("day", regex="^(day|week)$"),
+    aggregate: str = Query("day", pattern="^(day|week)$"),
 ):
     from datetime import timedelta
 
@@ -637,7 +835,7 @@ async def trigger_evaluation(
     db: DbSession,
     current_user: CurrentUser,
     workflow_id: int = Query(...),
-    evaluation_type: str = Query("trustworthiness", regex="^(trustworthiness|production_ready|trend)$"),
+    evaluation_type: str = Query("trustworthiness", pattern="^(trustworthiness|production_ready|trend|release_readiness)$"),
     period_start: str = Query(None),
     period_end: str = Query(None),
     model_name: str = Query(None),
