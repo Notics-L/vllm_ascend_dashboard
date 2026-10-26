@@ -115,13 +115,35 @@ function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
     if (chartRef.current && option) {
       chartRef.current.setOption(option)
     }
-    // Defer a resize so the container has its final dimensions
-    requestAnimationFrame(() => chartRef.current?.resize())
-    const onResize = () => chartRef.current?.resize()
+
+    const chart = chartRef.current
+    const resize = () => chart?.resize()
+
+    // Multi-frame resize to handle Modal/Tab/Route animation delays
+    const timers: number[] = []
+    for (let i = 0; i < 5; i++) {
+      timers.push(window.setTimeout(resize, (i + 1) * 100))
+    }
+
+    // Also use rAF for immediate next-frame resize
+    const rafId = requestAnimationFrame(() => requestAnimationFrame(resize))
+
+    const onResize = () => chart?.resize()
     window.addEventListener('resize', onResize)
+
+    // Watch container size changes (e.g., Modal open/close, parent reflow)
+    let observer: ResizeObserver | null = null
+    try {
+      observer = new ResizeObserver(() => chart?.resize())
+      observer.observe(domRef.current!)
+    } catch { /* ResizeObserver not available */ }
+
     return () => {
+      timers.forEach(clearTimeout)
+      cancelAnimationFrame(rafId)
       window.removeEventListener('resize', onResize)
-      chartRef.current?.dispose()
+      observer?.disconnect()
+      chart?.dispose()
       chartRef.current = null
     }
     // Rebuild when the option actually changes

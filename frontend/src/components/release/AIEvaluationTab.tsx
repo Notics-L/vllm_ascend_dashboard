@@ -11,7 +11,9 @@ import {
   Col,
   DatePicker,
   Descriptions,
+  Drawer,
   message,
+  Modal,
   Row,
   Select,
   Space,
@@ -22,7 +24,10 @@ import {
 } from 'antd'
 import {
   ClockCircleOutlined,
+  CodeOutlined,
+  EyeOutlined,
   PlayCircleOutlined,
+  ReadOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
 
@@ -33,6 +38,7 @@ import {
   getEvaluationDetail,
   trustScoreColor,
   trustLevelLabel,
+  getTrustLevelColor,
   type AIEvaluationSummary,
   type AIEvaluation,
   type Workflow,
@@ -44,9 +50,16 @@ const { Option } = Select
 
 /* ===================== ECharts 仪表盘 ===================== */
 
-function GaugeChart({ score }: { score: number | null }) {
+function GaugeChart({ score, size = 'normal' }: { score: number | null; size?: 'small' | 'normal' | 'large' }) {
   const domRef = useRef<HTMLDivElement | null>(null)
   const color = score !== null ? trustScoreColor(score) : '#8c8c8c'
+
+  const dimMap = {
+    small: { chartH: 160, scoreFont: 28, labelFont: 11, pointerW: 6, axisW: 18 },
+    normal: { chartH: 220, scoreFont: 48, labelFont: 13, pointerW: 10, axisW: 30 },
+    large: { chartH: 280, scoreFont: 56, labelFont: 14, pointerW: 14, axisW: 40 },
+  }
+  const dim = dimMap[size]
 
   useEffect(() => {
     if (!domRef.current || score === null) return
@@ -56,18 +69,22 @@ function GaugeChart({ score }: { score: number | null }) {
         type: 'gauge',
         min: 0,
         max: 100,
-        radius: '75%',
-        center: ['50%', '65%'],
-        startAngle: 200,
-        endAngle: -20,
-        pointer: { show: true, length: '60%', width: 10, itemStyle: { color } },
+        radius: '80%',
+        center: ['50%', '68%'],
+        startAngle: 210,
+        endAngle: -30,
+        pointer: {
+          show: true,
+          length: '55%',
+          width: dim.pointerW,
+          itemStyle: { color },
+        },
         axisLine: {
           lineStyle: {
-            width: 30,
+            width: dim.axisW,
             color: [
               [0.4, '#ff4d4f'],
               [0.6, '#faad14'],
-              [0.8, '#faad14'],
               [1, '#52c41a'],
             ],
           },
@@ -81,18 +98,21 @@ function GaugeChart({ score }: { score: number | null }) {
         animationDuration: 800,
       }],
     })
-    window.addEventListener('resize', () => chart.resize())
+    const onResize = () => chart.resize()
+    window.addEventListener('resize', onResize)
     return () => {
-      window.removeEventListener('resize', () => chart.resize())
+      window.removeEventListener('resize', onResize)
       chart.dispose()
     }
-  }, [score])
+  }, [score, size])
 
   return (
     <div style={{ width: '100%', textAlign: 'center' }}>
-      <div ref={domRef} style={{ width: '100%', height: 220 }} />
-      <div style={{ fontSize: 48, fontWeight: 700, color, lineHeight: 1 }}>{score ?? '-'}</div>
-      <div style={{ fontSize: 13, color: '#8c8c8c', marginTop: 4 }}>可信度评分</div>
+      <div ref={domRef} style={{ width: '100%', height: dim.chartH }} />
+      <div style={{ fontSize: dim.scoreFont, fontWeight: 700, color, lineHeight: 1 }}>
+        {score ?? '-'}
+      </div>
+      <div style={{ fontSize: dim.labelFont, color: '#8c8c8c', marginTop: 4 }}>可信度评分</div>
     </div>
   )
 }
@@ -180,20 +200,45 @@ function TriggerFormSelector({
 
 /* ===================== 最新评估展示区 ===================== */
 
+/* Parse data summary text into structured items */
+function parseDataSummary(text: string): Array<{ key: string; value: string }> {
+  const items: Array<{ key: string; value: string }> = []
+  text.split('\n').forEach((line) => {
+    const idx = line.indexOf(':')
+    if (idx > 0) {
+      items.push({ key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() })
+    }
+  })
+  return items
+}
+
 function LatestEvaluationPanel({
-  evaluation, reloadKey,
+  evaluation, reloadKey, compact,
 }: {
   evaluation: AIEvaluation | null
   reloadKey: number
+  compact?: boolean
 }) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detail, setDetail] = useState<AIEvaluation | null>(null)
+  const [jsonVisible, setJsonVisible] = useState(false)
+  const [jsonContent, setJsonContent] = useState('')
 
   useEffect(() => {
     if (!evaluation?.id) return
     setDetailLoading(true)
     getEvaluationDetail(evaluation.id)
-      .then(setDetail)
+      .then((data) => {
+        setDetail(data)
+        if (data.report_content) {
+          try {
+            const parsed = JSON.parse(data.report_content)
+            setJsonContent(JSON.stringify(parsed, null, 2))
+          } catch {
+            setJsonContent(data.report_content)
+          }
+        }
+      })
       .catch(() => message.error('加载评估详情失败'))
       .finally(() => setDetailLoading(false))
   }, [evaluation?.id, reloadKey])
@@ -211,37 +256,68 @@ function LatestEvaluationPanel({
   }
 
   const score = ev.trust_score
+  const gaugeSize: 'small' | 'normal' | 'large' = compact ? 'large' : 'normal'
+
+  /* Parse algorithm breakdown */
+  let breakdown: Record<string, number> | null = null
+  let dataSummaryText: string | null = null
+  if (ev.report_content) {
+    try {
+      const rpt = JSON.parse(ev.report_content)
+      if (rpt.algorithm_breakdown && typeof rpt.algorithm_breakdown === 'object') {
+        breakdown = rpt.algorithm_breakdown
+      }
+      if (rpt.data_summary) {
+        dataSummaryText = rpt.data_summary
+      }
+    } catch { /* ignore */ }
+  }
+
+  const dimensionMap: Record<string, string> = {
+    success: '成功率',
+    stability: '稳定性',
+    coverage: '覆盖率',
+    compliance: '合规性',
+    trend: '趋势',
+  }
+
+  const summaryItems = dataSummaryText ? parseDataSummary(dataSummaryText) : []
 
   return (
     <Spin spinning={detailLoading}>
-      {/* Score + Summary */}
+      {/* Score + Summary — equal height via stretch */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }} align="stretch">
-        <Col span={8}>
-          <Card bordered={false} title="可信度评分">
-            <div style={{ textAlign: 'center' }}>
-              <GaugeChart score={score} />
-              <div style={{ marginTop: 8 }}>
-                <Tag color={trustScoreColor(score)} style={{ fontSize: 14 }}>
-                  信任等级: {trustLevelLabel(ev.trust_level)}
+        <Col span={compact ? 8 : 8}>
+          <Card bordered={false} title="可信度评分" bodyStyle={{ height: '100%' }}>
+            <GaugeChart score={score} size={gaugeSize} />
+            <Space style={{ marginTop: 8, justifyContent: 'center', display: 'flex', flexWrap: 'wrap', width: '100%' }}>
+              <Tag color={getTrustLevelColor(ev.trust_level || 'low')} style={{ fontSize: 14, padding: '2px 10px' }}>
+                {trustLevelLabel(ev.trust_level)}
+              </Tag>
+              {ev.production_ready ? (
+                <Tag color="#52c41a" style={{ fontSize: 14, padding: '2px 10px' }}>
+                  可上线
                 </Tag>
-                {ev.production_ready && (
-                  <Tag color="success" style={{ marginLeft: 8, fontSize: 14 }}>
-                    可上线
-                  </Tag>
-                )}
-                {!ev.production_ready && (
-                  <Tag color="error" style={{ marginLeft: 8, fontSize: 14 }}>
-                    不建议上线
-                  </Tag>
-                )}
-              </div>
-            </div>
+              ) : (
+                <Tag color="#ff4d4f" style={{ fontSize: 14, padding: '2px 10px' }}>
+                  不建议上线
+                </Tag>
+              )}
+            </Space>
           </Card>
         </Col>
-        <Col span={16}>
-          <Card bordered={false} title="评估概要">
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 8 }}>
-              <Descriptions.Item label="评估类型">{ev.evaluation_type === 'trustworthiness' ? '可信度评估' : '发布就绪评估'}</Descriptions.Item>
+        <Col span={compact ? 16 : 16}>
+          <Card bordered={false} title="评估概要" extra={
+            ev.report_content ? (
+              <Button size="small" icon={<CodeOutlined />} onClick={() => setJsonVisible(true)}>
+                查看 JSON 详情
+              </Button>
+            ) : null
+          }>
+            <Descriptions column={2} size="small" bordered>
+              <Descriptions.Item label="评估类型">
+                {ev.evaluation_type === 'trustworthiness' ? '可信度评估' : '发布就绪评估'}
+              </Descriptions.Item>
               <Descriptions.Item label="覆盖次数">{ev.run_count} 次</Descriptions.Item>
               <Descriptions.Item label="评估模型">{ev.llm_model || '-'}</Descriptions.Item>
               <Descriptions.Item label="生成时间">
@@ -258,9 +334,47 @@ function LatestEvaluationPanel({
         </Col>
       </Row>
 
+      {/* Algorithm Breakdown + Data Summary — equal height */}
+      {(breakdown || summaryItems.length > 0) && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }} align="stretch">
+          {breakdown && (
+            <Col span={12}>
+              <Card bordered={false} title="算法评分明细">
+                <Descriptions column={1} size="small" bordered>
+                  {Object.entries(breakdown).map(([key, value]) => (
+                    <Descriptions.Item key={key} label={dimensionMap[key] || key}>
+                      <Text strong style={{ color: trustScoreColor(value) }}>
+                        {value}
+                      </Text>
+                    </Descriptions.Item>
+                  ))}
+                  <Descriptions.Item label="总分">
+                    <Text strong style={{ color: trustScoreColor(score), fontSize: 16 }}>
+                      {score}
+                    </Text>
+                  </Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
+          )}
+          {summaryItems.length > 0 && (
+            <Col span={breakdown ? 12 : 24}>
+              <Card bordered={false} title="数据摘要">
+                <Descriptions column={1} size="small" bordered>
+                  {summaryItems.map((item) => (
+                    <Descriptions.Item key={item.key} label={item.key}>
+                      <Text>{item.value}</Text>
+                    </Descriptions.Item>
+                  ))}
+                </Descriptions>
+              </Card>
+            </Col>
+          )}
+        </Row>
+      )}
+
       {/* Findings + Risks + Recommendations */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {/* Findings */}
         {ev.findings?.length > 0 && (
           <Col span={8}>
             <Card bordered={false} title="核心发现">
@@ -284,7 +398,6 @@ function LatestEvaluationPanel({
           </Col>
         )}
 
-        {/* Risk Factors */}
         {ev.risk_factors?.length > 0 && (
           <Col span={8}>
             <Card bordered={false} title="风险因子">
@@ -299,7 +412,6 @@ function LatestEvaluationPanel({
           </Col>
         )}
 
-        {/* Recommendations */}
         {ev.recommendations?.length > 0 && (
           <Col span={8}>
             <Card bordered={false} title="改进建议">
@@ -335,29 +447,22 @@ function LatestEvaluationPanel({
         </Card>
       )}
 
-      {/* Report content */}
-      {ev.report_content && (() => {
-        let content = ev.report_content
-        try {
-          const parsed = JSON.parse(content)
-          if (typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-            content = JSON.stringify(parsed, null, 2)
-          }
-        } catch {
-          // keep as-is
-        }
-        return (
-          <Card bordered={false} title="完整报告" style={{ marginBottom: 16 }}>
-            <pre style={{
-              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-              fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
-              maxHeight: 400, overflow: 'auto', background: '#fafafa', padding: 12, borderRadius: 6,
-            }}>
-              {content}
-            </pre>
-          </Card>
-        )
-      })()}
+      {/* JSON Raw Detail Modal */}
+      <Modal
+        title="完整报告 (JSON)"
+        open={jsonVisible}
+        onCancel={() => setJsonVisible(false)}
+        footer={null}
+        width={800}
+      >
+        <pre style={{
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
+          maxHeight: 600, overflow: 'auto', background: '#fafafa', padding: 12, borderRadius: 6,
+        }}>
+          {jsonContent}
+        </pre>
+      </Modal>
     </Spin>
   )
 }
@@ -376,6 +481,12 @@ function HistoryTable({
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [viewingEv, setViewingEv] = useState<AIEvaluationSummary | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
+  const [viewDetail, setViewDetail] = useState<AIEvaluation | null>(null)
+  const [jsonModalVisible, setJsonModalVisible] = useState(false)
+  const [jsonText, setJsonText] = useState('')
+  const [drawerKey, setDrawerKey] = useState(0)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -394,8 +505,43 @@ function HistoryTable({
     loadData()
   }, [loadData, reloadKey])
 
+  const handleViewReport = async (record: AIEvaluationSummary) => {
+    setViewingEv(record)
+    setViewLoading(true)
+    setViewDetail(null)
+    try {
+      const d = await getEvaluationDetail(record.id)
+      setViewDetail(d)
+      setDrawerKey((k) => k + 1)
+      setViewLoading(false)
+      setViewingEv(null)
+    } catch {
+      message.error('加载评估详情失败')
+      setViewLoading(false)
+    }
+  }
+
+  const handleViewJson = async (record: AIEvaluationSummary) => {
+    try {
+      const d = await getEvaluationDetail(record.id)
+      if (d.report_content) {
+        try {
+          const parsed = JSON.parse(d.report_content)
+          setJsonText(JSON.stringify(parsed, null, 2))
+        } catch {
+          setJsonText(d.report_content)
+        }
+        setJsonModalVisible(true)
+      } else {
+        message.info('该评估没有完整报告')
+      }
+    } catch {
+      message.error('加载评估详情失败')
+    }
+  }
+
   const columns = [
-    { title: 'ID', dataIndex: 'id', width: 60 },
+    { title: 'ID', dataIndex: 'id', width: 50 },
     {
       title: '评估类型',
       dataIndex: 'evaluation_type',
@@ -405,7 +551,7 @@ function HistoryTable({
     {
       title: '可信度评分',
       dataIndex: 'trust_score',
-      width: 100,
+      width: 90,
       render: (s: number | null) => (
         <Text strong style={{ color: trustScoreColor(s) }}>
           {s ?? '-'}
@@ -415,9 +561,9 @@ function HistoryTable({
     {
       title: '信任等级',
       dataIndex: 'trust_level',
-      width: 80,
+      width: 70,
       render: (v: string | null) => (
-        <Tag color={trustScoreColor(v ? parseInt(v) || 0 : null)}>
+        <Tag color={getTrustLevelColor(v || 'low')}>
           {trustLevelLabel(v)}
         </Tag>
       ),
@@ -428,48 +574,106 @@ function HistoryTable({
       width: 60,
       render: (v: boolean) => v ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>,
     },
-    { title: '覆盖次数', dataIndex: 'run_count', width: 80 },
-    { title: '模型', dataIndex: 'llm_model', width: 100, ellipsis: true },
+    { title: '覆盖次数', dataIndex: 'run_count', width: 70 },
+    { title: '模型', dataIndex: 'llm_model', width: 90, ellipsis: true },
     {
       title: '生成时间',
       dataIndex: 'generated_at',
-      width: 180,
+      width: 160,
       render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-',
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 140,
+      render: (_: any, record: AIEvaluationSummary) => (
+        <Space size="small">
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            loading={viewLoading && viewingEv?.id === record.id}
+            onClick={() => handleViewReport(record)}
+          >
+            查看
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<CodeOutlined />}
+            onClick={() => handleViewJson(record)}
+          >
+            JSON
+          </Button>
+        </Space>
+      ),
     },
   ]
 
   return (
-    <Card
-      bordered={false}
-      title={
-        <Space>
-          <ClockCircleOutlined />
-          <span>历史评估 ({total})</span>
-        </Space>
-      }
-      extra={
-        <Button icon={<ReloadOutlined />} onClick={loadData}>
-          刷新
-        </Button>
-      }
-    >
-      <Table
-        dataSource={evaluations}
-        rowKey="id"
-        size="small"
-        loading={loading}
-        scroll={{ x: 900 }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
-        }}
-        columns={columns}
-      />
-    </Card>
+    <>
+      <Card
+        bordered={false}
+        title={
+          <Space>
+            <ClockCircleOutlined />
+            <span>历史评估 ({total})</span>
+          </Space>
+        }
+        extra={
+          <Button icon={<ReloadOutlined />} onClick={loadData}>
+            刷新
+          </Button>
+        }
+      >
+        <Table
+          dataSource={evaluations}
+          rowKey="id"
+          size="small"
+          loading={loading}
+          scroll={{ x: 1000 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (t) => `共 ${t} 条`,
+            onChange: (p, ps) => { setPage(p); setPageSize(ps); },
+          }}
+          columns={columns}
+        />
+      </Card>
+
+      {/* View report drawer */}
+      <Drawer
+        title="评估报告详情"
+        open={!!viewDetail}
+        onClose={() => setViewDetail(null)}
+        width={800}
+        destroyOnHidden
+      >
+        {viewDetail && (
+          <LatestEvaluationPanel evaluation={viewDetail} reloadKey={drawerKey} compact />
+        )}
+      </Drawer>
+
+      {/* JSON Modal */}
+      <Modal
+        title="完整报告 (JSON)"
+        open={jsonModalVisible}
+        onCancel={() => setJsonModalVisible(false)}
+        footer={null}
+        width={800}
+      >
+        <pre style={{
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
+          maxHeight: 600, overflow: 'auto', background: '#fafafa', padding: 12, borderRadius: 6,
+        }}>
+          {jsonText}
+        </pre>
+      </Modal>
+    </>
   )
 }
 

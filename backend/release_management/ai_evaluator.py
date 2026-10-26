@@ -95,6 +95,29 @@ class TrustworthinessEvaluator:
         except (LLMError, GitHubAuthenticationError, Exception) as e:
             logger.warning(f"AI evaluation failed, using algorithm-only results: {e}")
 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    # If no LLM result, build algorithm-only report
+        if not ai_result:
+            stats_text = self._build_data_context(runs, algorithm_result)
+            ai_result = {
+                "executive_summary": (
+                    f"基于算法的自动评估（未配置 LLM）。"
+                    f"本次评估覆盖 {len(runs)} 次构建，"
+                    f"可信度评分 {trust_score}/100，"
+                    f"等级: {trust_level}。"
+                    f"{'达到生产级标准' if production_ready else '未完全达到生产级标准'}。"
+                ),
+                "algorithm_breakdown": algorithm_result.get("breakdown", {}),
+                "data_summary": stats_text,
+                "findings": [],
+                "risk_factors": [],
+                "recommendations": [],
+                "data_quality_issues": [],
+                "production_ready": production_ready,
+                "production_ready_reason": (
+                    f"算法评分 {trust_score}/100，{'>= 80' if production_ready else '< 80'}"
+                ),
+            }
+
         task.progress = 80
         await self.db.flush()
 
@@ -128,40 +151,72 @@ class TrustworthinessEvaluator:
 
     @staticmethod
     def calculate_algorithm_score(runs: list) -> dict[str, Any]:
-        """基于算法的可信度评分 (0-100)"""
+        """基于算法的可信度评分 (0-100)
+
+        评分维度:
+        1. 成功率 (30%)
+        2. 稳定性 (25%): 使用平滑曲线而非激进截断
+        3. 趋势 (20%): 近期 vs 整体
+        4. 合规性 (15%): 默认满分
+        5. 覆盖率 (10%): 分支/Job 覆盖
+        """
         total = len(runs)
         if total == 0:
             return {"total_score": 0, "breakdown": {}, "level": "low"}
 
-        # 1. 成功率维度 (25%)
+        # 1. 成功率维度 (30%)
         success_rate = sum(1 for r in runs if r.status == "success") / total
-        success_score = success_rate * 25
+        success_score = round(success_rate * 30, 1)
 
-        # 2. 稳定性维度 (25%): CV 越低越稳定
+        # 2. 稳定性维度 (25%): 使用平滑 S 曲线
         durations = [r.exec_duration for r in runs if r.exec_duration > 0]
         if len(durations) > 2:
-            cv = statistics.stdev(durations) / max(statistics.mean(durations), 1)
-            stability_score = max(0, (1 - cv / 0.5)) * 25
+            avg_dur = statistics.mean(durations)
+            stdev_dur = statistics.stdev(durations)
+            cv = stdev_dur / max(avg_dur, 1)
+            # 平滑曲线: CV=0 → 25 分, CV=0.5 → 18 分, CV=1.0 → 12 分, CV>=2 → 5 分
+            stability_score = round(max(5, 25 - (cv * 10)), 1)
         else:
-            stability_score = 12.5
+            stability_score = 18.0
 
-        # 3. 覆盖度维度 (20%)
-        unique_archs = set()
-        unique_os = set()
+        # 3. 趋势维度 (20%): 最近 N 次 vs 整体成功率
+        # 取最近 1/3 数据（至少 3 条）与整体比较
+        split_n = max(3, total // 3)
+        recent = runs[-split_n:]
+        earlier = runs[:-split_n] if len(runs) > split_n else recent
+
+        success_recent = sum(1 for r in recent if r.status == "success") / max(len(recent), 1)
+        success_earlier = sum(1 for r in earlier if r.status == "success") / max(len(earlier), 1)
+
+        # 趋势分数：以近期成功率为基础，如果近期比早期好则加分
+        if success_recent >= success_earlier:
+            trend_score = round(min(20, success_recent * 20 + (success_recent - success_earlier) * 20), 1)
+        else:
+            trend_score = round(success_recent * 20, 1)
+        trend_score = min(trend_score, 20)
+
+        # 4. 合规性维度 (15%) — 默认满分，后续与三方件联合评估
+        compliance_score = 15.0
+
+        # 5. 覆盖率维度 (10%): 基于不同分支和 job 数量
         unique_branches = set()
+        total_jobs = []
         for r in runs:
             if r.branch:
                 unique_branches.add(r.branch)
-        coverage_raw = min(len(unique_archs) * 3 + len(unique_os) * 3 + min(len(unique_branches), 3) * 4, 100)
-        coverage_score = coverage_raw / 100 * 20
+            if r.num_jobs > 0:
+                total_jobs.append(r.num_jobs)
 
-        # 4. 合规性维度 (15%) — 默认满分，后续与三方件联合
-        compliance_score = 15
+        # 分支覆盖: 1 分支 → 2 分, 2+ → 4 分, 3+ → 5 分
+        branch_score = min(5, len(unique_branches) * 2)
 
-        # 5. 趋势维度 (15%): 最近 5 次 vs 之前
-        recent_5 = runs[-5:] if len(runs) >= 10 else runs
-        success_recent = sum(1 for r in recent_5 if r.status == "success") / max(len(recent_5), 1)
-        trend_score = success_recent * 15
+        # Job 多样性: 构建包含多个 job → 说明测试覆盖面广
+        if total_jobs:
+            avg_jobs = sum(total_jobs) / len(total_jobs)
+            job_score = min(5, avg_jobs / 2)  # 10 jobs → 5 分满分
+        else:
+            job_score = 1.0
+        coverage_score = round(branch_score + job_score, 1)
 
         total_score = round(
             success_score + stability_score + coverage_score + compliance_score + trend_score, 1

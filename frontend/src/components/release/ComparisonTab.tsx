@@ -27,11 +27,29 @@ function EChartBox({ option, height = 300 }: { option: any; height?: number }) {
     if (chartRef.current && option) {
       chartRef.current.setOption(option)
     }
-    const onResize = () => chartRef.current?.resize()
+
+    const chart = chartRef.current
+    const resize = () => chart?.resize()
+
+    // Delayed resize for Modal/Tab animation
+    const timers = [0, 100, 200, 300, 400].map((t) => window.setTimeout(resize, t))
+    const rafId = requestAnimationFrame(() => requestAnimationFrame(resize))
+
+    const onResize = resize
     window.addEventListener('resize', onResize)
+
+    let observer: ResizeObserver | null = null
+    try {
+      observer = new ResizeObserver(resize)
+      observer.observe(domRef.current!)
+    } catch { /* not available */ }
+
     return () => {
+      timers.forEach(clearTimeout)
+      cancelAnimationFrame(rafId)
       window.removeEventListener('resize', onResize)
-      chartRef.current?.dispose()
+      observer?.disconnect()
+      chart?.dispose()
       chartRef.current = null
     }
   }, [option])
