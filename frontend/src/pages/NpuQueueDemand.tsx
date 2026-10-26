@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import {
@@ -68,8 +68,10 @@ type TaskPod = ResourcePodInfo & {
   timelineStartedAt: string | null;
   waitSeconds: number;
   runSeconds: number | null;
+  timelineRunEndedAt: string | null;
   isCurrentPending: boolean;
   isHistoricalPending: boolean;
+  isCurrentRunning: boolean;
   severity: "正常" | "关注" | "严重" | "阻塞" | "历史";
 };
 
@@ -88,6 +90,9 @@ const waitSeverity = (seconds: number): TaskPod["severity"] => {
   return "正常";
 };
 
+const TIMELINE_HOUR_OPTIONS = [1, 6, 12, 24, 48] as const;
+const TIMELINE_MAX_HOURS = 48;
+
 export default function NpuQueueDemand() {
   const [queuePools, setQueuePools] = useState<string[]>([]);
   const [trendPool, setTrendPool] = useState("all");
@@ -100,6 +105,9 @@ export default function NpuQueueDemand() {
   const [sectionPool, setSectionPool] = useState("all");
   const [taskPool, setTaskPool] = useState("all");
   const [minimumWaitSeconds, setMinimumWaitSeconds] = useState(300);
+  const [timelineHours, setTimelineHours] = useState<number>(24);
+  const [timelineEndOffsetHours, setTimelineEndOffsetHours] = useState(0);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const [trendMode, setTrendMode] = useState<"current" | "history">("current");
   const [trendModeDirection, setTrendModeDirection] = useState<"forward" | "backward">("forward");
   const [taskMode, setTaskMode] = useState<"queue" | "cost">("cost");
@@ -134,7 +142,9 @@ export default function NpuQueueDemand() {
       cluster_ids: taskPool === "all"
         ? undefined
         : clusterConfigQuery.data?.filter((cluster) => cluster.name === taskPool).map((cluster) => cluster.id),
-      hours: 24,
+      // Keep two days in memory so wheel zoom can focus an earlier segment
+      // without an extra request for every wheel tick.
+      hours: TIMELINE_MAX_HOURS,
     }),
     enabled: taskPool === "all" || Boolean(clusterConfigQuery.data),
     staleTime: 30_000,
@@ -275,21 +285,39 @@ export default function NpuQueueDemand() {
     () => pendingPods.filter((pod) => taskPool === "all" || pod.pool === taskPool),
     [pendingPods, taskPool],
   );
+  const selectedActivePods = useMemo(
+    () =>
+      (resourceQuery.data?.clusters ?? []).flatMap((cluster) =>
+        cluster.executing_pods
+          .filter((pod) => ["Pending", "Running"].includes(pod.phase ?? ""))
+          .filter(() => taskPool === "all" || cluster.cluster_name === taskPool)
+          .map((pod) => ({ ...pod, pool: cluster.cluster_name })),
+      ),
+    [resourceQuery.data, taskPool],
+  );
   const currentPendingPodKeys = useMemo(
     () => new Set(selectedPendingPods.map((pod) => `${pod.cluster_id}/${pod.namespace}/${pod.name}`)),
     [selectedPendingPods],
   );
+  const currentRunningPodKeys = useMemo(
+    () => new Set(
+      selectedActivePods
+        .filter((pod) => pod.phase === "Running")
+        .map((pod) => `${pod.cluster_id}/${pod.namespace}/${pod.name}`),
+    ),
+    [selectedActivePods],
+  );
   const timelinePods = useMemo(() => {
     const historyPods = taskTimelineQuery.data?.pods ?? [];
     if (historyPods.length) {
-      // Always merge the latest Kubernetes Pending set.  Timeline snapshots
-      // are historical, while section 03 is a current snapshot; using this
-      // merge keeps the two sections on one Pending-Pod definition.
+      // Always merge the latest Kubernetes active set. Timeline snapshots are
+      // historical, while section 03 is current; without this merge a live
+      // Running Pod appears in section 01 but is absent from section 02.
       const pods = new Map(historyPods.map((pod) => [
         `${pod.cluster_id}/${pod.namespace}/${pod.name}`,
         pod,
       ]));
-      selectedPendingPods.forEach((pod) => {
+      selectedActivePods.forEach((pod) => {
         const key = `${pod.cluster_id}/${pod.namespace}/${pod.name}`;
         const history = pods.get(key);
         // The live K8s response owns phase and resources, while the timeline
@@ -315,7 +343,7 @@ export default function NpuQueueDemand() {
       .filter((cluster) => taskPool === "all" || cluster.cluster_name === taskPool)
       .flatMap((cluster) => cluster.executing_pods)
       .filter((pod) => pod.requests.npu > 0 && ["Pending", "Running"].includes(pod.phase ?? ""));
-  }, [resourceQuery.data, selectedPendingPods, taskPool, taskTimelineQuery.data?.pods]);
+  }, [resourceQuery.data, selectedActivePods, taskPool, taskTimelineQuery.data?.pods]);
   const taskTimelineGeneratedAt = taskTimelineQuery.data?.pods.length
     ? taskTimelineQuery.data.generated_at
     : resourceQuery.data?.generated_at;
@@ -349,6 +377,7 @@ export default function NpuQueueDemand() {
             const key = `${pod.cluster_id}/${pod.namespace}/${pod.name}`;
             const isCurrentPending = pod.phase === "Pending" && currentPendingPodKeys.has(key);
             const isHistoricalPending = pod.phase === "Pending" && !isCurrentPending;
+            const isCurrentRunning = pod.phase === "Running" && currentRunningPodKeys.has(key);
             const createdAt = pod.created_at ? dayjs(pod.created_at) : snapshotAt;
             const startedAt = pod.started_at
               ? dayjs(pod.started_at)
@@ -365,21 +394,35 @@ export default function NpuQueueDemand() {
                 ? dayjs(pod.last_observed_at)
                 : snapshotAt;
             const waitSeconds = Math.max(0, Math.floor((startedAt ?? pendingEnd).diff(createdAt, "second")));
+            // A historical Running row can retain phase=Running in its final
+            // persisted snapshot.  Only a Pod still present in the latest K8s
+            // resource snapshot is allowed to continue its blue bar to now.
+            const runEnd = startedAt
+              ? pod.finished_at
+                ? dayjs(pod.finished_at)
+                : isCurrentRunning
+                  ? snapshotAt
+                  : pod.last_observed_at
+                    ? dayjs(pod.last_observed_at)
+                    : snapshotAt
+              : null;
             return {
               ...pod,
               pool: pod.cluster_name,
               timelineStartedAt: startedAt?.toISOString() ?? null,
               waitSeconds,
               runSeconds: startedAt
-                ? Math.max(0, Math.floor((pod.finished_at ? dayjs(pod.finished_at) : snapshotAt).diff(startedAt, "second")))
+                ? Math.max(0, Math.floor(runEnd!.diff(startedAt, "second")))
                 : null,
+              timelineRunEndedAt: runEnd?.toISOString() ?? null,
               isCurrentPending,
               isHistoricalPending,
+              isCurrentRunning,
               severity: isHistoricalPending ? "历史" : waitSeverity(waitSeconds),
             };
           })
       .sort((left, right) => right.waitSeconds - left.waitSeconds);
-  }, [currentPendingPodKeys, taskTimelineGeneratedAt, timelinePods]);
+  }, [currentPendingPodKeys, currentRunningPodKeys, taskTimelineGeneratedAt, timelinePods]);
   const visibleTaskPods = useMemo(
     () =>
       taskPods.filter((pod) => pod.waitSeconds >= minimumWaitSeconds),
@@ -391,13 +434,49 @@ export default function NpuQueueDemand() {
     ),
     [data?.ciWaiting, minimumWaitSeconds, taskPool],
   );
-  const taskTimelineEnd = useMemo(
+  const taskTimelineBaseEnd = useMemo(
     () => dayjs(taskTimelineGeneratedAt ?? undefined),
     [taskTimelineGeneratedAt],
   );
-  const taskTimelineStart = taskTimelineEnd.subtract(24, "hour");
+  const taskTimelineEnd = taskTimelineBaseEnd.subtract(timelineEndOffsetHours, "hour");
+  const taskTimelineStart = taskTimelineEnd.subtract(timelineHours, "hour");
+  const handleTimelineWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const currentIndex = TIMELINE_HOUR_OPTIONS.indexOf(timelineHours as typeof TIMELINE_HOUR_OPTIONS[number]);
+    const nextIndex = Math.max(
+      0,
+      Math.min(
+        TIMELINE_HOUR_OPTIONS.length - 1,
+        currentIndex + (event.deltaY > 0 ? 1 : -1),
+      ),
+    );
+    const nextHours = TIMELINE_HOUR_OPTIONS[nextIndex];
+    if (nextHours === timelineHours) return;
+
+    event.preventDefault();
+    const timelineBounds = timelineRef.current?.getBoundingClientRect();
+    const trackLeft = (timelineBounds?.left ?? event.currentTarget.getBoundingClientRect().left) + 190;
+    const trackWidth = Math.max(1, (timelineBounds?.right ?? event.currentTarget.getBoundingClientRect().right) - trackLeft);
+    const ratio = Math.max(0, Math.min(1, (event.clientX - trackLeft) / trackWidth));
+    const focusAt = taskTimelineStart.add(timelineHours * ratio, "hour");
+    const earliest = taskTimelineBaseEnd.subtract(TIMELINE_MAX_HOURS, "hour");
+    let nextStart = focusAt.subtract(nextHours * ratio, "hour");
+    let nextEnd = nextStart.add(nextHours, "hour");
+    if (nextEnd.isAfter(taskTimelineBaseEnd)) {
+      nextEnd = taskTimelineBaseEnd;
+      nextStart = nextEnd.subtract(nextHours, "hour");
+    }
+    if (nextStart.isBefore(earliest)) {
+      nextStart = earliest;
+      nextEnd = nextStart.add(nextHours, "hour");
+    }
+    setTimelineHours(nextHours);
+    setTimelineEndOffsetHours(Math.max(0, taskTimelineBaseEnd.diff(nextEnd, "minute") / 60));
+  };
   const timelineSegmentStyle = (startAt: string | null | undefined, endAt: string | null | undefined) => {
     if (!startAt || !endAt) return { display: "none" } as const;
+    if (!dayjs(endAt).isAfter(taskTimelineStart) || !dayjs(startAt).isBefore(taskTimelineEnd)) {
+      return { display: "none" } as const;
+    }
     const start = Math.max(taskTimelineStart.valueOf(), dayjs(startAt).valueOf());
     const end = Math.min(taskTimelineEnd.valueOf(), dayjs(endAt).valueOf());
     const visibleStart = end <= start ? Math.max(taskTimelineStart.valueOf(), end - 120_000) : start;
@@ -407,6 +486,21 @@ export default function NpuQueueDemand() {
       width: `${Math.max(0.5, ((end - visibleStart) / windowMs) * 100)}%`,
     };
   };
+  const timelineTaskPods = useMemo(
+    () => visibleTaskPods.filter((pod) => {
+      const endedAt = pod.finished_at ?? pod.last_observed_at ?? taskTimelineEnd.toISOString();
+      return dayjs(endedAt).isAfter(taskTimelineStart) && dayjs(pod.created_at).isBefore(taskTimelineEnd);
+    }),
+    [taskTimelineEnd, taskTimelineStart, visibleTaskPods],
+  );
+  const timelineCiWaitingJobs = useMemo(
+    () => visibleCiWaitingJobs.filter((job) => {
+      const createdAt = job.createdAt ?? taskTimelineEnd.toISOString();
+      const endedAt = job.endedAt ?? taskTimelineEnd.toISOString();
+      return dayjs(endedAt).isAfter(taskTimelineStart) && dayjs(createdAt).isBefore(taskTimelineEnd);
+    }),
+    [taskTimelineEnd, taskTimelineStart, visibleCiWaitingJobs],
+  );
   const physicalRows = useMemo(
     () =>
       (resourceQuery.data?.clusters ?? [])
@@ -664,16 +758,16 @@ export default function NpuQueueDemand() {
         </div>
         {taskTimelineQuery.isError ? (
           <Alert type="error" showIcon message="任务资源快照获取失败" />
-        ) : visibleTaskPods.length || visibleCiWaitingJobs.length ? (
-          <div className="npu-demand-timeline" aria-label="最近 24 小时任务等待与运行时间线">
-            <div className="npu-demand-timeline-axis"><span>任务 / 资源</span><div><span>{taskTimelineStart.format("MM-DD HH:mm")}</span><span>{taskTimelineEnd.subtract(18, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(12, "hour").format("HH:mm")}</span><span>{taskTimelineEnd.subtract(6, "hour").format("HH:mm")}</span><span>现在</span></div></div>
-            {visibleTaskPods.map((pod) => {
+        ) : timelineTaskPods.length || timelineCiWaitingJobs.length ? (
+          <div className="npu-demand-timeline" ref={timelineRef} onWheel={handleTimelineWheel} aria-label="任务等待与运行时间线，滚轮可缩放至最近两天">
+            <div className="npu-demand-timeline-axis"><span>任务 / 资源</span><div>{[0, 0.25, 0.5, 0.75, 1].map((ratio) => <span key={ratio}>{taskTimelineStart.add(timelineHours * ratio, "hour").format(ratio === 0 ? "MM-DD HH:mm" : "HH:mm")}</span>)}</div></div>
+            {timelineTaskPods.map((pod) => {
               const waitingEnd = pod.timelineStartedAt ?? (
                 pod.isCurrentPending
                   ? taskTimelineEnd.toISOString()
                   : pod.last_observed_at ?? taskTimelineEnd.toISOString()
               );
-              const runningEnd = pod.timelineStartedAt ? (pod.finished_at ?? taskTimelineEnd.toISOString()) : null;
+              const runningEnd = pod.timelineRunEndedAt;
               return (
                 <div className="npu-demand-timeline-row" key={`${pod.cluster_id}/${pod.namespace}/${pod.name}`}>
                   <div className="npu-demand-timeline-meta">
@@ -706,7 +800,7 @@ export default function NpuQueueDemand() {
                 </div>
               );
             })}
-            {visibleCiWaitingJobs.map((job: CiWaitingItem) => {
+            {timelineCiWaitingJobs.map((job: CiWaitingItem) => {
               const createdAt = job.createdAt ?? taskTimelineEnd.toISOString();
               const endedAt = job.endedAt ?? taskTimelineEnd.toISOString();
               const waitSeconds = Math.max(0, Math.floor(dayjs(endedAt).diff(dayjs(createdAt), "second")));

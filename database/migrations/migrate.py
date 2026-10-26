@@ -105,7 +105,7 @@ async def migrate() -> None:
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s repo_name=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s repo_name=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s",
         users_after,
         permission_result,
         test_board_result,
