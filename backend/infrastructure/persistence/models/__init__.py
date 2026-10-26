@@ -989,6 +989,7 @@ class NpuOccupancyRawEnv(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     env_id = Column(String(255), nullable=False)
     source_updated_at = Column(TIMESTAMP, nullable=False)
+    pod_name = Column(String(255), nullable=True)
     pool = Column(String(255), nullable=True)
     effective_start_at = Column(TIMESTAMP, nullable=True)
     effective_end_at = Column(TIMESTAMP, nullable=True)
@@ -998,6 +999,7 @@ class NpuOccupancyRawEnv(Base):
 
     __table_args__ = (
         UniqueConstraint("env_id", name="uq_npu_occupancy_env_id"),
+        Index("ix_npu_occupancy_pod_name", "pod_name"),
         Index("ix_npu_occupancy_pool_end_start", "pool", "effective_end_at", "effective_start_at"),
         Index("ix_npu_occupancy_effective_end", "effective_end_at"),
     )

@@ -91,6 +91,7 @@ export interface ResourcePodInfo {
   created_at?: string | null
   started_at?: string | null
   finished_at?: string | null
+  last_observed_at?: string | null
   duration_seconds?: number | null
   repository?: string | null
   repository_url?: string | null
@@ -99,6 +100,8 @@ export interface ResourcePodInfo {
   pr_number?: number | null
   pr_url?: string | null
   job_workflow_ref?: string | null
+  workflow_run_id?: number | null
+  run_url?: string | null
   requests: ResourceQuantity
   containers: string[]
 }

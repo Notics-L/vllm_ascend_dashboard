@@ -1,7 +1,7 @@
 from datetime import date
 from types import SimpleNamespace
 
-from api.v1.ci import _serialize_nightly_test_case_export
+from api.v1.ci import _nightly_export_model_fo, _serialize_nightly_test_case_export
 
 
 def test_nightly_test_case_export_matches_import_shape():
@@ -35,3 +35,13 @@ def test_nightly_test_case_export_matches_import_shape():
         "notes": "保留备注",
         "enabled": True,
     }
+
+
+def test_export_fo_lookup_falls_back_to_normalized_model_mapping():
+    snapshot = SimpleNamespace(
+        model_fo="",
+        test_model="configs/DeepSeek_V31_Terminus_w4a8_w8a8_A5.yaml",
+    )
+    mapping = {"deepseek_v31_terminus_w4a8_w8a8_a5.yaml": "FO-Owner"}
+
+    assert _nightly_export_model_fo(snapshot, mapping) == "FO-Owner"

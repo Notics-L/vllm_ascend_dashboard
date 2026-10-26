@@ -37,6 +37,7 @@ from database.migrations.npu_occupancy import run as migrate_npu_occupancy
 from database.migrations.npu_occupancy_current_snapshot import (
     run as migrate_npu_occupancy_current_snapshot,
 )
+from database.migrations.npu_occupancy_pod_lookup import run as migrate_npu_occupancy_pod_lookup
 from database.migrations.process_runtime import run as migrate_process_runtime
 from database.migrations.resource_metrics_query_indexes import (
     run as migrate_resource_metrics_query_indexes,
@@ -80,6 +81,7 @@ async def migrate() -> None:
     permission_result = await migrate_service_permissions()
     await migrate_npu_occupancy()
     await migrate_npu_occupancy_current_snapshot()
+    await migrate_npu_occupancy_pod_lookup()
     await migrate_github_workflow_run_metadata()
     await migrate_resource_metrics_query_indexes()
     await migrate_resource_pod_timeline()

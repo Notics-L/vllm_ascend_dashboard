@@ -32,6 +32,32 @@ def test_job_workflow_ref_keeps_non_pr_workflows_linkable() -> None:
     }
 
 
+def test_workload_pod_uses_its_own_workflow_annotation_before_runner_name() -> None:
+    service = ResourceDashboardService()
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="buildkite-workload-1",
+            namespace="vllm-project",
+            labels={},
+            annotations={
+                "actions.github.com/job-workflow-ref": (
+                    "acme/workload/.github/workflows/nightly.yml@refs/pull/7/merge"
+                ),
+            },
+        ),
+    )
+
+    assert service._pod_workflow_info(pod, {}) == {
+        "repository": "acme/workload",
+        "repository_url": "https://github.com/acme/workload",
+        "workflow_path": "nightly.yml",
+        "workflow_url": "https://github.com/acme/workload/actions/workflows/nightly.yml",
+        "pr_number": 7,
+        "pr_url": "https://github.com/acme/workload/pull/7",
+        "job_workflow_ref": "acme/workload/.github/workflows/nightly.yml@refs/pull/7/merge",
+    }
+
+
 def test_persisted_resource_metrics_restore_github_links() -> None:
     row = SimpleNamespace(
         cluster_id=1,
@@ -55,6 +81,23 @@ def test_persisted_resource_metrics_restore_github_links() -> None:
     assert pod.repository == "acme/ml-ci"
     assert pod.workflow_url == "https://github.com/acme/ml-ci/actions/workflows/nightly.yml"
     assert pod.pr_url == "https://github.com/acme/ml-ci/pull/42"
+
+
+def test_pod_history_metadata_requires_one_exact_namespace_and_pod_name_match() -> None:
+    payload = {
+        "name": "workload-0",
+        "source": "github-action",
+        "groups": {"vllm-project": {"device_count": 1}},
+        "extend_env_comments": {
+            "workflow_ref": "acme/ml-ci/.github/workflows/nightly.yml@refs/pull/42/merge",
+            "workflow_run_id": "123",
+        },
+    }
+    result = PersistedResourceMetricsService._history_metadata_by_pod_key([payload])
+
+    assert result[("vllm-project", "workload-0")]["repository"] == "acme/ml-ci"
+    assert result[("vllm-project", "workload-0")]["run_url"] == "https://github.com/acme/ml-ci/actions/runs/123"
+    assert PersistedResourceMetricsService._history_metadata_by_pod_key([payload, payload]) == {}
 
 
 @pytest.mark.asyncio

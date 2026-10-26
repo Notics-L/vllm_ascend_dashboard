@@ -65,6 +65,7 @@ class NpuOccupancyRepository:
         if records:
             record = records[0]
             return {
+                "pod_name": str(env.get("name") or "").strip() or None,
                 "pool": record.pool,
                 "effective_start_at": record.created_at,
                 "effective_end_at": record.effective_end,
@@ -72,6 +73,7 @@ class NpuOccupancyRepository:
         cluster = str(env.get("cluster") or "")
         pool = resolve_pool(cluster)
         return {
+            "pod_name": str(env.get("name") or "").strip() or None,
             "pool": pool.name if pool else f"未配置:{cluster or '未知资源池'}",
             "effective_start_at": parse_timestamp(env.get("created_at")),
             "effective_end_at": parse_timestamp(env.get("expires_at")),
@@ -232,12 +234,13 @@ class NpuOccupancyRepository:
                     indexed = self._indexed_env_values(env, snapshot_at)
                     await db.execute(text("""
                         INSERT INTO npu_occupancy_raw_envs
-                            (env_id, source_updated_at, pool, effective_start_at, effective_end_at, payload, created_at, updated_at)
+                            (env_id, source_updated_at, pod_name, pool, effective_start_at, effective_end_at, payload, created_at, updated_at)
                         VALUES
-                            (:env_id, :revision, :pool, :effective_start_at, :effective_end_at,
+                            (:env_id, :revision, :pod_name, :pool, :effective_start_at, :effective_end_at,
                              CAST(:payload AS JSON), UTC_TIMESTAMP(), UTC_TIMESTAMP())
                         ON DUPLICATE KEY UPDATE
                             source_updated_at=VALUES(source_updated_at),
+                            pod_name=VALUES(pod_name),
                             pool=VALUES(pool),
                             effective_start_at=VALUES(effective_start_at),
                             effective_end_at=VALUES(effective_end_at),

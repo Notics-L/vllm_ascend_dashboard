@@ -117,6 +117,10 @@ class ResourcePodInfo(BaseModel):
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # Timestamp of the latest resource collection that observed this Pod.
+    # It lets the timeline distinguish a currently Pending Pod from an older
+    # Pending observation after the Pod has disappeared from Kubernetes.
+    last_observed_at: datetime | None = None
     duration_seconds: int | None = None
     repository: str | None = None
     repository_url: str | None = None
@@ -125,6 +129,8 @@ class ResourcePodInfo(BaseModel):
     pr_number: int | None = None
     pr_url: str | None = None
     job_workflow_ref: str | None = None
+    workflow_run_id: int | None = None
+    run_url: str | None = None
     requests: ResourceQuantity
     containers: list[str] = Field(default_factory=list)
 

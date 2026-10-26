@@ -19,6 +19,7 @@ export type QueuePool = {
 export type QueueTrendPoint = { capturedAt: string; waitingCards: number; runningCards: number; waitingJobs: number; runningJobs: number }
 export type LegacyQueueTrendPoint = { timestamp: string; waitingCards: number; runningCards: number; waitingJobs: number; runningJobs: number }
 export type QueueItem = { key: string; waitMinutes: number; run: string; title: string; job: string; repository: string; pool: string; cards: number; createdAt: string; state: 'waiting' | 'short' }
+export type CiWaitingItem = { key: string; waitMinutes: number; title: string; repository: string; repositoryUrl: string | null; pool: string | null; cards: number; createdAt: string | null; endedAt: string | null; isCurrent: boolean; workflowName: string | null; runUrl: string | null; prNumber: number | null; prUrl: string | null }
 export type QueueTrendPod = { name: string; namespace?: string; phase: string; npu: number; cluster_id: number; cluster_name: string; created_at?: string | null; pr_number?: number | null; pr_url?: string | null }
 export type QueueTrendResponse = { pool: string | null; hours: number; points: QueueTrendPoint[]; latestCapturedAt: string | null }
 export type QueueTrendDetail = { pool: string | null; capturedAt: string; waitingCards: number; runningCards: number; waitingJobs: number; runningJobs: number; pods: QueueTrendPod[] }
@@ -55,6 +56,7 @@ export type NpuQueueDashboard = {
   queueDelaySummary: QueueDelaySummary
   dailyUsage: DailyUsagePoint[]
   queue: QueueItem[]
+  ciWaiting: CiWaitingItem[]
   prCosts: PrCost[]
   usagePeriod: UsagePeriod
   dataQuality: { matched_jobs: number; unmatched_jobs: number }
