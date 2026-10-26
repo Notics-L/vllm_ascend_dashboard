@@ -153,7 +153,6 @@
   border-bottom: 1px solid var(--g-border);
   background: var(--g-card);
   position: sticky;
-  top: 36px;
   z-index: 4;
 }
 .gantt-axis-spacer {
