@@ -55,6 +55,28 @@ def _queue_minutes(fact: CINpuJobFact) -> float | None:
     return _minutes(fact.queued_at, fact.started_at)
 
 
+def _ci_wait_state(ci_job: CIJob, run_result: CIResult | None) -> tuple[bool, datetime | None]:
+    """Return whether a CI wait is current and the best known end timestamp."""
+    run_completed = bool(
+        run_result
+        and (run_result.status == "completed" or run_result.completed_at is not None)
+    )
+    current = (
+        not run_completed
+        and ci_job.status == "queued"
+        and ci_job.started_at is None
+        and ci_job.completed_at is None
+    )
+    if current:
+        return True, None
+    return False, (
+        ci_job.started_at
+        or ci_job.completed_at
+        or (run_result.completed_at if run_result else None)
+        or (run_result.started_at if run_result else None)
+    )
+
+
 def _queue_delay_window(now: datetime) -> tuple[str, str]:
     """Return the seven Beijing calendar dates shown by the delay chart."""
     today = _beijing_time(now).date()
@@ -133,19 +155,19 @@ async def build_dashboard(
             "state": "short" if wait < 2 else "waiting",
         })
 
-    # CI facts can lag behind the latest CI Job record.  The latter determines
-    # whether a grey CI segment is current or has already ended; stale facts
-    # must never be rendered as a wait extending to "now".
+    # CI facts and individual Job records can lag behind the workflow-level
+    # result.  A completed workflow is sufficient evidence that a queued Job
+    # is no longer waiting, even if its CIJob row was not refreshed in time.
     ci_waiting_rows = []
     for fact in sorted((row for row in matched if row.status == "queued"), key=lambda row: row.queued_at or now):
         ci_job = ci_jobs_by_id.get(fact.job_id)
         if ci_job is None or fact.queued_at is None:
             continue
-        current = ci_job.status == "queued" and ci_job.started_at is None and ci_job.completed_at is None
-        ended_at = None if current else (ci_job.started_at or ci_job.completed_at)
+        run_result = results_by_run_id.get(fact.run_id)
+        current, ended_at = _ci_wait_state(ci_job, run_result)
         if not current and ended_at is None:
             continue
-        if ended_at and _minutes(ended_at, now) is not None and _minutes(ended_at, now) > 24 * 60:
+        if ended_at and _minutes(ended_at, now) is not None and _minutes(ended_at, now) > 7 * 24 * 60:
             continue
         wait = _minutes(fact.queued_at, ended_at or now) or 0
         repository_url = f"https://github.com/{fact.repository}" if fact.repository else None
@@ -160,7 +182,7 @@ async def build_dashboard(
             "createdAt": fact.queued_at.isoformat() if fact.queued_at else None,
             "endedAt": ended_at.isoformat() if ended_at else None,
             "isCurrent": current,
-            "workflowName": fact.workflow_name,
+            "workflowName": (run_result.workflow_name if run_result else None) or fact.workflow_name,
             "runUrl": fact.run_url,
             "prNumber": fact.pr_number,
             "prUrl": f"{repository_url}/pull/{fact.pr_number}" if repository_url and fact.pr_number else None,

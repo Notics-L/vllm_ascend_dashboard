@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from npu_queue.service import _minutes, _queue_delay_dates, _queue_delay_window
+from npu_queue.service import _ci_wait_state, _minutes, _queue_delay_dates, _queue_delay_window
 from npu_queue.snapshots import (
     current_counts,
     physical_queue_detail_from_metrics,
@@ -123,6 +123,17 @@ def test_queue_duration_accepts_mysql_naive_timestamps() -> None:
         datetime(2026, 10, 10, 6, 0),
         datetime(2026, 10, 10, 6, 5, tzinfo=UTC),
     ) == 5
+
+
+def test_completed_run_ends_stale_queued_job_wait() -> None:
+    completed_at = datetime(2026, 10, 10, 7, 0, tzinfo=UTC)
+    current, ended_at = _ci_wait_state(
+        SimpleNamespace(status="queued", started_at=None, completed_at=None),
+        SimpleNamespace(status="completed", started_at=None, completed_at=completed_at),
+    )
+
+    assert current is False
+    assert ended_at == completed_at
 
 
 def test_queue_delay_window_uses_seven_beijing_calendar_dates():

@@ -139,7 +139,7 @@ async def get_pod_timeline(
     db: DbSession,
     current_user: CurrentUser,
     cluster_ids: Annotated[list[int] | None, Query()] = None,
-    hours: int = Query(24, ge=1, le=72),
+    hours: int = Query(24, ge=1, le=48),
 ):
     """Return all Pod lifecycles captured during the requested window."""
     timeline = await PersistedResourceMetricsService().build_pod_timeline(

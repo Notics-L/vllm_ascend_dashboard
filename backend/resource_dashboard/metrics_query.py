@@ -18,6 +18,7 @@ from contracts.schemas import (
     ResourceQuantity,
 )
 from infrastructure.persistence.models import (
+    CIResult,
     KubernetesClusterConfig,
     NpuOccupancyRawEnv,
     ResourceNodeMetrics,
@@ -128,6 +129,20 @@ class PersistedResourceMetricsService:
             )
         ).scalars().all()
         metadata_by_key = self._history_metadata_by_pod_key(rows)
+        run_ids = {
+            metadata.get("workflow_run_id")
+            for metadata in metadata_by_key.values()
+            if isinstance(metadata.get("workflow_run_id"), int)
+        }
+        workflow_names_by_run_id = {}
+        if run_ids:
+            workflow_names_by_run_id = {
+                row.run_id: row.workflow_name
+                for row in (
+                    await db.execute(select(CIResult).where(CIResult.run_id.in_(run_ids)))
+                ).scalars().all()
+                if row.workflow_name
+            }
         for pod in pods:
             metadata = metadata_by_key.get((pod.namespace, pod.name))
             if metadata is None:
@@ -135,6 +150,13 @@ class PersistedResourceMetricsService:
             for field, value in metadata.items():
                 if value is not None and getattr(pod, field, None) is None:
                     setattr(pod, field, value)
+            # The pod-history workflow ref identifies the implementation file
+            # (for example ``_e2e_nightly_multi_node.yaml``).  The CI run
+            # record owns the user-facing workflow name such as ``Nightly-A3``.
+            run_id = metadata.get("workflow_run_id")
+            workflow_name = workflow_names_by_run_id.get(run_id)
+            if workflow_name:
+                pod.workflow_path = workflow_name
 
     @staticmethod
     def _history_metadata_by_pod_key(payloads: Iterable[object]) -> dict[tuple[str, str], dict]:
