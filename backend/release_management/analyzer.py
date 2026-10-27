@@ -177,12 +177,12 @@ class ReleaseAnalyzer:
                 "date": r.created_at_remote.strftime("%Y-%m-%d") if r.created_at_remote else "",
                 "date_full": r.created_at_remote.strftime("%Y-%m-%d %H:%M:%S") if r.created_at_remote else "",
                 "created": (r.created_at_remote or datetime.min).isoformat(),
-                "run_id": r.github_run_id,
+                "run_id": str(r.github_run_id) if r.github_run_id else "",
                 "status": r.status,
-                "wait": r.wait_duration,
-                "exec": r.exec_duration,
-                "wall": r.wall_duration,
-                "jobs": r.num_jobs,
+                "wait": float(r.wait_duration or 0),
+                "exec": float(r.exec_duration or 0),
+                "wall": float(r.wall_duration or 0),
+                "jobs": int(r.num_jobs or 0),
             }
             for r in sorted_runs
         ]

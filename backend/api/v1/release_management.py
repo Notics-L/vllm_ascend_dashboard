@@ -502,40 +502,10 @@ async def export_sync_pdf(
     if task.status == "pending":
         raise HTTPException(400, "任务还在等待中，无法导出")
 
-    wf = await db.get(ReleaseWorkflow, task.workflow_id)
-    wf_name = wf.workflow_name if wf else f"workflow_{task.workflow_id}"
-
-    svc = ReleaseManagementService(db, _make_github())
-    overview = await svc.get_overview(workflow_ids=[task.workflow_id], days_back=task.days_back or 30)
-
-    runs_data = await svc.get_runs(workflow_ids=[task.workflow_id], page=1, page_size=500)
-    runs = runs_data.get("runs", [])
-
-    groups_stmt = (
-        select(ReleaseBuildRun)
-        .where(ReleaseBuildRun.workflow_id == task.workflow_id)
-        .order_by(ReleaseBuildRun.created_at_remote.desc())
-        .limit(100)
-    )
-    run_records = (await db.execute(groups_stmt)).scalars().all()
-
-    from release_management.analyzer import ReleaseAnalyzer
-
-    analyzer = ReleaseAnalyzer(db)
-    all_groups = []
-    for run_rec in run_records:
-        detail = await analyzer.get_run_detail(run_rec.id)
-        if detail:
-            all_groups.extend(detail.get("groups", []))
+    wf_name, overview, runs, all_groups = await _load_export_data(db, [task.workflow_id])
 
     rg = ReportGenerator()
-    pdf_bytes, filename = await rg.generate_pdf(
-        workflow_name=wf_name,
-        stats=overview.get("stats", {}),
-        runs=runs,
-        groups=all_groups,
-        evaluation=overview.get("evaluation"),
-    )
+    pdf_bytes, filename = await rg.generate_pdf(**_build_report_kwargs(wf_name, overview, runs, all_groups))
 
     return StreamingResponse(
         BytesIO(pdf_bytes),
@@ -1045,6 +1015,63 @@ async def _build_evaluation_detail(e) -> dict:
 
 # ==================== Export ====================
 
+
+async def _load_export_data(
+    db: DbSession, workflow_ids: list[int], limit: int = 100
+) -> tuple[str, dict, list[dict], list[dict]]:
+    """Load shared data for PDF/Excel export: (workflow_name, overview, runs, groups)"""
+    from release_management.analyzer import ReleaseAnalyzer
+
+    svc = ReleaseManagementService(db, _make_github())
+    overview = await svc.get_overview(workflow_ids=workflow_ids, days_back=30)
+
+    runs_data = await svc.get_runs(workflow_ids=workflow_ids, page=1, page_size=500)
+    runs = runs_data.get("runs", [])
+
+    wf_result = await db.execute(
+        select(ReleaseWorkflow.workflow_name)
+        .where(ReleaseWorkflow.id.in_(workflow_ids))
+        .limit(1)
+    )
+    wf_name = wf_result.scalar_one_or_none() or "构建分析"
+
+    run_records = (await db.execute(
+        select(ReleaseBuildRun)
+        .where(ReleaseBuildRun.workflow_id.in_(workflow_ids))
+        .order_by(ReleaseBuildRun.created_at_remote.desc())
+        .limit(limit)
+    )).scalars().all()
+
+    analyzer = ReleaseAnalyzer(db)
+    all_groups = []
+    for rec in run_records:
+        detail = await analyzer.get_run_detail(rec.id)
+        if detail:
+            all_groups.extend(detail.get("groups", []))
+
+    return wf_name, overview, runs, all_groups
+
+
+def _build_report_kwargs(
+    workflow_name: str, overview: dict, runs: list[dict], groups: list[dict]
+) -> dict:
+    """Build keyword dict for generate_pdf / generate_excel calls."""
+    return {
+        "workflow_name": workflow_name,
+        "stats": overview.get("stats", {}),
+        "runs": runs,
+        "groups": groups,
+        "failed_runs": [r for r in runs if r.get("status") == "failure"],
+        "evaluation": overview.get("evaluation"),
+        "timeline": overview.get("timeline", []),
+        "phase_data": overview.get("phase_data", []),
+        "target_data": overview.get("target_data", []),
+        "arch_data": overview.get("arch_data", []),
+        "step_data": overview.get("step_data", []),
+        "run_breakdown": overview.get("run_breakdown", []),
+    }
+
+
 @router.post("/release-management/export/excel")
 async def export_excel(
     db: DbSession,
@@ -1059,46 +1086,10 @@ async def export_excel(
         select(ReleaseWorkflow.id).where(ReleaseWorkflow.enabled)
     )).all()]
 
-    svc = ReleaseManagementService(db, _make_github())
-    overview = await svc.get_overview(workflow_ids=ids, days_back=days_back)
-
-    runs_data = await svc.get_runs(workflow_ids=ids, page=1, page_size=500)
-    runs = runs_data.get("runs", [])
-
-    wf_name = "构建分析"
-    wf_result = await db.execute(
-        select(ReleaseWorkflow.workflow_name).where(
-            ReleaseWorkflow.id.in_(ids)
-        ).limit(1)
-    )
-    wf_row = wf_result.scalar_one_or_none()
-    if wf_row:
-        wf_name = wf_row
-
-    groups_stmt = (
-        select(ReleaseBuildRun)
-        .where(ReleaseBuildRun.workflow_id.in_(ids))
-        .order_by(ReleaseBuildRun.created_at_remote.desc())
-        .limit(100)
-    )
-    run_records = (await db.execute(groups_stmt)).scalars().all()
-
-    from release_management.analyzer import ReleaseAnalyzer
-    analyzer = ReleaseAnalyzer(db)
-    all_groups = []
-    for run_rec in run_records:
-        detail = await analyzer.get_run_detail(run_rec.id)
-        if detail:
-            all_groups.extend(detail.get("groups", []))
+    wf_name, overview, runs, all_groups = await _load_export_data(db, ids)
 
     rg = ReportGenerator()
-    excel_bytes = await rg.generate_excel(
-        workflow_name=wf_name,
-        stats=overview.get("stats", {}),
-        runs=runs,
-        groups=all_groups,
-        evaluation=overview.get("evaluation"),
-    )
+    excel_bytes = await rg.generate_excel(**_build_report_kwargs(wf_name, overview, runs, all_groups))
 
     return StreamingResponse(
         BytesIO(excel_bytes),
@@ -1122,46 +1113,10 @@ async def export_pdf(
         select(ReleaseWorkflow.id).where(ReleaseWorkflow.enabled)
     )).all()]
 
-    svc = ReleaseManagementService(db, _make_github())
-    overview = await svc.get_overview(workflow_ids=ids, days_back=days_back)
-
-    runs_data = await svc.get_runs(workflow_ids=ids, page=1, page_size=500)
-    runs = runs_data.get("runs", [])
-
-    wf_name = "vLLM Ascend 发布件构建"
-    if ids:
-        wf_result = await db.execute(
-            select(ReleaseWorkflow.last_remote_name)
-            .where(ReleaseWorkflow.id == ids[0])
-        )
-        wf_row = wf_result.scalar_one_or_none()
-        if wf_row:
-            wf_name = wf_row
-
-    groups_stmt = (
-        select(ReleaseBuildRun)
-        .where(ReleaseBuildRun.workflow_id.in_(ids))
-        .order_by(ReleaseBuildRun.created_at_remote.desc())
-        .limit(100)
-    )
-    run_records = (await db.execute(groups_stmt)).scalars().all()
-
-    from release_management.analyzer import ReleaseAnalyzer
-    analyzer = ReleaseAnalyzer(db)
-    all_groups = []
-    for run_rec in run_records:
-        detail = await analyzer.get_run_detail(run_rec.id)
-        if detail:
-            all_groups.extend(detail.get("groups", []))
+    wf_name, overview, runs, all_groups = await _load_export_data(db, ids)
 
     rg = ReportGenerator()
-    pdf_bytes, filename = await rg.generate_pdf(
-        workflow_name=wf_name,
-        stats=overview.get("stats", {}),
-        runs=runs,
-        groups=all_groups,
-        evaluation=overview.get("evaluation"),
-    )
+    pdf_bytes, filename = await rg.generate_pdf(**_build_report_kwargs(wf_name, overview, runs, all_groups))
 
     return StreamingResponse(
         BytesIO(pdf_bytes),

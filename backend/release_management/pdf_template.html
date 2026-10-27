@@ -15,21 +15,23 @@
   body { font-family: "WenQuanYi Micro Hei", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 11px; color: #333; }
 
   h1 { font-size: 20px; text-align: center; margin: 24px 0 4px; color: #1F4E79; border-bottom: 3px solid #2E75B6; padding-bottom: 10px; }
-  h2 { font-size: 14px; margin: 20px 0 8px; color: #2E75B6; border-left: 3px solid #2E75B6; padding-left: 8px; page-break-before: auto; page-break-inside: avoid; }
+  h2 { font-size: 14px; margin: 16px 0 6px; color: #2E75B6; border-left: 3px solid #2E75B6; padding-left: 8px; page-break-before: avoid; }
+  h3 { font-size: 12px; margin: 14px 0 6px; color: #555; }
   .meta { text-align: center; color: #666; margin-bottom: 16px; font-size: 10px; }
 
-  .kpi-row { display: flex; gap: 10px; margin: 12px 0 16px; flex-wrap: wrap; }
-  .kpi-card { flex: 1; min-width: 120px; background: #f0f4f8; border-radius: 6px; padding: 10px; text-align: center; border-top: 3px solid #2E75B6; }
-  .kpi-card .value { font-size: 22px; font-weight: bold; color: #1F4E79; }
-  .kpi-card .label { font-size: 10px; color: #666; margin-top: 2px; }
-  .kpi-green { border-top-color: #52c41a; }
-  .kpi-green .value { color: #52c41a; }
-  .kpi-red { border-top-color: #ff4d4f; }
-  .kpi-red .value { color: #ff4d4f; }
-  .kpi-orange { border-top-color: #faad14; }
-  .kpi-orange .value { color: #d48806; }
-  .kpi-cyan { border-top-color: #17a2b8; }
-  .kpi-cyan .value { color: #17a2b8; }
+   .kpi-table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; border: none; }
+   .kpi-table td { border: none; padding: 8px 4px; text-align: center; background: #f0f4f8; }
+   .kpi-table .value { display: block; font-size: 20px; font-weight: bold; color: #1F4E79; }
+   .kpi-table .label { display: block; font-size: 9px; color: #666; margin-top: 2px; }
+   .kpi-green { border-top: 3px solid #52c41a; }
+   .kpi-green .value { color: #52c41a; }
+   .kpi-red { border-top: 3px solid #ff4d4f; }
+   .kpi-red .value { color: #ff4d4f; }
+   .kpi-orange { border-top: 3px solid #faad14; }
+   .kpi-orange .value { color: #d48806; }
+   .kpi-cyan { border-top: 3px solid #17a2b8; }
+   .kpi-cyan .value { color: #17a2b8; }
+   .kpi-blue { border-top: 3px solid #2E75B6; }
 
   table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 9px; page-break-inside: auto; }
   thead { display: table-header-group; }
@@ -46,21 +48,39 @@
   .status-running { color: #1890ff; }
   .status-action_required { color: #fa8c16; }
 
-  .risk-high { background: #ff4d4f; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
-  .risk-medium { background: #faad14; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
-  .risk-low { background: #52c41a; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; }
-
-  .section { margin: 8px 0 16px; }
-  .note { background: #fff7e6; border-left: 3px solid #faad14; padding: 8px; margin: 8px 0; font-size: 10px; border-radius: 0 4px 4px 0; }
-
-  .eval-grid { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
-  .eval-card { flex: 1; min-width: 100px; background: #f5f5f5; border-radius: 6px; padding: 8px; text-align: center; }
+   .eval-table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+   .eval-table td { padding: 8px 4px; text-align: center; background: #f5f5f5; }
+   .eval-table .score { display: block; font-size: 18px; font-weight: bold; color: #1F4E79; }
+   .eval-table .dim { display: block; font-size: 10px; color: #666; }
   .eval-card .score { font-size: 18px; font-weight: bold; color: #1F4E79; }
   .eval-card .dim { font-size: 10px; color: #666; }
 
   .stat-table { width: auto; margin: 8px 0; }
   .stat-table td { padding: 2px 6px; border: 1px solid #ddd; font-size: 9px; }
   .stat-table td:first-child { font-weight: bold; background: #f0f4f8; text-align: left; }
+
+  .note { background: #fff7e6; border-left: 3px solid #faad14; padding: 8px; margin: 8px 0; font-size: 10px; border-radius: 0 4px 4px 0; }
+  .alert { background: #fff1f0; border-left: 3px solid #ff4d4f; padding: 8px; margin: 8px 0; font-size: 10px; border-radius: 0 4px 4px 0; }
+
+   /* Bar Chart as table with Unicode blocks — WeasyPrint 100% compatible */
+   .bar-chart { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 10px; }
+   .bar-chart td { padding: 3px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
+   .bar-chart .bar-label-cell { width: 120px; text-align: right; white-space: nowrap; overflow: hidden; }
+   .bar-chart .bar-val-cell { width: 120px; text-align: left; }
+   .bar-chart .bar-visual-cell { font-family: monospace; font-size: 11px; line-height: 1.2; letter-spacing: 0; text-align: left; }
+   .bar-on { color: #1a73e8; }
+   .bar-wait { color: #e8a000; }
+   .bar-exec { color: #1a73e8; }
+   .bar-off { color: transparent; }
+   .pie-seg { font-weight: bold; }
+   .pie-seg-list { display: inline; font-size: 10px; margin-right: 10px; }
+
+   .pie-dot { display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 4px; }
+   .pie-legend-item { display: inline; margin-right: 14px; font-size: 10px; }
+
+  .sub-table { width: 100%; border-collapse: collapse; font-size: 9px; margin: 4px 0; }
+  .sub-table th { background: #f0f4f8; color: #333; padding: 3px 4px; text-align: center; font-weight: bold; border-bottom: 2px solid #2E75B6; }
+  .sub-table td { padding: 2px 4px; border-bottom: 1px solid #eee; text-align: center; }
 </style>
 </head>
 <body>
@@ -68,50 +88,209 @@
 <h1>{{ workflow_name | e }} 构建分析报告</h1>
 <p class="meta">生成时间: {{ generated_at }}</p>
 
-{# ===== KPI 概览 ===== #}
+{# ===== 1. KPI 概览 ===== #}
 <h2>1. 构建概览</h2>
+<table class="kpi-table">
+  <tr>
+    <td class="kpi-blue"><span class="value">{{ stats.get('total', 0) }}</span><span class="label">总构建次数</span></td>
+    <td class="kpi-green"><span class="value">{{ stats.get('successful', 0) }}</span><span class="label">成功次数</span></td>
+    <td class="kpi-red"><span class="value">{{ stats.get('failed', 0) }}</span><span class="label">失败次数</span></td>
+    <td class="kpi-green"><span class="value">{{ stats.get('success_rate', 0) | round(1) }}%</span><span class="label">成功率</span></td>
+    <td class="kpi-orange"><span class="value">{{ fmt_duration(stats.get('avg_exec', 0)) }}</span><span class="label">平均执行耗时</span></td>
+    <td class="kpi-cyan"><span class="value">{{ stats.get('abnormal_count', 0) }}</span><span class="label">异常慢构建</span></td>
+  </tr>
+</table>
+
 <table class="stat-table">
-  <tr><td>生成时间</td><td>{{ generated_at }}</td>
-      <td>运行总数</td><td>{{ stats.get('total', 0) }}</td></tr>
-  <tr><td>成功次数</td><td>{{ stats.get('successful', 0) }}</td>
-      <td>失败次数</td><td>{{ stats.get('failed', 0) }}</td></tr>
-  <tr><td>成功率</td><td>{{ stats.get('success_rate', 0) | round(1) }}%</td>
-      <td>平均执行耗时</td><td>{{ fmt_duration(stats.get('avg_exec', 0)) }}</td></tr>
   <tr><td>最短执行耗时</td><td>{{ fmt_duration(stats.get('min_exec', 0)) }}</td>
       <td>最长执行耗时</td><td>{{ fmt_duration(stats.get('max_exec', 0)) }}</td></tr>
   <tr><td>耗时波动率 (CV)</td><td>{{ stats.get('cv_exec', 0) | round(1) }}%</td>
       <td>平均排队时间</td><td>{{ fmt_duration(stats.get('avg_wait', 0)) }}</td></tr>
   <tr><td>平均墙钟总耗时</td><td>{{ fmt_duration(stats.get('avg_wall', 0)) }}</td>
-      <td>异常慢构建</td><td>{{ stats.get('abnormal_count', 0) }}</td></tr>
-  <tr><td>严重排队次数</td><td>{{ stats.get('long_wait_count', 0) }}</td>
-      <td></td><td></td></tr>
+      <td>严重排队次数</td><td>{{ stats.get('long_wait_count', 0) }}</td></tr>
 </table>
 
-{% if evaluation %}
-<h2>6. AI 可信度评估摘要</h2>
-<div class="eval-grid">
-  <div class="eval-card">
-    <div class="score">{{ evaluation.get('trust_score', 0) | round(1) }}</div>
-    <div class="dim">可信度评分 (/100)</div>
-  </div>
-  <div class="eval-card">
-    <div class="score">{{ evaluation.get('trust_level', 'N/A') }}</div>
-    <div class="dim">可信度等级</div>
-  </div>
-  <div class="eval-card">
-    <div class="score">{{ '是' if evaluation.get('production_ready') else '否' }}</div>
-    <div class="dim">是否生产级</div>
-  </div>
+{# ===== 2. 构建通过率 ===== #}
+{% if stats.get('total', 0) > 0 %}
+<h2>2. 构建通过率</h2>
+<div class="pie-legend">
+  <span class="pie-legend-item"><span class="pie-dot" style="background:#52c41a"></span>成功 {{ stats.get('successful', 0) }} ({{ (stats.get('successful',0)/max(stats.get('total',1),1)*100) | round(1) }}%)</span>
+  <span class="pie-legend-item"><span class="pie-dot" style="background:#ff4d4f"></span>失败 {{ stats.get('failed', 0) }} ({{ (stats.get('failed',0)/max(stats.get('total',1),1)*100) | round(1) }}%)</span>
+  {% if stats.get('cancelled', 0) %}<span class="pie-legend-item"><span class="pie-dot" style="background:#999"></span>取消 {{ stats.get('cancelled', 0) }} ({{ (stats.get('cancelled',0)/max(stats.get('total',1),1)*100) | round(1) }}%)</span>{% endif %}
 </div>
-{% if evaluation.get('executive_summary') %}
-<div class="note">
-  <strong>执行摘要:</strong> {{ evaluation.get('executive_summary', '') }}
-</div>
+
+<table class="bar-chart">
+  <tr>
+    <td class="bar-label-cell">成功率</td>
+    <td class="bar-visual-cell">{{ bar(stats.get('success_rate', 0), 100, 25) | safe }} {{ stats.get('success_rate', 0) | round(1) }}%</td>
+    <td class="bar-val-cell">{{ stats.get('successful', 0) }}/{{ stats.get('total', 0) }}</td>
+  </tr>
+</table>
+
+{% if stats.get('cv_exec', 0) > 0 %}
+<table class="bar-chart">
+  <tr>
+    <td class="bar-label-cell">耗时稳定性</td>
+    <td class="bar-visual-cell">{{ bar(max(100 - stats.get('cv_exec', 0), 0), 100, 25) | safe }} {{ (100 - stats.get('cv_exec', 0)) | round(1) }}%</td>
+    <td class="bar-val-cell">CV={{ stats.get('cv_exec', 0) | round(1) }}%</td>
+  </tr>
+</table>
 {% endif %}
 {% endif %}
 
-{# ===== 最近运行记录 ===== #}
-<h2>2. 最近运行记录</h2>
+{# ===== 3. 阶段耗时分析 ===== #}
+{% if phase_data %}
+<h2>3. 阶段耗时分析</h2>
+
+{# Phase pie-like proportional bar #}
+<div style="font-size:10px;margin:4px 0 8px;">
+  <span style="font-weight:bold;">耗时占比:</span> {{ pie_segments(phase_data, phase_total_all, 25) | safe }}
+  <span style="margin-left:8px;">(总耗时 {{ fmt_duration(phase_total_all) }})</span>
+</div>
+<div style="font-size:9px;margin:0 0 8px;font-family:monospace;">
+  {% set colors = ['#2E75B6','#5ada7a','#fd9a31','#e06024','#9f7aea','#17a2b8'] %}
+  {% for p in phase_data %}
+  {% set pct = (p.get('total',0)/max(phase_total_all,1)*100) | round(1) %}
+  <span style="margin-right:10px;"><span style="color:{{ colors[loop.index0 % 6] }}">■</span> {{ p.get('name', '') }} {{ pct }}%</span>
+  {% endfor %}
+</div>
+
+<table class="bar-chart">
+  {% for p in phase_data %}
+  <tr>
+    <td class="bar-label-cell">{{ p.get('name', '') }}</td>
+    <td class="bar-visual-cell">{{ bar(p.get('total', 0), max_phase_total, 25) | safe }} {{ fmt_duration(p.get('total', 0)) }}</td>
+    <td class="bar-val-cell">x{{ p.get('count', 0) }} / avg {{ fmt_duration(p.get('avg', 0)) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<table class="sub-table">
+  <tr><th>阶段</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>最长耗时</th></tr>
+  {% for p in phase_data %}
+  <tr><td>{{ p.get('name', '') }}</td><td>{{ p.get('count', 0) }}</td>
+      <td>{{ fmt_duration(p.get('total', 0)) }}</td><td>{{ fmt_duration(p.get('avg', 0)) }}</td>
+      <td>{{ fmt_duration(p.get('max', 0)) }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 4. 目标耗时分析 ===== #}
+{% if target_data %}
+<h2>4. 目标耗时分析</h2>
+<table class="bar-chart">
+  {% for t in target_data[:10] %}
+  <tr>
+    <td class="bar-label-cell">{{ t.get('name', '')[:30] }}</td>
+    <td class="bar-visual-cell">{{ bar(t.get('avg', 0), max_target_avg, 25) | safe }} {{ fmt_duration(t.get('avg', 0)) }}</td>
+    <td class="bar-val-cell">min {{ fmt_duration(t.get('min', 0)) }} / max {{ fmt_duration(t.get('max', 0)) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 5. 架构分布 ===== #}
+{% if arch_data %}
+<h2>5. 架构分布</h2>
+<table class="bar-chart">
+  {% for a in arch_data %}
+  <tr>
+    <td class="bar-label-cell">{{ a.get('name', '') }}</td>
+    <td class="bar-visual-cell">{{ bar(a.get('total', 0), max_arch_total, 25) | safe }} {{ fmt_duration(a.get('total', 0)) }}</td>
+    <td class="bar-val-cell">x{{ a.get('count', 0) }} / avg {{ fmt_duration(a.get('avg', 0)) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<table class="sub-table">
+  <tr><th>架构</th><th>构建次数</th><th>总耗时</th><th>平均耗时</th></tr>
+  {% for a in arch_data %}
+  <tr><td>{{ a.get('name', '') }}</td><td>{{ a.get('count', 0) }}</td>
+      <td>{{ fmt_duration(a.get('total', 0)) }}</td><td>{{ fmt_duration(a.get('avg', 0)) }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 6. Top20 慢 Step ===== #}
+{% if step_data %}
+<h2>6. Top20 慢 Step 分析</h2>
+<table class="bar-chart">
+  {% for s in step_data[:10] %}
+  <tr>
+    <td class="bar-label-cell">{{ s.get('name', '')[:30] }}</td>
+    <td class="bar-visual-cell">{{ bar(s.get('total', 0), max_step_total, 25) | safe }} {{ fmt_duration(s.get('total', 0)) }}</td>
+    <td class="bar-val-cell">x{{ s.get('count', 0) }} / avg {{ fmt_duration(s.get('avg', 0)) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<table class="sub-table">
+  <tr><th>#</th><th>Step 名称</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>最长耗时</th></tr>
+  {% for s in step_data %}
+  <tr><td>{{ loop.index }}</td><td class="left">{{ s.get('name', '') }}</td>
+      <td>{{ s.get('count', 0) }}</td><td>{{ fmt_duration(s.get('total', 0)) }}</td>
+      <td>{{ fmt_duration(s.get('avg', 0)) }}</td><td>{{ fmt_duration(s.get('max', 0)) }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 7. 最慢构建 ===== #}
+{% if run_breakdown %}
+<h2>7. Top15 最慢构建</h2>
+<table class="sub-table">
+  <tr><th>#</th><th>运行ID</th><th>日期</th><th>状态</th><th>排队</th><th>执行</th><th>墙钟</th><th>Jobs</th></tr>
+  {% for b in run_breakdown %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ b.get('run_id', '') }}</td>
+    <td>{{ b.get('date', '') }}</td>
+    <td class="status-{{ b.get('status', '') }}">{{ status_label(b.get('status', '')) }}</td>
+    <td>{{ fmt_duration(b.get('wait', 0)) }}</td>
+    <td>{{ fmt_duration(b.get('exec', 0)) }}</td>
+    <td>{{ fmt_duration(b.get('wall', 0)) }}</td>
+    <td>{{ b.get('jobs', 0) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 8. 失败构建 ===== #}
+{% if failed_runs %}
+<h2>8. 失败构建明细</h2>
+<table class="sub-table">
+  <tr><th>#</th><th>运行ID</th><th>状态</th><th>分支</th><th>事件</th><th>创建时间</th><th>墙钟耗时</th><th>Jobs</th></tr>
+  {% for r in failed_runs[:15] %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ r.get('github_run_id', '') }}</td>
+    <td class="status-failure">{{ status_label(r.get('status', '')) }}</td>
+    <td>{{ r.get('branch', '') }}</td>
+    <td>{{ r.get('event', '') }}</td>
+    <td>{{ r.get('created_at', '')[:16] if r.get('created_at') else '' }}</td>
+    <td>{{ fmt_duration(r.get('wall_duration', 0)) }}</td>
+    <td>{{ r.get('num_jobs', 0) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 9. 构建耗时趋势 ===== #}
+{% if timeline %}
+<h2>9. 构建耗时趋势</h2>
+<div style="font-size:9px;margin-bottom:4px;font-family:monospace;">
+  <span>图例: <span class="bar-wait">▓▓</span> 排队 &nbsp; <span class="bar-exec">▓▓</span> 执行 &nbsp; 空白=空闲</span>
+</div>
+<table class="bar-chart">
+  {% for t in timeline %}
+  <tr>
+    <td class="bar-label-cell">{{ t.get('date', '') }}<br/><span style="font-size:8px;color:#999;">#{{ t.get('run_id', '') }}</span></td>
+    <td class="bar-visual-cell">{{ stacked_bar(t.get('wait', 0), t.get('exec', 0), max_timeline_wall, 25) | safe }}</td>
+    <td class="bar-val-cell">{{ fmt_duration(t.get('wall', 0)) }}<br/><span style="font-size:8px;color:#999;">排 {{ fmt_duration(t.get('wait', 0)) }} / 执 {{ fmt_duration(t.get('exec', 0)) }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{# ===== 10. 最近运行记录 ===== #}
+{% if runs %}
+<h2>10. 最近运行记录</h2>
 <div class="section">
 <table>
   <thead>
@@ -127,7 +306,7 @@
       <td class="status-{{ r.get('status', '') }}">{{ status_label(r.get('status', '')) }}</td>
       <td>{{ r.get('branch', '') }}</td>
       <td>{{ r.get('event', '') }}</td>
-      <td>{{ r.get('created_at', '') }}</td>
+      <td>{{ r.get('created_at', '')[:16] if r.get('created_at') else '' }}</td>
       <td>{{ fmt_duration(r.get('wait_duration', 0)) }}</td>
       <td>{{ fmt_duration(r.get('exec_duration', 0)) }}</td>
       <td>{{ fmt_duration(r.get('wall_duration', 0)) }}</td>
@@ -137,10 +316,11 @@
   </tbody>
 </table>
 </div>
+{% endif %}
 
-{# ===== Job Group 层级数据 ===== #}
+{# ===== 11. Job Group 层级数据 ===== #}
 {% if groups %}
-<h2>3. Job Group 层级数据</h2>
+<h2>11. Job Group 层级数据</h2>
 <div class="section">
 <table>
   <thead>
@@ -166,6 +346,23 @@
   </tbody>
 </table>
 </div>
+{% endif %}
+
+{# ===== AI 评估 ===== #}
+{% if evaluation %}
+<h2>AI 可信度评估摘要</h2>
+<table class="eval-table">
+  <tr>
+    <td><span class="score">{{ evaluation.get('trust_score', 0) | round(1) }}</span><span class="dim">可信度评分 (/100)</span></td>
+    <td><span class="score">{{ evaluation.get('trust_level', 'N/A') }}</span><span class="dim">可信度等级</span></td>
+    <td><span class="score">{{ '是' if evaluation.get('production_ready') else '否' }}</span><span class="dim">是否生产级</span></td>
+  </tr>
+</table>
+{% if evaluation.get('executive_summary') %}
+<div class="note">
+  <strong>执行摘要:</strong> {{ evaluation.get('executive_summary', '') }}
+</div>
+{% endif %}
 {% endif %}
 
 <div class="note">
