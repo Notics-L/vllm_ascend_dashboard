@@ -105,6 +105,13 @@ def project_identity(env: dict) -> tuple[str | None, str | None]:
             owner, repo = normalized_repository.split("/", 1)
             if owner and repo:
                 return owner, repo
+        # Some legacy payloads supply a canonical organization alongside a
+        # hyphenated full project identifier (``sgl-project-sglang``).  The
+        # matching organization makes this conversion unambiguous; do not
+        # split arbitrary hyphenated repository names.
+        legacy_match = re.fullmatch(r"(?P<owner>.+-project)-(?P<repo>.+)", normalized_repository)
+        if legacy_match and legacy_match["owner"].lower() == organization.lower():
+            return organization, legacy_match["repo"]
         return organization, repository
 
     candidate = repository or organization

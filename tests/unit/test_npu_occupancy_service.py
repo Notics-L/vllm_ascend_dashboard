@@ -79,6 +79,22 @@ def test_legacy_hyphenated_project_identifier_is_canonicalized_for_github_links(
     assert record.run_url == "https://github.com/sgl-project/sglang/actions/runs/123"
 
 
+def test_legacy_hyphenated_repository_is_canonicalized_when_organization_is_present():
+    snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
+    env = _env(env_id="sglang", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8)
+    env["extend_env_comments"] = {
+        "organization": "sgl-project",
+        "repository": "sgl-project-sglang",
+        "workflow_run_id": 123,
+        "job_display_name": "PR Test (NPU)",
+    }
+
+    record = normalize_records([env], snapshot)[0]
+
+    assert (record.organization, record.repository, record.project) == ("sgl-project", "sglang", "sgl-project/sglang")
+    assert record.run_url == "https://github.com/sgl-project/sglang/actions/runs/123"
+
+
 def test_job_repository_is_used_when_arc_payload_omits_repository():
     snapshot = datetime(2026, 9, 1, 10, 10, tzinfo=UTC)
     env = _env(env_id="arc-sglang", cluster="gy-004", status="active", created="2026-09-01T10:00:00Z", expires=None, cards=8)

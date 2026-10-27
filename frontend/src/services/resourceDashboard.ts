@@ -85,6 +85,9 @@ export interface ResourcePodInfo {
   namespace: string
   name: string
   phase?: string | null
+  scheduling_reason?: string | null
+  scheduling_message?: string | null
+  node_selector?: Record<string, string>
   status?: string | null
   node_name?: string | null
   labels: Record<string, string>

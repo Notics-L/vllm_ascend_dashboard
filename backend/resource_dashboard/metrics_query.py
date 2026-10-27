@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from contracts.schemas import (
@@ -135,6 +135,7 @@ class PersistedResourceMetricsService:
             if isinstance(metadata.get("workflow_run_id"), int)
         }
         workflow_names_by_run_id = {}
+        github_workflow_names_by_run_id = {}
         if run_ids:
             workflow_names_by_run_id = {
                 row.run_id: row.workflow_name
@@ -142,6 +143,25 @@ class PersistedResourceMetricsService:
                     await db.execute(select(CIResult).where(CIResult.run_id.in_(run_ids)))
                 ).scalars().all()
                 if row.workflow_name
+            }
+            # Keep the queue's display name aligned with Occupancy Analysis.
+            # That page treats the GitHub workflow-run response as authoritative
+            # (``name``), while CIResult is only a fallback captured by our CI
+            # collector.  The link still comes from the workflow ref below.
+            metadata_rows = (
+                await db.execute(
+                    text("""
+                        SELECT run_id, workflow_name
+                        FROM github_workflow_run_metadata
+                        WHERE fetch_status = 'success' AND run_id IN :run_ids
+                    """).bindparams(bindparam("run_ids", expanding=True)),
+                    {"run_ids": list(run_ids)},
+                )
+            ).mappings().all()
+            github_workflow_names_by_run_id = {
+                int(row["run_id"]): row["workflow_name"]
+                for row in metadata_rows
+                if row["workflow_name"]
             }
         for pod in pods:
             metadata = metadata_by_key.get((pod.namespace, pod.name))
@@ -151,10 +171,14 @@ class PersistedResourceMetricsService:
                 if value is not None and getattr(pod, field, None) is None:
                     setattr(pod, field, value)
             # The pod-history workflow ref identifies the implementation file
-            # (for example ``_e2e_nightly_multi_node.yaml``).  The CI run
-            # record owns the user-facing workflow name such as ``Nightly-A3``.
+            # (for example ``_e2e_nightly_multi_node.yaml``).  Use the same
+            # GitHub workflow-run name as Occupancy Analysis; CIResult remains
+            # the fallback for runs whose GitHub metadata has not been cached.
             run_id = metadata.get("workflow_run_id")
-            workflow_name = workflow_names_by_run_id.get(run_id)
+            workflow_name = (
+                github_workflow_names_by_run_id.get(run_id)
+                or workflow_names_by_run_id.get(run_id)
+            )
             if workflow_name:
                 pod.workflow_path = workflow_name
 
@@ -359,6 +383,9 @@ class PersistedResourceMetricsService:
             namespace=str(item.get("namespace") or ""),
             name=str(item["name"]),
             phase=item.get("phase"),
+            scheduling_reason=item.get("scheduling_reason"),
+            scheduling_message=item.get("scheduling_message"),
+            node_selector=item.get("node_selector") or {},
             repository=item.get("repository"),
             repository_url=item.get("repository_url"),
             workflow_path=item.get("workflow_path"),

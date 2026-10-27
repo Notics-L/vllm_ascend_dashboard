@@ -14,6 +14,7 @@ from contracts.schemas import (
     KubernetesClusterUpdate,
     Message,
     ResourceDashboardResponse,
+    PodSchedulingDiagnosticsResponse,
     ResourcePodTimelineResponse,
 )
 from infrastructure.clients.kubernetes_client import encrypt_kubeconfig
@@ -195,6 +196,37 @@ async def get_cluster_summary(
     # not an unhandled 500 that repeatedly surfaces as a page-level popup.
     summary, _, _ = await service._safe_build_cluster_summary(cluster, label_selector, include_pods)
     return summary
+
+
+@router.get(
+    "/cluster/{cluster_id}/pods/{namespace}/{name}/scheduling",
+    response_model=PodSchedulingDiagnosticsResponse,
+)
+async def get_pod_scheduling_diagnostics(
+    db: DbSession,
+    current_user: CurrentUser,
+    cluster_id: int,
+    namespace: str,
+    name: str,
+):
+    """Expose a sanitized, read-only live Pod scheduling view to authenticated users."""
+    cluster = await db.scalar(select(KubernetesClusterConfig).where(
+        KubernetesClusterConfig.id == cluster_id,
+        KubernetesClusterConfig.enabled.is_(True),
+    ))
+    if not cluster:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="集群不存在或未启用")
+    if settings.RESOURCE_METRICS_REMOTE_URL:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="实时 Kubernetes 凭据由远端资源采集服务持有；请在该服务部署同一接口。",
+        )
+    try:
+        return await ResourceDashboardService().pod_scheduling_diagnostics(
+            cluster, namespace=namespace, name=name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc) or type(exc).__name__) from exc
 
 
 @router.get("/clusters", response_model=list[KubernetesClusterResponse])

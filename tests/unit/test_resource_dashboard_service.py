@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 from cryptography.fernet import InvalidToken
 
+from contracts.schemas import ResourcePodInfo, ResourceQuantity
 import resource_dashboard.service as resource_dashboard_service
 from resource_dashboard.metrics_query import PersistedResourceMetricsService
 from resource_dashboard.service import ResourceDashboardService, parse_job_workflow_ref
@@ -98,6 +99,60 @@ def test_pod_history_metadata_requires_one_exact_namespace_and_pod_name_match() 
     assert result[("vllm-project", "workload-0")]["repository"] == "acme/ml-ci"
     assert result[("vllm-project", "workload-0")]["run_url"] == "https://github.com/acme/ml-ci/actions/runs/123"
     assert PersistedResourceMetricsService._history_metadata_by_pod_key([payload, payload]) == {}
+
+
+@pytest.mark.asyncio
+async def test_pod_history_uses_same_github_workflow_name_as_occupancy_analysis() -> None:
+    payload = {
+        "name": "workload-0",
+        "source": "github-action",
+        "groups": {"vllm-project": {"device_count": 1}},
+        "extend_env_comments": {
+            "workflow_ref": "acme/ml-ci/.github/workflows/nightly.yml@refs/heads/main",
+            "workflow_run_id": "123",
+        },
+    }
+
+    class ScalarResult:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class MappingResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"run_id": 123, "workflow_name": "Nightly-A3 (PR 19513)"}]
+
+    class FakeDb:
+        def __init__(self):
+            self.responses = [
+                ScalarResult([payload]),
+                ScalarResult([SimpleNamespace(run_id=123, workflow_name="stale CI name")]),
+                MappingResult(),
+            ]
+
+        async def execute(self, _statement, _params=None):
+            return self.responses.pop(0)
+
+    pod = ResourcePodInfo(
+        cluster_id=1,
+        cluster_name="A3",
+        namespace="vllm-project",
+        name="workload-0",
+        requests=ResourceQuantity(npu=1),
+    )
+
+    await PersistedResourceMetricsService().enrich_pods_from_history(FakeDb(), [pod])
+
+    assert pod.workflow_path == "Nightly-A3 (PR 19513)"
+    assert pod.workflow_url == "https://github.com/acme/ml-ci/actions/workflows/nightly.yml"
 
 
 @pytest.mark.asyncio

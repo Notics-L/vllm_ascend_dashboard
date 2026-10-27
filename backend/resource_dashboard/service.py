@@ -28,6 +28,7 @@ _JOB_WORKFLOW_REF_PATTERN = re.compile(
     r"^(?:https://github\.com/)?(?P<repository>[^/\s]+/[^/\s]+)/"
     r"\.github/workflows/(?P<workflow_path>[^@\s]+)@(?P<ref>.+)$"
 )
+from kubernetes_asyncio.client import CoreV1Api
 
 
 def parse_job_workflow_ref(job_workflow_ref: str | None) -> dict[str, str | int] | None:
@@ -58,6 +59,48 @@ def parse_job_workflow_ref(job_workflow_ref: str | None) -> dict[str, str | int]
 class ResourceDashboardService:
     def __init__(self) -> None:
         self.client_factory = KubernetesClientFactory()
+
+    async def pod_scheduling_diagnostics(
+        self, cluster: KubernetesClusterConfig, *, namespace: str, name: str
+    ) -> dict[str, Any]:
+        """Read one live Pod with the server-held encrypted kubeconfig."""
+        api_client = await self.client_factory.create_api_client(cluster)
+        try:
+            pod = await CoreV1Api(api_client).read_namespaced_pod(
+                name=name, namespace=namespace, _request_timeout=30,
+            )
+        finally:
+            await api_client.close()
+
+        spec = pod.spec
+        status = pod.status
+        scheduled = next(
+            (condition for condition in (getattr(status, "conditions", None) or [])
+             if getattr(condition, "type", None) == "PodScheduled"),
+            None,
+        )
+        affinity = getattr(getattr(spec, "affinity", None), "node_affinity", None)
+        required_affinity = getattr(affinity, "required_during_scheduling_ignored_during_execution", None)
+        return {
+            "cluster_id": cluster.id,
+            "cluster_name": cluster.name,
+            "namespace": namespace,
+            "name": name,
+            "phase": getattr(status, "phase", None),
+            "node_name": getattr(spec, "node_name", None),
+            "scheduler_name": getattr(spec, "scheduler_name", None),
+            "priority_class_name": getattr(spec, "priority_class_name", None),
+            "resource_requests": self._pod_requests(pod, cluster.npu_resource_name),
+            "node_selector": dict(getattr(spec, "node_selector", None) or {}),
+            "required_node_affinity": required_affinity.to_dict() if required_affinity else None,
+            "tolerations": [toleration.to_dict() for toleration in (getattr(spec, "tolerations", None) or [])],
+            "pod_scheduled_condition": {
+                "status": getattr(scheduled, "status", None),
+                "reason": getattr(scheduled, "reason", None),
+                "message": getattr(scheduled, "message", None),
+                "last_transition_time": getattr(scheduled, "last_transition_time", None),
+            } if scheduled else None,
+        }
 
     async def build_dashboard(
         self,
@@ -398,6 +441,7 @@ class ResourceDashboardService:
             duration_seconds = int((end_time - started_at).total_seconds())
 
         workflow_info = self._pod_workflow_info(pod, runner_workflow_info) if pod.metadata else None
+        scheduling_reason, scheduling_message = self._scheduling_condition(status)
 
         return ResourcePodInfo(
             cluster_id=cluster.id,
@@ -405,6 +449,9 @@ class ResourceDashboardService:
             namespace=pod.metadata.namespace,
             name=pod.metadata.name,
             phase=status.phase if status else None,
+            scheduling_reason=scheduling_reason,
+            scheduling_message=scheduling_message,
+            node_selector=dict(getattr(pod.spec, "node_selector", None) or {}),
             status=self._container_status_summary(status),
             node_name=pod.spec.node_name,
             labels=pod.metadata.labels or {},
@@ -422,6 +469,14 @@ class ResourceDashboardService:
             requests=requests,
             containers=[container.name for container in pod.spec.containers or []],
         )
+
+    @staticmethod
+    def _scheduling_condition(status: Any) -> tuple[str | None, str | None]:
+        """Extract the Kubernetes scheduler explanation for a Pending Pod."""
+        for condition in getattr(status, "conditions", None) or []:
+            if getattr(condition, "type", None) == "PodScheduled" and getattr(condition, "status", None) != "True":
+                return getattr(condition, "reason", None), getattr(condition, "message", None)
+        return None, None
 
     def _finished_at(self, status: Any) -> datetime | None:
         if not status or not status.container_statuses:
