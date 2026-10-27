@@ -1131,6 +1131,7 @@ from .resource_dashboard import (
     ResourceNodeInfo,
     ResourcePodInfo,
     ResourcePodTimelineResponse,
+    PodSchedulingDiagnosticsResponse,
     ResourceQuantity,
 )
 from .resource_metrics import (
