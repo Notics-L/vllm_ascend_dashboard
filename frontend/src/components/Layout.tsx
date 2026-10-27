@@ -18,6 +18,7 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   CloudServerOutlined,
+  CloudUploadOutlined,
   CodeOutlined,
   DashboardOutlined,
   ExperimentOutlined,
@@ -54,6 +55,7 @@ const primaryNavigation: NavigationItem[] = [
       { key: '/project', icon: <GithubOutlined />, label: '项目动态' },
       { key: '/pr-pipeline', icon: <PullRequestOutlined />, label: 'PR 流水线' },
       { key: '/ci', icon: <CheckCircleOutlined />, label: 'CI 运行' },
+      { key: '/release-management', icon: <CloudUploadOutlined />, label: '发布件管理' },
     ],
   },
   {
@@ -101,6 +103,7 @@ const routeMeta = [
   { prefix: '/project', title: '项目动态', section: '研发交付' },
   { prefix: '/contributor-board', title: '贡献者分析', section: '研发交付' },
   { prefix: '/ci', title: 'CI 运行', section: '研发交付' },
+  { prefix: '/release-management', title: '发布件管理', section: '研发交付' },
   { prefix: '/logs', title: '日志中心', section: '资源与响应' },
   { prefix: '/user-stats', title: '用户统计', section: '管理中心' },
   { prefix: '/admin/smtp-config', title: '邮件服务', section: '管理中心' },

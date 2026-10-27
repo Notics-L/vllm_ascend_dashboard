@@ -75,6 +75,7 @@ packages = [
     "pr_pipeline",
     "project_dashboard",
     "resource_dashboard",
+    "release_management",
     "reporting",
     "scheduler",
     "seeds",

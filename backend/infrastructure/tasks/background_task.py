@@ -87,8 +87,21 @@ class BackgroundTaskTracker:
     async def ensure_table(db: AsyncSession) -> None:
         """确保任务记录表存在（幂等操作）"""
         try:
+            # 先检查表是否存在
+            result = await db.execute(text(f"""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_schema = DATABASE() 
+                AND table_name = '{BackgroundTaskTracker.TABLE_NAME}'
+            """))
+            table_exists = result.scalar() > 0
+            
+            if table_exists:
+                logger.debug("Table %s already exists", BackgroundTaskTracker.TABLE_NAME)
+                return
+            
+            logger.info("Creating table %s", BackgroundTaskTracker.TABLE_NAME)
             await db.execute(text(f"""
-                CREATE TABLE IF NOT EXISTS {BackgroundTaskTracker.TABLE_NAME} (
+                CREATE TABLE {BackgroundTaskTracker.TABLE_NAME} (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     task_type VARCHAR(100) NOT NULL,
                     task_params JSON,
@@ -107,8 +120,15 @@ class BackgroundTaskTracker:
                     INDEX idx_created_at (created_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """))
+            await db.commit()
+            logger.info("Table %s created successfully", BackgroundTaskTracker.TABLE_NAME)
         except Exception as e:
-            logger.warning("ensure_table failed (table may already exist): %s", e)
+            logger.error(
+                "Failed to ensure table %s exists: %s",
+                BackgroundTaskTracker.TABLE_NAME, e, exc_info=True
+            )
+            # 不重新抛出异常，允许继续执行（表可能已存在）
+            # 但记录详细错误以便排查
 
     # ── 任务创建与启动 ────────────────────────────────────────
 
@@ -124,25 +144,42 @@ class BackgroundTaskTracker:
 
         Returns:
             新创建的任务记录 ID
+        
+        Raises:
+            RuntimeError: 当表不存在时
         """
         import json as _json
 
-        result = await db.execute(
-            text(f"""
-                INSERT INTO {BackgroundTaskTracker.TABLE_NAME}
-                    (task_type, task_params, status, repo_name, progress_message)
-                VALUES (:task_type, :task_params, 'pending', :repo_name, '任务已创建，等待执行')
-            """),
-            {
-                "task_type": task_type,
-                "task_params": _json.dumps(task_params or {}),
-                "repo_name": repo_name,
-            },
-        )
-        task_id = result.lastrowid  # type: ignore[attr-defined]
-        await db.commit()
-        logger.info("Created background task %d type=%s", task_id, task_type)
-        return task_id
+        try:
+            result = await db.execute(
+                text(f"""
+                    INSERT INTO {BackgroundTaskTracker.TABLE_NAME}
+                        (task_type, task_params, status, repo_name, progress_message)
+                    VALUES (:task_type, :task_params, 'pending', :repo_name, '任务已创建，等待执行')
+                """),
+                {
+                    "task_type": task_type,
+                    "task_params": _json.dumps(task_params or {}),
+                    "repo_name": repo_name,
+                },
+            )
+            task_id = result.lastrowid  # type: ignore[attr-defined]
+            await db.commit()
+            logger.info("Created background task %d type=%s", task_id, task_type)
+            return task_id
+        except Exception as e:
+            logger.error(
+                "Failed to create background task (type=%s, repo=%s): %s",
+                task_type, repo_name, e, exc_info=True
+            )
+            # 检查是否是表不存在导致的错误
+            error_msg = str(e).lower()
+            if "table" in error_msg and "doesn't exist" in error_msg:
+                raise RuntimeError(
+                    f"Background task table '{BackgroundTaskTracker.TABLE_NAME}' does not exist. "
+                    "Please run database migration or call ensure_table() first."
+                ) from e
+            raise
 
     @staticmethod
     async def create_and_run(
