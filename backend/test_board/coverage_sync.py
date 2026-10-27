@@ -790,7 +790,10 @@ async def sync_pr_lines(
                 path, signature = await _download_with_signature(
                     signature=signature, destination=destination
                 )
-        result = await asyncio.to_thread(_process_line_coverage, path, signature, "ut")
+        # Aggregate line coverage from ALL test types (ut, e2e, other) to match
+        # what other internal reports show (80%+ vs 70%+ UT-only).
+        # Passing test_type=None tells _aggregate_raw_coverage to include every job.
+        result = await asyncio.to_thread(_process_line_coverage, path, signature, test_type=None)
         if result["status"] == "failed":
             # Keep the last usable snapshot in MySQL. The durable task and
             # sync status expose the current failure without blanking the UI.
