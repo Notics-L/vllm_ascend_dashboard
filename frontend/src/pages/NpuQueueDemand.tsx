@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import {
@@ -75,6 +75,12 @@ type TaskPod = ResourcePodInfo & {
   severity: "正常" | "关注" | "严重" | "阻塞" | "历史";
 };
 
+type WaitDiagnosis = {
+  summary: string;
+  schedulerMessage?: string | null;
+  idleNodes: string[];
+};
+
 const formatDuration = (seconds: number | null) => {
   if (seconds === null) return "—";
   if (seconds < 60) return `${seconds} 秒`;
@@ -108,6 +114,7 @@ export default function NpuQueueDemand() {
   const [timelineHours, setTimelineHours] = useState<number>(24);
   const [timelineEndOffsetHours, setTimelineEndOffsetHours] = useState(0);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const lastTimelineZoomAtRef = useRef(0);
   const [trendMode, setTrendMode] = useState<"current" | "history">("current");
   const [trendModeDirection, setTrendModeDirection] = useState<"forward" | "backward">("forward");
   const [taskMode, setTaskMode] = useState<"queue" | "cost">("cost");
@@ -364,10 +371,10 @@ export default function NpuQueueDemand() {
   }, [pendingPods, taskTimelineGeneratedAt, timelinePods]);
   const longestWait = useMemo(() => {
     const seconds = totals.longestLast24Hours;
-    if (seconds < 60) return { value: number(seconds), unit: "秒" };
+    if (seconds < 60) return { value: number(seconds), unit: "秒", suffix: "" };
     const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return { value: number(minutes), unit: "分钟" };
-    return { value: `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`, unit: "" };
+    if (minutes < 60) return { value: number(minutes), unit: "分钟", suffix: "" };
+    return { value: number(Math.floor(minutes / 60)), unit: "小时", suffix: `${minutes % 60} 分钟` };
   }, [totals.longestLast24Hours]);
   const taskPods = useMemo(() => {
     const snapshotAt = dayjs(taskTimelineGeneratedAt ?? undefined);
@@ -440,23 +447,25 @@ export default function NpuQueueDemand() {
   );
   const taskTimelineEnd = taskTimelineBaseEnd.subtract(timelineEndOffsetHours, "hour");
   const taskTimelineStart = taskTimelineEnd.subtract(timelineHours, "hour");
-  const handleTimelineWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+  const handleTimelineWheel = useCallback((deltaY: number, clientX: number) => {
+    // A trackpad can emit dozens of wheel events per gesture.  One zoom step
+    // every 240ms preserves deliberate, readable transitions.
+    if (Date.now() - lastTimelineZoomAtRef.current < 240) return;
     const currentIndex = TIMELINE_HOUR_OPTIONS.indexOf(timelineHours as typeof TIMELINE_HOUR_OPTIONS[number]);
     const nextIndex = Math.max(
       0,
       Math.min(
         TIMELINE_HOUR_OPTIONS.length - 1,
-        currentIndex + (event.deltaY > 0 ? 1 : -1),
+        currentIndex + (deltaY > 0 ? 1 : -1),
       ),
     );
     const nextHours = TIMELINE_HOUR_OPTIONS[nextIndex];
     if (nextHours === timelineHours) return;
-
-    event.preventDefault();
     const timelineBounds = timelineRef.current?.getBoundingClientRect();
-    const trackLeft = (timelineBounds?.left ?? event.currentTarget.getBoundingClientRect().left) + 190;
-    const trackWidth = Math.max(1, (timelineBounds?.right ?? event.currentTarget.getBoundingClientRect().right) - trackLeft);
-    const ratio = Math.max(0, Math.min(1, (event.clientX - trackLeft) / trackWidth));
+    if (!timelineBounds) return;
+    const trackLeft = timelineBounds.left + 190;
+    const trackWidth = Math.max(1, timelineBounds.right - trackLeft);
+    const ratio = Math.max(0, Math.min(1, (clientX - trackLeft) / trackWidth));
     const focusAt = taskTimelineStart.add(timelineHours * ratio, "hour");
     const earliest = taskTimelineBaseEnd.subtract(TIMELINE_MAX_HOURS, "hour");
     let nextStart = focusAt.subtract(nextHours * ratio, "hour");
@@ -469,8 +478,44 @@ export default function NpuQueueDemand() {
       nextStart = earliest;
       nextEnd = nextStart.add(nextHours, "hour");
     }
+    lastTimelineZoomAtRef.current = Date.now();
     setTimelineHours(nextHours);
     setTimelineEndOffsetHours(Math.max(0, taskTimelineBaseEnd.diff(nextEnd, "minute") / 60));
+  }, [taskTimelineBaseEnd, taskTimelineStart, timelineHours]);
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const onWheel = (event: WheelEvent) => {
+      // React delegates wheel as a passive listener in some browsers; a
+      // native non-passive listener is required to stop document scrolling.
+      event.preventDefault();
+      handleTimelineWheel(event.deltaY, event.clientX);
+    };
+    timeline.addEventListener("wheel", onWheel, { passive: false });
+    return () => timeline.removeEventListener("wheel", onWheel);
+  }, [handleTimelineWheel]);
+  const resetTimelineWindow = () => {
+    setTimelineHours(24);
+    setTimelineEndOffsetHours(0);
+  };
+  const diagnoseWait = (pod: TaskPod): WaitDiagnosis => {
+    const cluster = (resourceQuery.data?.clusters ?? []).find((item) => item.cluster_id === pod.cluster_id);
+    const idleNodes = (cluster?.node_resources ?? [])
+      .filter((node) => node.available.npu >= pod.requests.npu)
+      .map((node) => `${node.node_name}（空闲 ${number(node.available.npu)} NPU）`);
+    const reason = pod.scheduling_reason ?? "";
+    const message = pod.scheduling_message ?? "";
+    const detail = `${reason} ${message}`.toLowerCase();
+    const summary = /matchnodeselector|node affinity|node selector|affinity/.test(detail)
+      ? "节点/机型条件不满足"
+      : /insufficient|not enough/.test(detail)
+        ? "可用资源不足"
+        : idleNodes.length
+          ? "存在可放置的空闲机器，等待调度器继续处理"
+          : reason
+            ? `调度器拒绝：${reason}`
+            : "快照未提供调度器原因";
+    return { summary, schedulerMessage: pod.scheduling_message, idleNodes };
   };
   const timelineSegmentStyle = (startAt: string | null | undefined, endAt: string | null | undefined) => {
     if (!startAt || !endAt) return { display: "none" } as const;
@@ -647,6 +692,7 @@ export default function NpuQueueDemand() {
                 <span>最长等待（近 24h）</span>
                 <strong>
                   {longestWait.value} <em>{longestWait.unit}</em>
+                  {longestWait.suffix && <em className="npu-demand-duration-suffix">{longestWait.suffix}</em>}
                 </strong>
               </div>
             </div>
@@ -755,11 +801,12 @@ export default function NpuQueueDemand() {
             <span>显示等待 ≥ {minimumWaitSeconds} 秒（{number(minimumWaitSeconds / 60)} 分钟）</span>
             <Slider min={0} max={3600} step={30} value={minimumWaitSeconds} onChange={setMinimumWaitSeconds} tooltip={{ formatter: (value) => `${value ?? 0} 秒` }} />
           </div>
+          <Button size="small" onClick={resetTimelineWindow}>回到最近 24 小时</Button>
         </div>
         {taskTimelineQuery.isError ? (
           <Alert type="error" showIcon message="任务资源快照获取失败" />
-        ) : timelineTaskPods.length || timelineCiWaitingJobs.length ? (
-          <div className="npu-demand-timeline" ref={timelineRef} onWheel={handleTimelineWheel} aria-label="任务等待与运行时间线，滚轮可缩放至最近两天">
+        ) : (
+          <div className="npu-demand-timeline" ref={timelineRef} aria-label="任务等待与运行时间线，滚轮可缩放至最近两天">
             <div className="npu-demand-timeline-axis"><span>任务 / 资源</span><div>{[0, 0.25, 0.5, 0.75, 1].map((ratio) => <span key={ratio}>{taskTimelineStart.add(timelineHours * ratio, "hour").format(ratio === 0 ? "MM-DD HH:mm" : "HH:mm")}</span>)}</div></div>
             {timelineTaskPods.map((pod) => {
               const waitingEnd = pod.timelineStartedAt ?? (
@@ -768,6 +815,7 @@ export default function NpuQueueDemand() {
                   : pod.last_observed_at ?? taskTimelineEnd.toISOString()
               );
               const runningEnd = pod.timelineRunEndedAt;
+              const diagnosis = pod.waitSeconds >= 120 ? diagnoseWait(pod) : null;
               return (
                 <div className="npu-demand-timeline-row" key={`${pod.cluster_id}/${pod.namespace}/${pod.name}`}>
                   <div className="npu-demand-timeline-meta">
@@ -782,6 +830,11 @@ export default function NpuQueueDemand() {
                       <strong>{pod.name}</strong>
                       <span>{pod.namespace} · {pod.pool} · {number(pod.requests.npu)} NPU</span>
                       <span>等待 {formatDuration(pod.waitSeconds)}{pod.runSeconds !== null ? ` · 运行 ${formatDuration(pod.runSeconds)}` : ""}</span>
+                      {diagnosis && <>
+                        <span>等待分析：{diagnosis.summary}</span>
+                        {diagnosis.schedulerMessage && <span>调度器：{diagnosis.schedulerMessage}</span>}
+                        <span>可用机器：{diagnosis.idleNodes.length ? diagnosis.idleNodes.join("，") : "无满足本任务 NPU 数量的空闲机器"}</span>
+                      </>}
                       <span>Repository：{pod.repository ?? "未关联"}</span>
                       <span>Workflow：{pod.workflow_path ?? "未关联"}</span>
                       <div>
@@ -827,9 +880,12 @@ export default function NpuQueueDemand() {
                 </div>
               );
             })}
+            {!timelineTaskPods.length && !timelineCiWaitingJobs.length && (
+              <div className="npu-demand-timeline-empty">
+                当前时间窗口没有符合筛选条件的任务；可继续滚轮缩放，或点击“回到最近 24 小时”。
+              </div>
+            )}
           </div>
-        ) : (
-          <Text type="secondary">当前筛选条件下暂无符合等待阈值的 Pod。</Text>
         )}
       </section>
 
@@ -933,12 +989,11 @@ export default function NpuQueueDemand() {
                             <span>{pod.namespace || "—"}</span>
                             <span>{pod.phase || "Unknown"}</span>
                             <span>申请 {number(pod.requests.npu)} 卡</span>
-                            <span>
-                              {pod.pr_url ? (
-                                <a href={pod.pr_url} target="_blank" rel="noreferrer">
-                                  PR #{pod.pr_number ?? "详情"}
-                                </a>
-                              ) : "—"}
+                            <span className="npu-demand-pod-links">
+                              {pod.repository_url ? <a href={pod.repository_url} target="_blank" rel="noreferrer">仓库</a> : <span>仓库—</span>}
+                              {pod.workflow_url ? <a href={pod.workflow_url} target="_blank" rel="noreferrer">Workflow</a> : <span>Workflow—</span>}
+                              {pod.run_url ? <a href={pod.run_url} target="_blank" rel="noreferrer">Run #{pod.workflow_run_id ?? "详情"}</a> : <span>Run—</span>}
+                              {pod.pr_url ? <a href={pod.pr_url} target="_blank" rel="noreferrer">PR #{pod.pr_number ?? "详情"}</a> : <span>PR—</span>}
                             </span>
                           </div>
                         ))}

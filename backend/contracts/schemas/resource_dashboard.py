@@ -112,6 +112,11 @@ class ResourcePodInfo(BaseModel):
     namespace: str
     name: str
     phase: str | None = None
+    # The scheduler's latest PodScheduled condition is retained in resource
+    # snapshots so a long Pending wait can be explained after collection.
+    scheduling_reason: str | None = None
+    scheduling_message: str | None = None
+    node_selector: dict[str, str] = Field(default_factory=dict)
     node_name: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     created_at: datetime | None = None
@@ -165,3 +170,21 @@ class ResourcePodTimelineResponse(BaseModel):
     generated_at: datetime
     window_start: datetime
     pods: list[ResourcePodInfo] = Field(default_factory=list)
+
+
+class PodSchedulingDiagnosticsResponse(BaseModel):
+    """Read-only live scheduling view; kubeconfig and tokens never leave the server."""
+
+    cluster_id: int
+    cluster_name: str
+    namespace: str
+    name: str
+    phase: str | None = None
+    node_name: str | None = None
+    scheduler_name: str | None = None
+    priority_class_name: str | None = None
+    resource_requests: ResourceQuantity
+    node_selector: dict[str, str] = Field(default_factory=dict)
+    required_node_affinity: dict[str, Any] | None = None
+    tolerations: list[dict[str, Any]] = Field(default_factory=list)
+    pod_scheduled_condition: dict[str, Any] | None = None
