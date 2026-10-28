@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs from 'dayjs'
+import { formatTimezone } from '@/utils/timezone'
 import * as echarts from 'echarts'
 import {
   Alert,
@@ -465,7 +466,7 @@ export default function ReleaseManagement() {
     { title: '状态', dataIndex: 'status', width: 100, render: (s: string) => <Tag color={getStatusColor(s)}>{statusLabelMap[s?.toLowerCase()] || s}</Tag> },
     { title: '分支', dataIndex: 'branch', width: 150, ellipsis: true },
     { title: '事件', dataIndex: 'event', width: 80 },
-    { title: '创建时间', dataIndex: 'created_at', width: 180, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '' },
+    { title: '创建时间', dataIndex: 'created_at', width: 180, render: (v: string) => formatTimezone(v) },
     { title: '排队', dataIndex: 'wait_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.wait_duration, displayOverview?.stats?.avg_wait || 0, displayOverview?.stats?.max_wait || 0) }}>{fmtDuration(v)}</span> },
     { title: '执行', dataIndex: 'exec_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.exec_duration, avgWall, maxWall) }}>{fmtDuration(v)}</span> },
     { title: '总耗时', dataIndex: 'wall_duration', width: 90, render: (v: number, r: BuildRun) => <span style={{ color: getDurationColor(r.wall_duration, avgWall, maxWall) }}>{fmtDuration(v)}</span> },
@@ -888,13 +889,13 @@ export default function ReleaseManagement() {
                 <Descriptions.Item label="事件">{runDetailData.run.event}</Descriptions.Item>
                 <Descriptions.Item label="Commit">{runDetailData.run.commit_sha?.slice(0, 8)}</Descriptions.Item>
                 <Descriptions.Item label="创建时间">
-                  {runDetailData.run.created_at ? new Date(runDetailData.run.created_at).toLocaleString('zh-CN') : '-'}
+                  {formatTimezone(runDetailData.run.created_at)}
                 </Descriptions.Item>
                 <Descriptions.Item label="开始时间">
-                  {runDetailData.run.started_at ? new Date(runDetailData.run.started_at).toLocaleString('zh-CN') : '-'}
+                  {formatTimezone(runDetailData.run.started_at)}
                 </Descriptions.Item>
                 <Descriptions.Item label="结束时间">
-                  {runDetailData.run.completed_at ? new Date(runDetailData.run.completed_at).toLocaleString('zh-CN') : '-'}
+                  {formatTimezone(runDetailData.run.completed_at)}
                 </Descriptions.Item>
               </Descriptions>
 
@@ -993,7 +994,7 @@ export default function ReleaseManagement() {
                   </Text>
                   {w.last_sync_at && (
                     <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-                      同步: {new Date(w.last_sync_at).toLocaleString('zh-CN')}
+                      同步: {formatTimezone(w.last_sync_at)}
                     </Text>
                   )}
                 </div>

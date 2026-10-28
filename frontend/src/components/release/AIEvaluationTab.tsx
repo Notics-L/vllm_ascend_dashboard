@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import dayjs, { type Dayjs } from 'dayjs'
+import { formatTimezone } from '@/utils/timezone'
 import {
   Button,
   Card,
@@ -321,7 +322,7 @@ function LatestEvaluationPanel({
               <Descriptions.Item label="覆盖次数">{ev.run_count} 次</Descriptions.Item>
               <Descriptions.Item label="评估模型">{ev.llm_model || '-'}</Descriptions.Item>
               <Descriptions.Item label="生成时间">
-                {ev.generated_at ? new Date(ev.generated_at).toLocaleString('zh-CN') : '-'}
+                {formatTimezone(ev.generated_at)}
               </Descriptions.Item>
             </Descriptions>
             {ev.executive_summary && (
@@ -580,7 +581,7 @@ function HistoryTable({
       title: '生成时间',
       dataIndex: 'generated_at',
       width: 160,
-      render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-',
+      render: (v: string | null) => formatTimezone(v),
     },
     {
       title: '操作',

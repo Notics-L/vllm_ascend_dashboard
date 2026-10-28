@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
+import { formatTimezone, fromTimezoneNow } from '@/utils/timezone'
 import { useNavigate } from 'react-router-dom'
 import {
   getSyncTasks, getSyncTask, getSyncSummary, retrySync as retrySyncApi,
@@ -336,7 +337,7 @@ export default function SyncHistoryTab() {
       key: 'created_at',
       width: 150,
       render: (_: unknown, r: SyncTask) =>
-        r.created_at ? dayjs(r.created_at).format('YYYY-MM-DD HH:mm') : '-',
+        formatTimezone(r.created_at, 'YYYY-MM-DD HH:mm'),
     },
     {
       title: '操作',
@@ -430,7 +431,7 @@ export default function SyncHistoryTab() {
             <Col>
               <StatBlock
                 label="上次同步"
-                value={summary.last_sync_at ? dayjs(summary.last_sync_at).fromNow() : '-'}
+                value={summary.last_sync_at ? fromTimezoneNow(summary.last_sync_at) : '-'}
                 color={summary.last_sync_status === 'completed' ? '#52c41a' : '#bbb'}
                 icon={<ClockCircleOutlined />}
               />
@@ -532,13 +533,13 @@ export default function SyncHistoryTab() {
               {detailTask.duration_seconds > 0 ? fmtDuration(detailTask.duration_seconds) : '—'}
             </Descriptions.Item>
             <Descriptions.Item label="创建时间" span={2}>
-              {detailTask.created_at ? dayjs(detailTask.created_at).format('YYYY-MM-DD HH:mm:ss') : '—'}
+              {formatTimezone(detailTask.created_at)}
             </Descriptions.Item>
             <Descriptions.Item label="开始时间" span={2}>
-              {detailTask.started_at ? dayjs(detailTask.started_at).format('YYYY-MM-DD HH:mm:ss') : '—'}
+              {formatTimezone(detailTask.started_at)}
             </Descriptions.Item>
             <Descriptions.Item label="完成时间" span={2}>
-              {detailTask.completed_at ? dayjs(detailTask.completed_at).format('YYYY-MM-DD HH:mm:ss') : '—'}
+              {formatTimezone(detailTask.completed_at)}
             </Descriptions.Item>
             <Descriptions.Item label="进度消息" span={2}>
               {detailTask.progress_message || '—'}
@@ -593,10 +594,10 @@ export default function SyncHistoryTab() {
                 {errorTask.processed_items}/{errorTask.total_items}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
-                {errorTask.created_at ? dayjs(errorTask.created_at).format('YYYY-MM-DD HH:mm:ss') : '—'}
+                {formatTimezone(errorTask.created_at)}
               </Descriptions.Item>
               <Descriptions.Item label="完成时间">
-                {errorTask.completed_at ? dayjs(errorTask.completed_at).format('YYYY-MM-DD HH:mm:ss') : '—'}
+                {formatTimezone(errorTask.completed_at)}
               </Descriptions.Item>
             </Descriptions>
             <Alert

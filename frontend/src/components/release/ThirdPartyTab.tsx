@@ -41,7 +41,8 @@ import {
   type ThirdPartyComponent,
   type ThirdPartyBaseline,
   type ThirdPartyVersionHistory,
-} from '../../services/releaseManagement'
+} from '@/services/releaseManagement.ts'
+import { formatTimezone } from '@/utils/timezone'
 
 /* ===================== KPI 面板 ===================== */
 
@@ -158,7 +159,7 @@ function VersionHistoryDrawer({
           { title: '分支', dataIndex: 'branch', ellipsis: true },
           {
             title: '使用日期', dataIndex: 'used_at', width: 160,
-            render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '',
+            render: (v: string) => formatTimezone(v),
           },
         ]}
       />

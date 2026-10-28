@@ -5,7 +5,7 @@ import {
 } from '@ant-design/icons'
 
 import api from '../../services/api'
-import dayjs from 'dayjs'
+import { formatTimezone } from '@/utils/timezone'
 
 const { Text } = Typography
 
@@ -439,7 +439,7 @@ export default function ScheduleSettingsPanel({ workflows }: { workflows: { id: 
               <Space>
                 {selectedSchedule?.last_triggered_at && (
                   <Text type="secondary" style={{ fontSize: 11 }}>
-                    上次触发: {dayjs(selectedSchedule!.last_triggered_at).format('YYYY-MM-DD HH:mm')}
+                    上次触发: {formatTimezone(selectedSchedule!.last_triggered_at, 'YYYY-MM-DD HH:mm')}
                   </Text>
                 )}
                 <Button type="primary" loading={saving} icon={<SaveOutlined />} onClick={handleSave}>

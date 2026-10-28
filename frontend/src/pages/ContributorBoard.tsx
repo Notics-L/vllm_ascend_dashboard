@@ -69,6 +69,7 @@ import {
   TrophyOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { formatTimezone, fromTimezoneNow } from '@/utils/timezone'
 import {
   type BuildOptimizationStats,
   type BuildPlan,
@@ -779,7 +780,7 @@ function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
     const rows = plans.map(p => [
       `#${p.pr_number}`, p.commit_sha.slice(0, 8), p.commit_type,
       buildTypeLabels[p.build_type] || p.build_type, `${Math.round(p.estimated_saving_percent)}%`,
-      p.reasoning || '-', p.created_at ? dayjs(p.created_at).format('YYYY-MM-DD HH:mm') : '-',
+      p.reasoning || '-', p.created_at ? formatTimezone(p.created_at, 'YYYY-MM-DD HH:mm') : '-',
     ])
     const csvContent = ['\uFEFF', headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n')
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
@@ -897,7 +898,7 @@ function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
-      render: (date: string | null) => date ? dayjs(date).format('YYYY-MM-DD HH:mm') : '-',
+      render: (date: string | null) => formatTimezone(date, 'YYYY-MM-DD HH:mm'),
     },
   ]
 
@@ -2785,7 +2786,7 @@ function ContributorBoardSettingsPage() {
                       ) : <Text type="secondary">N/A</Text>}
                     </Descriptions.Item>
                     <Descriptions.Item label="操作人">{activeVersion.activated_by || 'N/A'}</Descriptions.Item>
-                    <Descriptions.Item label="生效时间">{activeVersion.activated_at ? new Date(activeVersion.activated_at).toLocaleString('zh-CN') : 'N/A'}</Descriptions.Item>
+                    <Descriptions.Item label="生效时间">{formatTimezone(activeVersion.activated_at)}</Descriptions.Item>
                     <Descriptions.Item label="说明">{activeVersion.description || '-'}</Descriptions.Item>
                   </Descriptions>
                 ) : (
@@ -3025,7 +3026,7 @@ function ContributorBoardSettingsPage() {
                   </Space>
                   <div style={{ marginTop: 4, marginBottom: 4 }}>
                     <Text type="secondary">{v.created_by}</Text>
-                    <Text type="secondary" style={{ marginLeft: 8 }}>{new Date(v.created_at).toLocaleString('zh-CN')}</Text>
+                    <Text type="secondary" style={{ marginLeft: 8 }}>{formatTimezone(v.created_at)}</Text>
                     {v.description && <Text style={{ marginLeft: 8 }}>{v.description}</Text>}
                   </div>
                   <Space size="small" style={{ marginBottom: 8 }}>
@@ -3065,7 +3066,7 @@ function ContributorBoardSettingsPage() {
             pagination={{ pageSize: 10, showSizeChanger: true }}
             columns={[
               { title: 'ID', dataIndex: 'id', width: 60 },
-              { title: '日期', width: 180, render: (r: ScoreSnapshot) => r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : (r.snapshot_date || '-') },
+              { title: '日期', width: 180, render: (r: ScoreSnapshot) => formatTimezone(r.created_at) || (r.snapshot_date || '-') },
               { title: '贡献者数', dataIndex: 'contributor_count', width: 100 },
               { title: '均值', render: (r: ScoreSnapshot) => r.statistics?.score_mean?.toFixed?.(1) || '-', width: 80 },
               { title: '操作人', dataIndex: 'created_by', width: 100 },
@@ -3142,7 +3143,7 @@ function ContributorBoardSettingsPage() {
                   ? <Tag color={v > 30 ? 'red' : v > 15 ? 'orange' : 'green'}>{v.toFixed(1)}%</Tag>
                   : '-',
               },
-              { title: '时间', dataIndex: 'created_at', render: (v: string) => new Date(v).toLocaleString('zh-CN'), width: 180 },
+              { title: '时间', dataIndex: 'created_at', render: (v: string) => formatTimezone(v), width: 180 },
             ]}
           />
         </Tabs.TabPane>
@@ -3190,7 +3191,7 @@ function ContributorBoardSettingsPage() {
                     {selectedReport.generated_by || 'N/A'}
                   </Descriptions.Item>
                   <Descriptions.Item label="生成时间">
-                    {selectedReport.generated_at ? new Date(selectedReport.generated_at).toLocaleString('zh-CN') : 'N/A'}
+                    {formatTimezone(selectedReport.generated_at) || 'N/A'}
                   </Descriptions.Item>
                 </Descriptions>
 
@@ -3271,7 +3272,7 @@ function ContributorBoardSettingsPage() {
                   },
                   { title: '模型', dataIndex: 'llm_model', width: 120 },
                   { title: '操作人', dataIndex: 'generated_by', width: 100 },
-                  { title: '生成时间', render: (_: unknown, r: AIReportListItem) => new Date(r.generated_at).toLocaleString('zh-CN'), width: 180 },
+                  { title: '生成时间', render: (_: unknown, r: AIReportListItem) => formatTimezone(r.generated_at), width: 180 },
                   {
                     title: '操作',
                     render: (_: unknown, r: AIReportListItem) => (
@@ -3391,8 +3392,8 @@ function ContributorDetailPage() {
         <Descriptions bordered column={2}>
           <Descriptions.Item label="姓名">{detail.name || '-'}</Descriptions.Item>
           <Descriptions.Item label="公司">{detail.company || '-'}</Descriptions.Item>
-          <Descriptions.Item label="首次贡献">{detail.first_contribution_at ? dayjs(detail.first_contribution_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
-          <Descriptions.Item label="最近贡献">{detail.last_contribution_at ? dayjs(detail.last_contribution_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+          <Descriptions.Item label="首次贡献">{formatTimezone(detail.first_contribution_at, 'YYYY-MM-DD')}</Descriptions.Item>
+          <Descriptions.Item label="最近贡献">{formatTimezone(detail.last_contribution_at, 'YYYY-MM-DD')}</Descriptions.Item>
           <Descriptions.Item label="工号">{detail.employee_id ? <Tag color="cyan">{detail.employee_id}</Tag> : '-'}</Descriptions.Item>
           <Descriptions.Item label="类型">{detail.is_community ? <Tag color="blue">社区贡献者</Tag> : <Tag color="green">内部开发者</Tag>}</Descriptions.Item>
           <Descriptions.Item label="角色标签">
@@ -3727,7 +3728,7 @@ function ContributorDetailPage() {
                   <div style={{ marginTop: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {c.committed_at
-                        ? `${dayjs(c.committed_at).format('YYYY-MM-DD HH:mm')} · `
+                        ? `${formatTimezone(c.committed_at, 'YYYY-MM-DD HH:mm')} · `
                         : ''}
                       {c.files_changed > 0 && `${c.files_changed} files · `}
                       +{c.code_additions}/-{c.code_deletions}
@@ -4049,8 +4050,8 @@ function SyncHistoryTab() {
     if (retryingId) return
     setRetryingId(r.id)
     try {
-      const sinceDate = r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : undefined
-      const untilDate = r.until_date ? dayjs(r.until_date).format('YYYY-MM-DD') : undefined
+      const sinceDate = formatTimezone(r.since_date, 'YYYY-MM-DD') || undefined
+      const untilDate = formatTimezone(r.until_date, 'YYYY-MM-DD') || undefined
       const fullResync = r.sync_type === 'full'
       const result = await syncContributors({
         fullResync,
@@ -4161,9 +4162,9 @@ function SyncHistoryTab() {
           return '2024-01-01 ~ 至今'
         }
         if (r.until_date) {
-          return `${r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : '-'} ~ ${dayjs(r.until_date).format('YYYY-MM-DD')}`
+          return `${formatTimezone(r.since_date, 'YYYY-MM-DD')} ~ ${formatTimezone(r.until_date, 'YYYY-MM-DD')}`
         }
-        return `${r.since_date ? dayjs(r.since_date).format('YYYY-MM-DD') : '-'} ~ 至今`
+        return `${formatTimezone(r.since_date, 'YYYY-MM-DD')} ~ 至今`
       },
     },
     {
@@ -4211,7 +4212,7 @@ function SyncHistoryTab() {
       title: '时间',
       key: 'created_at',
       width: 150,
-      render: (_: unknown, r: SyncRecord) => dayjs(r.created_at).format('YYYY-MM-DD HH:mm'),
+      render: (_: unknown, r: SyncRecord) => formatTimezone(r.created_at, 'YYYY-MM-DD HH:mm'),
     },
     {
       title: '操作',
@@ -4285,7 +4286,7 @@ function SyncHistoryTab() {
           </Col>
           <Col span={6}>
             <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
-              <Statistic title="上次同步" value={summary.last_sync_at ? dayjs(summary.last_sync_at).fromNow() : '无记录'} valueStyle={{ fontSize: 13, color: summary.last_sync_status === 'completed' ? '#52c41a' : '#999' }} />
+              <Statistic title="上次同步" value={summary.last_sync_at ? fromTimezoneNow(summary.last_sync_at) : '无记录'} valueStyle={{ fontSize: 13, color: summary.last_sync_status === 'completed' ? '#52c41a' : '#999' }} />
             </Card>
           </Col>
         </Row>
@@ -4380,20 +4381,20 @@ function SyncHistoryTab() {
               <Descriptions.Item label="时间范围">
                 {detailRecord.sync_type === 'full' ? '2024-01-01 ~ 至今'
                   : detailRecord.until_date
-                    ? `${detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '-'} ~ ${dayjs(detailRecord.until_date).format('YYYY-MM-DD')}`
-                    : `${detailRecord.since_date ? dayjs(detailRecord.since_date).format('YYYY-MM-DD') : '-'} ~ 至今`}
+                    ? `${formatTimezone(detailRecord.since_date, 'YYYY-MM-DD')} ~ ${formatTimezone(detailRecord.until_date, 'YYYY-MM-DD')}`
+                    : `${formatTimezone(detailRecord.since_date, 'YYYY-MM-DD')} ~ 至今`}
               </Descriptions.Item>
               <Descriptions.Item label="扫描 PR 数">
                 {detailRecord.total_prs_scanned || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
-                {dayjs(detailRecord.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                {formatTimezone(detailRecord.created_at)}
               </Descriptions.Item>
               <Descriptions.Item label="开始时间">
-                {detailRecord.started_at ? dayjs(detailRecord.started_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+                {formatTimezone(detailRecord.started_at)}
               </Descriptions.Item>
               <Descriptions.Item label="完成时间">
-                {detailRecord.completed_at ? dayjs(detailRecord.completed_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+                {formatTimezone(detailRecord.completed_at)}
               </Descriptions.Item>
               <Descriptions.Item label="耗时">
                 {detailRecord.duration_seconds > 0 ? `${(detailRecord.duration_seconds / 60).toFixed(1)} min` : '-'}
