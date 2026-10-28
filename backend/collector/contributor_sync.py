@@ -370,6 +370,10 @@ class ContributorSyncCollector:
                 files_changed = pr_file_paths
 
             classification_result = classify_commit(commit_message, files_changed)
+            committed_at = (commit.get("author") or {}).get("date")
+            if not committed_at:
+                committed_at = (commit_info.get("committed_date") or commit.get("committed_date"))
+            committed_dt = self._parse_datetime(committed_at)
             await self._upsert_commit_classification(
                 commit_sha,
                 commit_message,
@@ -377,6 +381,7 @@ class ContributorSyncCollector:
                 login,
                 pr_number,
                 len(files_changed) if files_changed else 0,
+                committed_at=committed_dt,
             )
             result.commits_classified += 1
 
@@ -556,6 +561,7 @@ class ContributorSyncCollector:
         contributor_login: str,
         pr_number: int,
         files_changed_count: int,
+        committed_at: datetime | None = None,
     ) -> None:
         try:
             stmt = select(CommitClassification).where(CommitClassification.commit_sha == commit_sha)
@@ -576,6 +582,8 @@ class ContributorSyncCollector:
                 existing.contributor_login = contributor_login
                 existing.pr_number = pr_number
                 existing.repo_name = f"{self.owner}/{self.repo}"
+                if committed_at:
+                    existing.created_at = committed_at
                 # Clean up duplicate rows (keep first)
                 for dup in rows[1:]:
                     dup_obj = dup[0] if isinstance(dup, tuple) else dup
@@ -598,6 +606,7 @@ class ContributorSyncCollector:
                         contributor_login=contributor_login,
                         pr_number=pr_number,
                         repo_name=f"{self.owner}/{self.repo}",
+                        created_at=committed_at,
                     )
                     self.db.add(new_entry)
                 except Exception as insert_e:

@@ -1618,16 +1618,35 @@ class DataSyncScheduler:
                 last_record = result.scalar_one_or_none()
 
                 if last_record and last_record.synced_at:
-                    # Start incremental sync from the day after last sync completed.
-                    # Previous logic used synced_at.date() which could cause zero-data
-                    # syncs when the last sync and next scheduled sync fall on the same day
-                    # (e.g., full sync ran earlier the same day, then incremental picks up
-                    # today's date as since_date, yielding a very narrow time window).
-                    since_date = last_record.synced_at.date() + timedelta(days=1)
+                    # Determine the next since_date from the last successful sync.
+                    # Only advance the baseline when the last sync actually collected
+                    # data (total_prs_scanned > 0).  When a scheduled incremental sync
+                    # scans zero PRs, we keep the same since_date so the next run will
+                    # retry the same window instead of blindly skipping ahead.
+                    if last_record.total_prs_scanned and last_record.total_prs_scanned > 0:
+                        if last_record.until_date:
+                            since_date = last_record.until_date + timedelta(days=1)
+                        elif last_record.since_date:
+                            since_date = last_record.since_date + timedelta(days=1)
+                        else:
+                            since_date = last_record.synced_at.date() + timedelta(days=1)
+                    else:
+                        # Last sync had no data — retry the same date range.
+                        if last_record.since_date:
+                            since_date = last_record.since_date
+                        else:
+                            since_date = last_record.synced_at.date()
                     now_date = datetime.now(UTC).date()
                     if since_date > now_date:
                         since_date = now_date
-                    logger.info("Last successful sync was at %s, syncing since %s", last_record.synced_at, since_date)
+                    logger.info(
+                        "Last sync scanned %s PRs (since=%s until=%s) at %s, syncing since %s",
+                        last_record.total_prs_scanned,
+                        last_record.since_date,
+                        last_record.until_date,
+                        last_record.synced_at,
+                        since_date,
+                    )
                 else:
                     since_date = (datetime.now(UTC) - timedelta(days=1)).date()
                     logger.info("No previous successful sync found, syncing since %s", since_date)
