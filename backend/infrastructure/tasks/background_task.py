@@ -85,20 +85,25 @@ class BackgroundTaskTracker:
 
     @staticmethod
     async def ensure_table(db: AsyncSession) -> None:
-        """确保任务记录表存在（幂等操作）"""
+        """确保任务记录表存在（幂等操作）
+
+        在受限权限环境中（如生产环境只读用户），跳过 CREATE TABLE，
+        假设表已由迁移脚本创建。如果表实际不存在，后续操作会抛出
+        明确的 'Table doesn't exist' 错误。
+        """
         try:
             # 先检查表是否存在
             result = await db.execute(text(f"""
-                SELECT COUNT(*) FROM information_schema.tables 
-                WHERE table_schema = DATABASE() 
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE()
                 AND table_name = '{BackgroundTaskTracker.TABLE_NAME}'
             """))
             table_exists = result.scalar() > 0
-            
+
             if table_exists:
                 logger.debug("Table %s already exists", BackgroundTaskTracker.TABLE_NAME)
                 return
-            
+
             logger.info("Creating table %s", BackgroundTaskTracker.TABLE_NAME)
             await db.execute(text(f"""
                 CREATE TABLE {BackgroundTaskTracker.TABLE_NAME} (
@@ -123,12 +128,20 @@ class BackgroundTaskTracker:
             await db.commit()
             logger.info("Table %s created successfully", BackgroundTaskTracker.TABLE_NAME)
         except Exception as e:
+            error_msg = str(e)
+            # CREATE 权限不足时，表可能已由迁移脚本创建，继续即可
+            if "1142" in error_msg or "CREATE command denied" in error_msg:
+                logger.warning(
+                    "Current user lacks CREATE privilege for %s. "
+                    "Assuming table was created by migration. "
+                    "If the table does not exist, run: bash operations/production/migrate.sh",
+                    BackgroundTaskTracker.TABLE_NAME,
+                )
+                return
             logger.error(
                 "Failed to ensure table %s exists: %s",
                 BackgroundTaskTracker.TABLE_NAME, e, exc_info=True
             )
-            # 不重新抛出异常，允许继续执行（表可能已存在）
-            # 但记录详细错误以便排查
 
     # ── 任务创建与启动 ────────────────────────────────────────
 

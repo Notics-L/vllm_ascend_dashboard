@@ -34,7 +34,7 @@ class ScoringVersionResponse(BaseModel):
     ai_model: str | None = None
     confidence_score: float | None = None
     description: str | None = None
-    created_at: datetime
+    created_at: datetime | None = None
     created_by: str | None = None
     activated_at: datetime | None = None
     activated_by: str | None = None
@@ -58,8 +58,8 @@ class ScoreSnapshotResponse(BaseModel):
     period_end: date | None = None
     contributor_count: int
     statistics: dict | None = None
-    scores: list[dict]
-    created_at: datetime
+    scores: list[dict] | None = None
+    created_at: datetime | None = None
     created_by: str | None = None
     description: str | None = None
 
@@ -72,19 +72,7 @@ class ScoreUpdateAuditResponse(BaseModel):
     version_id: int | None = None
     snapshot_id: int | None = None
     repo_name: str | None = None
-    details: dict | None = None
-    summary: str | None = None
-    weight_diff: dict | None = None
-    max_weight_shift: float | None = None
-    created_at: datetime
-    created_by: str | None = None
-
-
-class CalculateAutoWeightsResponse(BaseModel):
-    weights: dict[str, float]
-    confidence: float
-    data_summary: dict
-    version_id: int | None = None
+    created_at: datetime | None = None
 
 
 # ============ AI 报告 Schema ============
@@ -106,7 +94,7 @@ class AIReportResponse(BaseModel):
     report_type: str | None = None
     period_start: date | None = None
     period_end: date | None = None
-    generated_at: datetime
+    generated_at: datetime | None = None
     generated_by: str | None = None
     generation_source: str | None = None
     weight_version_id: int | None = None
@@ -114,7 +102,7 @@ class AIReportResponse(BaseModel):
     executive_summary: str | None = None
     confidence_overall: float | None = None
     repo_name: str | None = None
-    created_at: datetime
+    created_at: datetime | None = None
 
 
 class AIReportDetailResponse(BaseModel):
@@ -125,7 +113,7 @@ class AIReportDetailResponse(BaseModel):
     report_type: str | None = None
     period_start: date | None = None
     period_end: date | None = None
-    generated_at: datetime
+    generated_at: datetime | None = None
     generated_by: str | None = None
     generation_source: str | None = None
     weight_version_id: int | None = None
@@ -133,12 +121,12 @@ class AIReportDetailResponse(BaseModel):
     executive_summary: str | None = None
     quadrant_analysis: dict | None = None
     individual_evaluations: list[dict] | None = None
-    recommendations: list[dict] | None = None
+    recommendations: list[dict | str] | None = None
     confidence_overall: float | None = None
     report_content: str | None = None
     report_file_url: str | None = None
     schedule_cron: str | None = None
     enabled: bool = True
     repo_name: str | None = None
-    created_at: datetime
+    created_at: datetime | None = None
     updated_at: datetime | None = None
