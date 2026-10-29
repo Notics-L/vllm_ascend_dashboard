@@ -26,7 +26,9 @@ _default_weights: dict[str, float] = {
     "core_module_weight": 8.0,
     "files_changed_weight": 0.3,
     "bugfix_weight": 6.0,
+    "feature_weight": 4.0,
     "active_duration_weight": 0.01,
+    "revert_rate_weight": 8.0,
 }
 
 
@@ -95,6 +97,12 @@ def calculate_contribution_score(
         duration_days = (last_contribution_at - first_contribution_at).total_seconds() / 86400
         if duration_days > 0:
             score += duration_days * weights.get("active_duration_weight", 0.01)
+
+    # revert 扣分：error_score 中已记录了 revert 次数，直接按权重扣减
+    error_score = metrics.get("error_score", 0)
+    if error_score > 0:
+        revert_penalty = error_score * weights.get("revert_rate_weight", 8.0)
+        score -= revert_penalty
 
     return round(score, 2)
 

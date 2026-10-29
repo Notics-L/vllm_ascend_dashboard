@@ -676,6 +676,7 @@ class ContributorBoardService:
         sort_order: str = "desc",
         offset: int = 0,
         limit: int = 20,
+        quadrant: str | None = None,
     ) -> ContributorRankingResponse:
         agg_columns: dict[str, Any] = {
             "score": "contribution_score",
@@ -695,6 +696,13 @@ class ContributorBoardService:
 
         # 计算动态四象限（配置驱动）
         quadrant_map = await ContributorBoardService._compute_quadrants_for_metrics(all_metrics, db)
+
+        # 四象限过滤
+        if quadrant:
+            all_metrics = [
+                m for m in all_metrics
+                if quadrant_map.get(m["login"]) == quadrant
+            ]
 
         # 按角色类型排序
         if role_type == "reviewer":
@@ -1079,27 +1087,106 @@ class ContributorBoardService:
         period_start: date | None = None,
         period_end: date | None = None,
     ) -> ExtendedTrendResponse:
-        metrics = await ContributorBoardService._fetch_contributor_metrics(
-            db, login, period_start, period_end
-        )
+        from sqlalchemy import select, func as sa_func
 
         from contributor_board.policy_engine import get_trend_data
-        trend = get_trend_data(login, list(metrics))
-
         from contracts.schemas.contributor_board import (
             CommitTrendPoint,
             ReviewTrendPoint,
             ScoreTrendPoint,
         )
+        from infrastructure.persistence.models import CommitClassification, ContributorReview
+
+        metrics = await ContributorBoardService._fetch_contributor_metrics(
+            db, login, period_start, period_end
+        )
+
+        # Monthly score trend from ContributorMetrics (unchanged)
+        trend = get_trend_data(login, list(metrics))
+
+        # Day-level commit trend from CommitClassification
+        commit_stmt = (
+            select(
+                sa_func.date(CommitClassification.created_at).label("day"),
+                sa_func.count(CommitClassification.id).label("commit_count"),
+                sa_func.count(
+                    sa_func.case(
+                        (CommitClassification.commit_type == "Feature", 1),
+                        value=1,
+                    )
+                ).label("feature_count"),
+                sa_func.count(
+                    sa_func.case(
+                        (CommitClassification.commit_type == "BugFix", 1),
+                        value=1,
+                    )
+                ).label("bugfix_count"),
+            )
+            .where(CommitClassification.contributor_login == login)
+            .group_by(sa_func.date(CommitClassification.created_at))
+            .order_by(sa_func.date(CommitClassification.created_at))
+        )
+        if period_start:
+            commit_stmt = commit_stmt.where(CommitClassification.created_at >= period_start)
+        if period_end:
+            commit_stmt = commit_stmt.where(CommitClassification.created_at <= period_end)
+
+        commit_result = await db.execute(commit_stmt)
+        commit_rows = commit_result.all()
+
+        commit_trend: list[CommitTrendPoint] = [
+            CommitTrendPoint(
+                date=str(r[0]),
+                merged_pr_count=r[1],
+                code_additions=r[2],
+                code_deletions=r[3],
+            )
+            for r in commit_rows
+        ]
+
+        # Day-level review trend from contributor_reviews
+        review_exists = ContributorReview is not None and hasattr(ContributorReview, '__table__')
+
+        review_trend_list: list[ReviewTrendPoint] = trend.get("review_trend", [])
+        if review_exists:
+            try:
+                review_stmt = (
+                    select(
+                        sa_func.date(ContributorReview.reviewed_at).label("day"),
+                        sa_func.count(ContributorReview.id).label("review_count"),
+                        sa_func.count(
+                            sa_func.case(
+                                (ContributorReview.review_state == "APPROVED", 1),
+                                value=1,
+                            )
+                        ).label("approval_count"),
+                    )
+                    .where(ContributorReview.contributor_login == login)
+                    .group_by(sa_func.date(ContributorReview.reviewed_at))
+                    .order_by(sa_func.date(ContributorReview.reviewed_at))
+                )
+                if period_start:
+                    review_stmt = review_stmt.where(ContributorReview.reviewed_at >= period_start)
+                if period_end:
+                    review_stmt = review_stmt.where(ContributorReview.reviewed_at <= period_end)
+
+                review_result = await db.execute(review_stmt)
+                review_rows = review_result.all()
+                review_trend_list = [
+                    {
+                        "date": str(r[0]),
+                        "review_count": int(r[1]),
+                        "approval_count": int(r[2]),
+                    }
+                    for r in review_rows
+                ]
+            except Exception:
+                pass
 
         return ExtendedTrendResponse(
             login=login,
-            commit_trend=[
-                CommitTrendPoint(**p) for p in trend.get("commit_trend", [])
-            ],
-            review_trend=[
-                ReviewTrendPoint(**p) for p in trend.get("review_trend", [])
-            ],
+            commit_trend=commit_trend,
+            review_trend=[ReviewTrendPoint(**p) for p in review_trend_list],
             score_trend=[
                 ScoreTrendPoint(**p) for p in trend.get("score_trend", [])
             ],

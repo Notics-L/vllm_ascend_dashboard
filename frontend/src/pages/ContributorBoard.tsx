@@ -1619,9 +1619,11 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [rankings, setRankings] = useState<RankingItem[]>([])
   const [rankingLoading, setRankingLoading] = useState(false)
   const [rankingTotal, setRankingTotal] = useState(0)
+   const [quadrantFilter, setQuadrantFilter] = useState<string>('')
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
+  const [rankingYAxis, setRankingYAxis] = useState('error_score')
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
@@ -1639,6 +1641,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
         sort_by: sortKey,
         sort_order: sortDir,
         offset: (page - 1) * size,
+        quadrant: quadrantFilter || undefined,
       })
       // 最小 loading 延迟 300ms，避免接口返回太快导致闪烁
       await new Promise(r => setTimeout(r, 300))
@@ -1647,7 +1650,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     } finally {
       setRankingLoading(false)
     }
-  }, [roleType, selectedRepo, sortRules])
+    }, [roleType, selectedRepo, sortRules, quadrantFilter])
 
   useEffect(() => {
     fetchRanking(pagination.current, pagination.pageSize)
@@ -1657,15 +1660,19 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     let cancelled = false
     const loadStats = async () => {
       try {
-        const [_roleStats, _moduleHotspot] = await Promise.all([
+        const [_roleStats, _moduleHotspot, _settings] = await Promise.all([
           getRoleStats({ repo_name: selectedRepo || undefined }),
           getModuleHotspot({
             repo_name: selectedRepo || null,
           }),
+          getContributorBoardSettings().catch(() => null),
         ])
         if (!cancelled) {
           setRoleStats(_roleStats)
           setModuleHotspot(_moduleHotspot)
+          if (_settings?.quadrant_config) {
+            setRankingYAxis(_settings.quadrant_config.y_axis_type || 'error_score')
+          }
         }
       } catch { /* ignore */ }
     }
@@ -1868,6 +1875,18 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => { setRoleType('developer'); setPagination(p => ({ ...p, current: 1 })) }}>开发者排行</Button>
             <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>检视者排行</Button>
             <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => { setRoleType('maintainer'); setPagination(p => ({ ...p, current: 1 })) }}>Maintainer 排行</Button>
+            <Divider type="vertical" />
+            <span style={{ fontSize: 13, color: '#8c8c8c' }}>象限筛选:</span>
+            <Button type={!quadrantFilter ? 'primary' : 'default'} onClick={() => { setQuadrantFilter(''); setPagination(p => ({ ...p, current: 1 })) }}>全部</Button>
+            {['INCENTIVE', 'IMPROVE', 'ENCOURAGE', 'REPLACE'].map(q => (
+              <Button key={q} type={quadrantFilter === q ? 'primary' : 'default'} onClick={() => { setQuadrantFilter(q); setPagination(p => ({ ...p, current: 1 })) }} style={{ borderColor: quadrantColors[q], color: quadrantFilter === q ? '#fff' : quadrantColors[q] }}>
+                {quadrantLabels[q]}
+              </Button>
+            ))}
+            <span style={{ fontSize: 12, color: '#bbb', marginLeft: 4 }}>
+              (四象限 Y 轴: {axisLabels[rankingYAxis] || rankingYAxis})
+            </span>
+            <Divider type="vertical" />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchRanking(pagination.current, pagination.pageSize) }}>刷新数据</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
           </Space>

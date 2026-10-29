@@ -609,14 +609,21 @@ class ContributorSyncCollector:
                         created_at=committed_at,
                     )
                     self.db.add(new_entry)
+                    await self.db.flush()
                 except Exception as insert_e:
-                    # Handle duplicate commit_sha: another PR may have classified the same commit
-                    if "Duplicate entry" in str(insert_e):
+                    err_str = str(insert_e)
+                    # Handle duplicate commit_sha: cherry-pick or same commit in multiple PRs
+                    if "Duplicate entry" in err_str or "1062" in err_str:
                         try:
                             self.db.expunge(new_entry)
                         except Exception as exp_err:
                             logger.debug("Failed to expunge duplicate commit classification for %s: %s", commit_sha, exp_err)
-                        return  # Already exists, skip
+                        try:
+                            await self.db.rollback()
+                        except Exception:
+                            pass
+                        logger.debug("Duplicate commit_sha %s already exists, skipping insert", commit_sha)
+                        return
                     raise
         except Exception as e:
             logger.warning("Failed to upsert commit classification for %s: %s", commit_sha, e)

@@ -19,6 +19,7 @@ DimensionRegistry = {
     "bugfix_weight": "commit_count",
     "feature_weight": "commit_count",
     "active_duration_weight": "commit_count",
+    "revert_rate_weight": "error_score",
 }
 
 DIMENSIONS = list(DimensionRegistry.keys())

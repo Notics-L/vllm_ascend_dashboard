@@ -230,6 +230,30 @@ def calculate_quadrants(
     for name, q_count in quadrant_counts.items():
         logger.info("象限 %s: %d 位贡献者", name, q_count)
 
+    # 最小人数约束：当某个象限为 0 人时，从相邻象限借入最近的点
+    empty_quads = [q for q, c in quadrant_counts.items() if c == 0]
+    if empty_quads:
+        for eq in empty_quads:
+            candidates = [(i, p) for i, p in enumerate(quadrant_points) if p.quadrant != eq and quadrant_counts[p.quadrant] > 1]
+            if not candidates:
+                continue
+            if eq == "INCENTIVE":
+                candidates.sort(key=lambda c: (-c[1].x_value, c[1].y_value if y_direction == "lower_better" else -c[1].y_value))
+            elif eq == "IMPROVE":
+                candidates.sort(key=lambda c: (-c[1].x_value, -c[1].y_value if y_direction == "lower_better" else c[1].y_value))
+            elif eq == "ENCOURAGE":
+                candidates.sort(key=lambda c: (c[1].x_value, c[1].y_value if y_direction == "lower_better" else -c[1].y_value))
+            else:
+                candidates.sort(key=lambda c: (c[1].x_value, -c[1].y_value if y_direction == "lower_better" else c[1].y_value))
+            _, moved = candidates[0]
+            quadrant_counts[moved.quadrant] -= 1
+            quadrant_counts[eq] += 1
+            idx = next(i for i, p in enumerate(quadrant_points) if p is moved)
+            quadrant_points[idx].quadrant = eq
+
+        for name, q_count in quadrant_counts.items():
+            logger.info("调整后象限 %s: %d 位贡献者", name, q_count)
+
     logger.info("四象限计算完成，共 %d 位贡献者", len(quadrant_points))
 
     return quadrant_points, threshold_x, threshold_y
