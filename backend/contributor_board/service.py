@@ -677,6 +677,7 @@ class ContributorBoardService:
         offset: int = 0,
         limit: int = 20,
         quadrant: str | None = None,
+        y_axis_type: str | None = None,
     ) -> ContributorRankingResponse:
         agg_columns: dict[str, Any] = {
             "score": "contribution_score",
@@ -694,8 +695,20 @@ class ContributorBoardService:
         # 获取全量聚合数据
         all_metrics = await ContributorBoardService._build_aggregated_metrics(db, repo_name=repo_name)
 
-        # 计算动态四象限（配置驱动）
-        quadrant_map = await ContributorBoardService._compute_quadrants_for_metrics(all_metrics, db)
+        # 计算动态四象限（配置驱动，支持外部指定 Y 轴类型）
+        if y_axis_type:
+            axis_map = {
+                "error_score": "error_score",
+                "review_count": "review_count",
+                "merged_pr_count": "merged_pr_count",
+                "code_additions": "code_additions",
+            }
+            y_key = axis_map.get(y_axis_type, "error_score")
+            from contributor_board.quadrant_engine import calculate_quadrants
+            points, _, _ = calculate_quadrants(all_metrics, y_axis_type=y_key)
+            quadrant_map = {p.login: p.quadrant for p in points}
+        else:
+            quadrant_map = await ContributorBoardService._compute_quadrants_for_metrics(all_metrics, db)
 
         # 四象限过滤
         if quadrant:
@@ -1087,7 +1100,7 @@ class ContributorBoardService:
         period_start: date | None = None,
         period_end: date | None = None,
     ) -> ExtendedTrendResponse:
-        from sqlalchemy import select, func as sa_func
+        from sqlalchemy import select, func as sa_func, case as sa_case
 
         from contributor_board.policy_engine import get_trend_data
         from contracts.schemas.contributor_board import (
@@ -1095,7 +1108,15 @@ class ContributorBoardService:
             ReviewTrendPoint,
             ScoreTrendPoint,
         )
-        from infrastructure.persistence.models import CommitClassification, ContributorReview
+        from infrastructure.persistence.models import CommitClassification
+
+        # ContributorReview model may not exist in all deployments
+        try:
+            from infrastructure.persistence.models import ContributorReview  # noqa: F401
+            has_review_model = True
+        except ImportError:
+            ContributorReview = None  # type: ignore[assignment,misc]
+            has_review_model = False
 
         metrics = await ContributorBoardService._fetch_contributor_metrics(
             db, login, period_start, period_end
@@ -1110,15 +1131,13 @@ class ContributorBoardService:
                 sa_func.date(CommitClassification.created_at).label("day"),
                 sa_func.count(CommitClassification.id).label("commit_count"),
                 sa_func.count(
-                    sa_func.case(
-                        (CommitClassification.commit_type == "Feature", 1),
-                        value=1,
+                    sa_case(
+                        (CommitClassification.commit_type == "Feature", 1)
                     )
                 ).label("feature_count"),
                 sa_func.count(
-                    sa_func.case(
-                        (CommitClassification.commit_type == "BugFix", 1),
-                        value=1,
+                    sa_case(
+                        (CommitClassification.commit_type == "BugFix", 1)
                     )
                 ).label("bugfix_count"),
             )
@@ -1144,20 +1163,17 @@ class ContributorBoardService:
             for r in commit_rows
         ]
 
-        # Day-level review trend from contributor_reviews
-        review_exists = ContributorReview is not None and hasattr(ContributorReview, '__table__')
-
-        review_trend_list: list[ReviewTrendPoint] = trend.get("review_trend", [])
-        if review_exists:
+        # Day-level review trend - fall back to monthly data if model doesn't exist
+        review_trend_list: list[dict] = []
+        if has_review_model:
             try:
                 review_stmt = (
                     select(
                         sa_func.date(ContributorReview.reviewed_at).label("day"),
                         sa_func.count(ContributorReview.id).label("review_count"),
                         sa_func.count(
-                            sa_func.case(
-                                (ContributorReview.review_state == "APPROVED", 1),
-                                value=1,
+                            sa_case(
+                                (ContributorReview.review_state == "APPROVED", 1)
                             )
                         ).label("approval_count"),
                     )
@@ -1181,7 +1197,9 @@ class ContributorBoardService:
                     for r in review_rows
                 ]
             except Exception:
-                pass
+                review_trend_list = trend.get("review_trend", [])
+        else:
+            review_trend_list = trend.get("review_trend", [])
 
         return ExtendedTrendResponse(
             login=login,

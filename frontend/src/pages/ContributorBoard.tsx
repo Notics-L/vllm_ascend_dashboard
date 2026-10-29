@@ -440,26 +440,71 @@ function EChartsLineChart<T extends object>({
     const el = containerRef.current
     if (!el) return
     const inst = echarts.init(el)
-    inst.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { bottom: 4, textStyle: { fontSize: 11 } },
-      grid: { left: 50, right: 16, top: 10, bottom: 40 },
-      xAxis: {
-        type: 'category',
-        data: (data as any).map((d: any) => d.date),
-        axisTick: { alignWithLabel: true },
-        axisLabel: { fontSize: 11 },
-      },
-      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-      series: series.map(s => ({
-        name: s.name,
-        type: 'line',
-        smooth: true,
-        lineStyle: { width: 2 },
-        data: (data as any).map((d: any) => d[s.dataKey]),
-        itemStyle: { color: s.color },
-      })),
-    }, true)
+
+    // 当 series 超过 2 条时，使用双 Y 轴展示
+    const useDualAxis = series.length > 3
+    if (useDualAxis) {
+      // 前几条放左轴，后面放右轴
+      const leftAxisSeries = series.slice(0, Math.ceil(series.length / 2))
+      const rightAxisSeries = series.slice(Math.ceil(series.length / 2))
+
+      inst.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { bottom: 4, textStyle: { fontSize: 11 } },
+        grid: { left: 55, right: 55, top: 10, bottom: 40 },
+        xAxis: {
+          type: 'category',
+          data: (data as any).map((d: any) => d.date),
+          axisTick: { alignWithLabel: true },
+          axisLabel: { fontSize: 11 },
+        },
+        yAxis: [
+          { type: 'value', position: 'left', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } }, name: '主要指标' },
+          { type: 'value', position: 'right', splitLine: { show: false }, name: '辅助指标' },
+        ],
+        series: [
+          ...leftAxisSeries.map(s => ({
+            name: s.name,
+            type: 'line',
+            smooth: true,
+            lineStyle: { width: 2 },
+            yAxisIndex: 0,
+            data: (data as any).map((d: any) => d[s.dataKey]),
+            itemStyle: { color: s.color },
+          })),
+          ...rightAxisSeries.map(s => ({
+            name: s.name,
+            type: 'line',
+            smooth: true,
+            lineStyle: { width: 2 },
+            yAxisIndex: 1,
+            data: (data as any).map((d: any) => d[s.dataKey]),
+            itemStyle: { color: s.color },
+          })),
+        ],
+      }, true)
+    } else {
+      inst.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { bottom: 4, textStyle: { fontSize: 11 } },
+        grid: { left: 50, right: 16, top: 10, bottom: 40 },
+        xAxis: {
+          type: 'category',
+          data: (data as any).map((d: any) => d.date),
+          axisTick: { alignWithLabel: true },
+          axisLabel: { fontSize: 11 },
+        },
+        yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+        series: series.map(s => ({
+          name: s.name,
+          type: 'line',
+          smooth: true,
+          lineStyle: { width: 2 },
+          data: (data as any).map((d: any) => d[s.dataKey]),
+          itemStyle: { color: s.color },
+        })),
+      }, true)
+    }
     const onResize = () => inst.resize()
     window.addEventListener('resize', onResize)
     return () => {
@@ -1624,6 +1669,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [rankingYAxis, setRankingYAxis] = useState('error_score')
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
@@ -1634,14 +1680,24 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const fetchRanking = useCallback(async (page: number, size: number) => {
     setRankingLoading(true)
     try {
-      const sortKey = sortRules.length > 0 ? sortRules[0].field : undefined
-      const sortDir = sortRules.length > 0 ? sortRules[0].order : 'desc'
+      // 当没有自定义排序时，按当前 Y 轴类型默认排序
+      const axisSortMap: Record<string, string> = {
+        error_score: 'error_score',
+        review_count: 'review_count',
+        merged_pr_count: 'merged_pr_count',
+        code_additions: 'code_additions',
+      }
+      const defaultSortField = axisSortMap[rankingYAxis] || rankingYAxis
+      const defaultSortOrder = rankingYAxis === 'error_score' ? 'asc' : 'desc'
+      const sortKey = sortRules.length > 0 ? sortRules[0].field : defaultSortField
+      const sortDir = sortRules.length > 0 ? sortRules[0].order : defaultSortOrder
       const data = await getRanking(roleType, size, {
         repo_name: selectedRepo || null,
         sort_by: sortKey,
         sort_order: sortDir,
         offset: (page - 1) * size,
         quadrant: quadrantFilter || undefined,
+        y_axis_type: rankingYAxis,
       })
       // 最小 loading 延迟 300ms，避免接口返回太快导致闪烁
       await new Promise(r => setTimeout(r, 300))
@@ -1650,11 +1706,13 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     } finally {
       setRankingLoading(false)
     }
-    }, [roleType, selectedRepo, sortRules, quadrantFilter])
+    }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis])
 
+  // 首次加载：settings 完成后只发起一次 fetchRanking
   useEffect(() => {
+    if (!settingsLoaded) return
     fetchRanking(pagination.current, pagination.pageSize)
-  }, [fetchRanking, pagination.current, pagination.pageSize])
+  }, [settingsLoaded, fetchRanking, pagination.current, pagination.pageSize])
 
   useEffect(() => {
     let cancelled = false
@@ -1673,6 +1731,8 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           if (_settings?.quadrant_config) {
             setRankingYAxis(_settings.quadrant_config.y_axis_type || 'error_score')
           }
+          // settings 加载完成后再触发 fetchRanking（统一触发，避免双 loading）
+          setSettingsLoaded(true)
         }
       } catch { /* ignore */ }
     }
@@ -1883,9 +1943,14 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
                 {quadrantLabels[q]}
               </Button>
             ))}
-            <span style={{ fontSize: 12, color: '#bbb', marginLeft: 4 }}>
-              (四象限 Y 轴: {axisLabels[rankingYAxis] || rankingYAxis})
-            </span>
+            <Divider type="vertical" />
+            <span style={{ fontSize: 13, color: '#8c8c8c' }}>四象限 Y 轴:</span>
+            <Select
+              value={rankingYAxis}
+              onChange={(v) => { setRankingYAxis(v); setPagination(p => ({ ...p, current: 1 })) }}
+              style={{ width: 140 }}
+              options={Object.entries(axisLabels).map(([key, label]) => ({ value: key, label }))}
+            />
             <Divider type="vertical" />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchRanking(pagination.current, pagination.pageSize) }}>刷新数据</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
@@ -3655,7 +3720,7 @@ function ContributorDetailPage() {
         </Col>
 
         <Col span={24}>
-          <Card title="分数趋势 (贡献分数 vs 出错分数)">
+          <Card title="多维分数趋势">
             <div style={{ height: 350 }}>
               {trend?.score_trend && trend.score_trend.length > 0 ? (
                 <EChartsLineChart
@@ -3663,6 +3728,9 @@ function ContributorDetailPage() {
                   series={[
                     { name: '贡献分数', dataKey: 'contribution_score', color: '#52c41a' },
                     { name: '出错分数', dataKey: 'error_score', color: '#ff4d4f' },
+                    { name: '检视次数', dataKey: 'review_count', color: '#1890ff' },
+                    { name: 'PR合并数', dataKey: 'merged_pr_count', color: '#722ed1' },
+                    { name: '代码行数', dataKey: 'code_additions', color: '#fa8c16' },
                   ]}
                 />
               ) : (

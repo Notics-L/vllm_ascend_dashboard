@@ -288,6 +288,7 @@ export const getRanking = async (
     sort_order?: string
     offset?: number
     quadrant?: string | null
+    y_axis_type?: string | null
   }
 ) => {
   const response = await api.get<ContributorRanking>('/contributor-board/ranking', {

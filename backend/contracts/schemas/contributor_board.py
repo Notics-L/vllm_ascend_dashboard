@@ -482,6 +482,9 @@ class ScoreTrendPoint(BaseModel):
     date: str
     contribution_score: float = 0
     error_score: float = 0
+    review_count: int = 0
+    merged_pr_count: int = 0
+    code_additions: int = 0
 
 
 class ExtendedTrendResponse(BaseModel):

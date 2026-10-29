@@ -226,13 +226,14 @@ async def get_ranking(
     offset: int = Query(0, ge=0, description="分页偏移"),
     limit: int = Query(20, ge=1, le=200, description="分页大小"),
     quadrant: str | None = Query(None, description="四象限过滤: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE"),
+    y_axis_type: str | None = Query(None, description="四象限Y轴类型: error_score/review_count/merged_pr_count/code_additions"),
 ):
     """获取排行榜（全量统计，管理员可见）"""
     service = get_contributor_board_service()
     return await service.get_ranking(
         db, role_type=role_type, repo_name=repo_name,
         sort_by=sort_by, sort_order=sort_order, offset=offset, limit=limit,
-        quadrant=quadrant,
+        quadrant=quadrant, y_axis_type=y_axis_type,
     )
 
 

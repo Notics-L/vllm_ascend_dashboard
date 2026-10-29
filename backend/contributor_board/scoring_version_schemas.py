@@ -75,6 +75,13 @@ class ScoreUpdateAuditResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class CalculateAutoWeightsResponse(BaseModel):
+    weights: dict[str, float]
+    confidence: float
+    data_summary: dict
+    version_id: int | None = None
+
+
 # ============ AI 报告 Schema ============
 
 class AIReportGenerateRequest(BaseModel):

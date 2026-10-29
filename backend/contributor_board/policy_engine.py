@@ -408,6 +408,9 @@ def get_trend_data(
                 "date": str(m.period_start),
                 "contribution_score": float(m.contribution_score or 0),
                 "error_score": float(m.error_score or 0),
+                "review_count": int(m.review_count or 0),
+                "merged_pr_count": int(m.merged_pr_count or 0),
+                "code_additions": int(m.code_additions or 0),
             }
             for m in metrics_list
         ],
