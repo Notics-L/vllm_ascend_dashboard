@@ -106,8 +106,8 @@ class OpenAIClient(BaseLLMClient):
                 generation_time=generation_time,
             )
         except Exception as e:
-            logger.error(f"LLM API call failed: {type(e).__name__}")
-            raise LLMError(f"LLM API 调用失败（{type(e).__name__}）")
+            logger.error(f"LLM API call failed: {type(e).__name__}: {e}")
+            raise LLMError(f"LLM API 调用失败（{type(e).__name__}: {e}）") from e
 
     async def generate_stream(
         self,
@@ -190,8 +190,8 @@ class AnthropicClient(BaseLLMClient):
                 generation_time=generation_time,
             )
         except Exception as e:
-            logger.error(f"LLM API call failed: {type(e).__name__}")
-            raise LLMError(f"LLM API 调用失败（{type(e).__name__}）")
+            logger.error(f"LLM API call failed: {type(e).__name__}: {e}")
+            raise LLMError(f"LLM API 调用失败（{type(e).__name__}: {e}）") from e
 
     async def generate_stream(
         self,
