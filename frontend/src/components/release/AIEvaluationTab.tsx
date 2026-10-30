@@ -44,6 +44,7 @@ import {
   type AIEvaluation,
   type Workflow,
 } from '../../services/releaseManagement'
+import { getLLMProviders, type LLMProvider } from '../../services/dailySummary'
 
 const { Text, Paragraph } = Typography
 const { RangePicker } = DatePicker
@@ -141,6 +142,13 @@ function TriggerFormSelector({
   const [evalType, setEvalType] = useState('trustworthiness')
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(defaultRange ?? null)
   const [modelName, setModelName] = useState<string | undefined>(undefined)
+  const [llmProviders, setLlmProviders] = useState<LLMProvider[]>([])
+
+  useEffect(() => {
+    getLLMProviders().then(setLlmProviders).catch(() => setLlmProviders([]))
+  }, [])
+
+  const enabledProviders = llmProviders.filter(p => p.enabled && p.api_key_configured)
 
   return (
     <Row gutter={[16, 0]} align="middle">
@@ -175,10 +183,16 @@ function TriggerFormSelector({
           mode="tags"
           value={modelName}
           onChange={(v) => setModelName(Array.isArray(v) ? v[0] : v)}
-          style={{ width: 160 }}
+          style={{ width: 220 }}
           placeholder="LLM 模型"
           maxCount={1}
-        />
+        >
+          {enabledProviders.map(p => (
+            <Option key={p.provider} value={p.default_model}>
+              {p.display_name} ({p.default_model})
+            </Option>
+          ))}
+        </Select>
       </Col>
       <Col>
         <Button
