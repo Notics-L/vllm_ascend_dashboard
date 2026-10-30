@@ -112,18 +112,13 @@ class ReleaseWorkflowCollector:
         new_runs_for_tp: list[tuple[int, list[dict]]] = []
         
         # Determine sync window based on mode
+        since_dt: datetime | None = None
         if sync_mode == 'full':
-            since_str = None  # no date filter — full sync
-            days_back = 365   # max range for full history
+            since_str: str | None = None  # no date filter — full sync
         elif sync_mode == 'range' and since_date:
             since_str = since_date
-            if until_date:
-                days_back = max(1, (datetime.strptime(since_date, '%Y-%m-%d') - datetime.strptime(until_date, '%Y-%m-%d')).days) if since_date > until_date else max(1, (datetime.strptime(until_date, '%Y-%m-%d') - datetime.strptime(since_date, '%Y-%m-%d')).days)
-            else:
-                days_back = max(1, (datetime.now(UTC) - datetime.strptime(since_date, '%Y-%m-%d')).days)
         elif sync_mode == 'incremental' and since_date:
             since_str = since_date
-            days_back = max(1, (datetime.now(UTC) - datetime.strptime(since_date, '%Y-%m-%d')).days)
         else:
             # Fallback: incremental from last_sync_at
             since_dt = workflow_config.last_sync_at
@@ -131,14 +126,19 @@ class ReleaseWorkflowCollector:
                 since_str = since_dt.strftime('%Y-%m-%d')
             else:
                 since_str = (datetime.now(UTC) - timedelta(days=days_back)).strftime('%Y-%m-%d')
-        
+
         try:
+            # Build GitHub API time filter: >=start,<=end
+            if sync_mode == 'range' and until_date:
+                created_filter = f">={since_str},<={until_date}" if since_str else f"<={until_date}"
+            elif since_str:
+                created_filter = f">={since_str}"
+            else:
+                created_filter = None  # full sync, no time filter
             runs = await self.github.get_workflow_runs(
                 workflow_id_or_name=str(workflow_config.workflow_id),
-                days_back=days_back,
                 per_page=max_runs,
-                created=since_str if since_str else None,
-                until=until_date if sync_mode == 'range' and until_date else None,
+                created=created_filter,
             )
 
             # Filter out runs already synced (incremental)

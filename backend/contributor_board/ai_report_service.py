@@ -159,7 +159,7 @@ class AIReportService:
             individual_evaluations=report_content.get("individual_evaluations"),
             recommendations=report_content.get("recommendations", []),
             confidence_overall=0.7,
-            report_content=str(report_content),
+            report_content=report_content.get("report_content") or str(report_content.get("executive_summary", "")),
             repo_name=repo_name,
         )
         db.add(report)

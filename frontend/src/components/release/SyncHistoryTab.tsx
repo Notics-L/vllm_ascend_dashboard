@@ -353,7 +353,8 @@ export default function SyncHistoryTab() {
           <Space size="small">
             {isActive && (
               <Tooltip title="终止任务">
-                <Tag color="red" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}>
+                <Tag color="red" style={{ cursor: 'pointer', margin: 0, lineHeight: '22px' }}
+                  onClick={() => handleCancel(r)}>
                   <StopOutlined /> 终止
                 </Tag>
               </Tooltip>

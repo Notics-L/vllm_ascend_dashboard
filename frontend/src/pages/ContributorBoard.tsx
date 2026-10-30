@@ -146,6 +146,7 @@ import {
     cancelSync,
 } from '../services/contributorBoard'
 import { getLLMProviders, type LLMProvider } from '../services/dailySummary'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -2686,10 +2687,21 @@ function ContributorBoardSettingsPage() {
       const aiModel = result.data_summary?.ai_model || '默认'
       const aiAnalysis = result.data_summary?.ai_analysis || ''
       if (aiAnalysis) {
+        const isMarkdown = /\n|^- |###|\*\*/.test(aiAnalysis)
         Modal.info({
           title: 'AI 评权分析结果',
-          content: <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, maxHeight: 400, overflow: 'auto' }}>{aiAnalysis}</pre>,
-          width: 600,
+          content: (
+            <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              {isMarkdown ? (
+                <MarkdownRenderer content={aiAnalysis} />
+              ) : (
+                <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginBottom: 0 }}>{aiAnalysis}</Paragraph>
+              )}
+            </div>
+          ),
+          width: 720,
+          footer: null,
+          closable: true,
         })
       }
       // 自动创建版本记录
@@ -3122,12 +3134,45 @@ function ContributorBoardSettingsPage() {
                      <Button size="small" type="link" onClick={() => handleExportByVersion(v.id, 'pdf')}>导出 PDF</Button>
                     <Button size="small" type="link" onClick={() => generateScoreSnapshot(v.id).then(r => { if (r) { message.success('快照生成成功'); loadAll(); } })}>生成快照</Button>
                   </Space>
-                  {v.ai_response && (
-                    <div style={{ marginTop: 8, padding: 8, background: '#f5f5f5', borderRadius: 4 }}>
-                      <Text strong>AI 分析:</Text>
-                      <pre style={{ margin: '8px 0', fontSize: 12, whiteSpace: 'pre-wrap' }}>{v.ai_response}</pre>
-                    </div>
-                  )}
+                  {v.ai_response ? (() => {
+                    const isMarkdown = /\n|^- |###|\*\*/.test(v.ai_response)
+                    const preview = v.ai_response.slice(0, 80)
+                    const hasMore = v.ai_response.length > 80
+                    return (
+                      <div style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4, fontSize: 12 }}>
+                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                          <Text strong style={{ fontSize: 12 }}>AI 分析</Text>
+                          <Button
+                            type="link"
+                            size="small"
+                            style={{ padding: 0, fontSize: 12 }}
+                            onClick={() => {
+                              Modal.info({
+                                title: `AI 分析 — ${v.version}`,
+                                width: 720,
+                                content: (
+                                  <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+                                    {isMarkdown ? (
+                                      <MarkdownRenderer content={v.ai_response!} />
+                                    ) : (
+                                      <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginBottom: 0 }}>{v.ai_response}</Paragraph>
+                                    )}
+                                  </div>
+                                ),
+                                footer: null,
+                                closable: true,
+                              })
+                            }}
+                          >
+                            查看详情 →
+                          </Button>
+                        </Space>
+                        <div style={{ marginTop: 4, color: '#555', lineHeight: 1.6 }}>
+                          {preview}{hasMore ? '…' : ''}
+                        </div>
+                      </div>
+                    )
+                  })() : null}
                 </div>
               ),
             }))}
@@ -3291,33 +3336,81 @@ function ContributorBoardSettingsPage() {
 
                 {selectedReport.report_content && (
                   <Card title="完整报告内容" size="small" style={{ marginBottom: 16 }}>
-                    <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{selectedReport.report_content}</Paragraph>
+                    <MarkdownRenderer content={selectedReport.report_content} maxHeight={600} />
                   </Card>
                 )}
 
-                {selectedReport.quadrant_analysis && (
-                  <Card title="四象限分析" size="small" style={{ marginBottom: 16 }}>
-                    <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>
-                      {JSON.stringify(selectedReport.quadrant_analysis, null, 2)}
-                    </pre>
-                  </Card>
-                )}
+                {selectedReport.quadrant_analysis && (() => {
+                  const qa = selectedReport.quadrant_analysis as Record<string, any>
+                  const rows = qa.quadrants ? Object.entries(qa.quadrants).map(([k, v]) => (
+                    { key: k, quadrant: quadrantLabels[k] || k, count: v as number, pct: qa.total ? `${((v as number) / qa.total * 100).toFixed(1)}%` : '-' }
+                  )) : []
+                  const trends: Array<{ period: string; distribution: Record<string, number> }> = qa.trends || []
+                  return (
+                    <Card title="四象限分析" size="small" style={{ marginBottom: 16 }}>
+                      {qa.summary && <MarkdownRenderer content={qa.summary} />}
+                      {rows.length > 0 && (
+                        <Table
+                          dataSource={rows}
+                          rowKey="key"
+                          size="small"
+                          pagination={false}
+                          style={{ marginTop: 12 }}
+                          columns={[
+                            { title: '象限', dataIndex: 'quadrant', render: (v: string, r) => <Tag color={quadrantColors[r.key]}>{v}</Tag> },
+                            { title: '人数', dataIndex: 'count' },
+                            { title: '占比', dataIndex: 'pct' },
+                          ]}
+                        />
+                      )}
+                      {trends.length > 1 && (
+                        <div style={{ marginTop: 12 }}>
+                          <Text strong style={{ fontSize: 13 }}>趋势变化</Text>
+                          {trends.map((t, i) => {
+                            const total = Object.values(t.distribution).reduce((a: number, b: number) => a + (b || 0), 0)
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, fontSize: 12 }}>
+                                <Text type="secondary" style={{ width: 90, flexShrink: 0 }}>{t.period}</Text>
+                                <div style={{ flex: 1, display: 'flex', gap: 3 }}>
+                                  {Object.entries(t.distribution).map(([qkey, v]) => {
+                                    const pct = total ? (v / total * 100) : 0
+                                    return (
+                                      <div key={qkey} title={`${quadrantLabels[qkey] || qkey}: ${v} (${pct.toFixed(1)}%)`} style={{ flex: pct ? Math.max(pct, 4) : 0.5, height: 18, background: quadrantColors[qkey] || '#d9d9d9', borderRadius: 2, minWidth: 4 }} />
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </Card>
+                  )
+                })()}
 
                 {selectedReport.recommendations && selectedReport.recommendations.length > 0 && (
                   <Card title="决策建议" size="small">
-                    {selectedReport.recommendations.map((rec: Record<string, any>, i: number) => (
-                      <div key={i} style={{ padding: '8px 12px', background: '#f5f0ff', borderRadius: 6, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                        <div style={{
-                          width: 24, height: 24, borderRadius: '50%',
-                          background: 'linear-gradient(135deg, #722ed1, #b745d3)',
-                          color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 12, fontWeight: 'bold', flexShrink: 0
-                        }}>{i + 1}</div>
-                        <Text style={{ fontSize: 13 }}>
-                          {rec.description || rec.title || JSON.stringify(rec)}
-                        </Text>
-                      </div>
-                    ))}
+                    {selectedReport.recommendations.map((rec: Record<string, any> | string, i: number) => {
+                      const text = typeof rec === 'string' ? rec : (rec?.description || rec?.title || JSON.stringify(rec))
+                      const isMarkdown = /\n|^- |\*\*|###/.test(text)
+                      return (
+                        <div key={i} style={{ padding: '10px 14px', background: '#f5f0ff', borderRadius: 6, marginBottom: 10, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                          <div style={{
+                            width: 24, height: 24, borderRadius: '50%',
+                            background: 'linear-gradient(135deg, #722ed1, #b745d3)',
+                            color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 12, fontWeight: 'bold', flexShrink: 0
+                          }}>{i + 1}</div>
+                          <div style={{ flex: 1 }}>
+                            {isMarkdown ? (
+                              <MarkdownRenderer content={text} />
+                            ) : (
+                              <Text style={{ fontSize: 13 }}>{text}</Text>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </Card>
                 )}
 
