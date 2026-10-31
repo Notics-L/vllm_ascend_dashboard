@@ -587,15 +587,15 @@ export default function ThirdPartyTab({ selectedIds, workflows: externalWorkflow
         <Collapse
           defaultActiveKey={snapshot.category_order || []}
           style={{ marginBottom: 16 }}
-          items={(snapshot.category_order || Object.keys(snapshot.components_by_category || {})).map((cat) => {
+          items={(snapshot.category_order || Object.keys(snapshot.components_by_category || {})).flatMap((cat) => {
             const items = snapshot.components_by_category?.[cat] || []
-            if (items.length === 0) return null
+            if (items.length === 0) return []
             const label = snapshot.category_labels?.[cat] || cat
             const changedInCat = items.filter(c => {
               const d = diff?.diffs.find(dd => dd.component_name === c.component_name)
               return d && d.change_type !== 'unchanged'
             }).length
-            return {
+            return [{
               key: cat,
               label: (
                 <Space>
@@ -614,8 +614,8 @@ export default function ThirdPartyTab({ selectedIds, workflows: externalWorkflow
                   columns={componentColumns}
                 />
               ),
-            }
-          }).filter(Boolean)}
+            }]
+          })}
         />
       ) : (
         <Empty description={wfId ? '请选择一次构建执行' : '请先选择工作流'} image={Empty.PRESENTED_IMAGE_SIMPLE} />
