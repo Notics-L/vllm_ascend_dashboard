@@ -162,6 +162,7 @@ async def analyze_weights_with_ai(
     db: Any,
     data_summary: dict[str, Any],
     model: str | None = None,
+    provider: str | None = None,
 ) -> tuple[dict[str, float], str, str]:
     """
     调用 LLM 分析权重分配建议。
@@ -170,6 +171,7 @@ async def analyze_weights_with_ai(
         db: 数据库 session（用于获取 LLM 配置）
         data_summary: 来自 auto_weight_engine 的数据摘要
         model: 指定模型名，不指定则使用默认启用模型
+        provider: 指定提供商标识，不指定则使用默认激活模型
 
     Returns:
         (weights, analysis_text, model_name)
@@ -179,7 +181,7 @@ async def analyze_weights_with_ai(
     # 获取启用的 LLM 配置
     from contributor_board.llm_helpers import get_active_llm_config
 
-    llm_config = await get_active_llm_config(db, model)
+    llm_config = await get_active_llm_config(db, model, provider=provider)
     if not llm_config:
         raise RuntimeError("没有可用的 LLM 配置，请先在系统配置中启用至少一个大模型供应商")
 

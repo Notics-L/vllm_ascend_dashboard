@@ -910,10 +910,11 @@ export const calculateAutoWeights = async (params?: { repo_name?: string | null 
   return response.data
 }
 
-export const aiAnalyzeWeights = async (params?: { repo_name?: string | null; model?: string | null }) => {
+export const aiAnalyzeWeights = async (params?: { repo_name?: string | null; model?: string | null; provider?: string | null }) => {
   const queryParams: Record<string, unknown> = {}
   if (params?.repo_name) queryParams.repo_name = params.repo_name
   if (params?.model) queryParams.model = params.model
+  if (params?.provider) queryParams.provider = params.provider
   const response = await api.post<AutoWeightsResult>('/contributor-board/settings/scoring/ai-evaluate', null, { params: queryParams })
   return response.data
 }
@@ -985,6 +986,7 @@ export interface AIReportGenerateRequest {
   period_end?: string | null
   repo_name?: string | null
   model?: string | null
+  provider?: string | null
   include_individual_evaluations?: boolean
 }
 

@@ -1786,10 +1786,10 @@ function ContributorBoardSettingsPage() {
     setModelSelectOpen(true)
   }
 
-  const handleAIWeights = async (model: string | null) => {
+  const handleAIWeights = async (model: string | null, provider?: string | null) => {
     try {
       setAiCalculating(true)
-      const result = await aiAnalyzeWeights({ model }) as AutoWeightsResult
+      const result = await aiAnalyzeWeights({ model, provider }) as AutoWeightsResult
       const aiModel = result.data_summary?.ai_model || '默认'
       const aiAnalysis = result.data_summary?.ai_analysis || ''
       if (aiAnalysis) {
@@ -1838,11 +1838,11 @@ function ContributorBoardSettingsPage() {
     setModelSelectOpen(true)
   }
 
-  const handleGenerateAIReport = async (model: string | null) => {
+  const handleGenerateAIReport = async (model: string | null, provider?: string | null) => {
     try {
       setAiReporting(true)
       setAiReport(null)
-      const report = await generateAIReport({ report_type: 'adhoc', model }) as AIReportListItem
+      const report = await generateAIReport({ report_type: 'adhoc', model, provider }) as AIReportListItem
       message.success(`AI 综合分析报告生成成功 (报告: ${report.report_name})`)
       await loadAll()
     } catch (e: any) {
@@ -2122,10 +2122,18 @@ function ContributorBoardSettingsPage() {
                 disabled={!selectedModel && llmProviders.length > 0}
                 onClick={() => {
                   setModelSelectOpen(false)
+                  // 下拉值格式为 'provider::model'，解析后分别作为 provider/model 传给后端
+                  let parsedModel: string | null = null
+                  let parsedProvider: string | null = null
+                  if (selectedModel) {
+                    const sep = selectedModel.lastIndexOf('::')
+                    parsedProvider = sep > 0 ? selectedModel.slice(0, sep) : null
+                    parsedModel = sep > 0 ? selectedModel.slice(sep + 2) : selectedModel
+                  }
                   if (pendingAction === 'ai-weights') {
-                    handleAIWeights(selectedModel)
+                    handleAIWeights(parsedModel, parsedProvider)
                   } else if (pendingAction === 'ai-report') {
-                    handleGenerateAIReport(selectedModel)
+                    handleGenerateAIReport(parsedModel, parsedProvider)
                   }
                 }}
               >
@@ -2151,8 +2159,8 @@ function ContributorBoardSettingsPage() {
                 onChange={v => setSelectedModel(v || null)}
                 allowClear
               >
-                {llmProviders.filter(p => p.enabled && p.api_key_configured).map(p => (
-                  <Select.Option key={p.provider} value={p.default_model}>
+                {llmProviders.filter(p => p.enabled && p.api_key_configured).map((p, idx) => (
+                  <Select.Option key={`${p.provider}-${idx}`} value={`${p.provider}::${p.default_model}`}>
                     <Space>
                       <Tag color={p.is_active ? 'gold' : 'blue'}>
                         {p.display_name}

@@ -81,18 +81,29 @@ def _clip_outliers(values: list[float]) -> list[float]:
     return clipped
 
 
+def _pct_rank(value: float, sorted_vals: list[float]) -> float:
+    """返回 value 在 sorted_vals 中的百分位（0~1）。"""
+    if not sorted_vals:
+        return 0.5
+    lo, hi = 0, len(sorted_vals)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if sorted_vals[mid] < value:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo / len(sorted_vals)
+
+
 def _compute_threshold(
     values: list[float],
 ) -> float:
     """
-    计算分割线阈值。基于数据分布的动态百分位算法，使四象限分布更均衡。
+    计算分割线阈值。确保恰好 50% 数据落在高侧、50% 落在低侧。
 
-    策略：
-    1. 先用 IQR 裁剪极端异常值
-    2. 如果所有值相同 -> 用 0
-    3. 如果值域极窄（变异系数 < 0.1）-> 用 P33
-    4. 如果数据呈长尾分布（偏度 > 1.5）-> 用中位数
-    5. 相对均匀 -> 用 P48
+    实现：取原始排序数组第 P50 百分位（中点）。这样无论数据多长尾、
+    多偏斜，高/低两侧人数严格各半，X 轴和 Y 轴独立 50/50 切分后
+    四象限天然接近均衡分布。
     """
     n = len(values)
     if n == 0:
@@ -102,39 +113,8 @@ def _compute_threshold(
     if len(unique) <= 1:
         return 0.0
 
-    clipped = _clip_outliers(values)
-    sorted_vals = sorted(clipped)
-    cn = len(sorted_vals)
-    mean = statistics.mean(clipped)
-
-    if cn > 1:
-        std = statistics.stdev(clipped)
-        cv = std / mean if mean > 0 else 0
-    else:
-        cv = 0
-
-    if cv < 0.1:
-        idx = max(1, cn // 3)
-        return sorted_vals[idx]
-
-    if cn > 2:
-        m2 = sum((x - mean) ** 2 for x in clipped) / cn
-        m3 = sum((x - mean) ** 3 for x in clipped) / cn
-        if m2 > 0:
-            skewness = m3 / (m2 ** 1.5)
-        else:
-            skewness = 0
-    else:
-        skewness = 0
-
-    if skewness > 1.5:
-        return statistics.median(clipped)
-    elif skewness < -1.5:
-        idx = min(cn - 1, int(cn * 0.55))
-        return sorted_vals[idx]
-    else:
-        idx = min(cn - 1, max(1, int(cn * 0.48)))
-        return sorted_vals[idx]
+    sorted_vals = sorted(values)
+    return sorted_vals[n // 2]
 
 
 def determine_quadrant(

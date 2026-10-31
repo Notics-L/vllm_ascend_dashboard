@@ -763,13 +763,14 @@ async def ai_evaluate_weights(
     db: DbSession,
     repo_name: str | None = Query(None),
     model: str | None = Query(None, description="指定 LLM 模型"),
+    provider: str | None = Query(None, description="指定 LLM 提供商"),
 ):
     """执行 AI 权重评估"""
     from contributor_board.auto_weight_engine import compute_weights_from_db
     from contributor_board.ai_weight_engine import analyze_weights_with_ai
 
     _, _, data_summary = await compute_weights_from_db(db, repo_name)
-    ai_weights, ai_analysis, ai_model = await analyze_weights_with_ai(db, data_summary, model)
+    ai_weights, ai_analysis, ai_model = await analyze_weights_with_ai(db, data_summary, model, provider=provider)
 
     return CalculateAutoWeightsResponse(
         weights=ai_weights,

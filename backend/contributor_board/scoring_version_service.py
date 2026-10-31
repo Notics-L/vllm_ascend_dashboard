@@ -194,6 +194,8 @@ class ScoringVersionService:
         await ScoringVersionService._archive_active_versions(db, version.repo_name)
         ScoringVersionService._set_version_active(version, created_by)
 
+        await ScoringVersionService._sync_weights_to_settings(db, version.weights)
+
         snapshot_id = await ScoringVersionService._create_snapshot_and_recalculate(
             db, version, version.repo_name, created_by
         )
@@ -380,6 +382,29 @@ class ScoringVersionService:
             return "v1.1.0"
 
     @staticmethod
+    async def _sync_weights_to_settings(db, weights: dict | None):
+        """将版本权重同步到 ContributorBoardSettings.scoring_weights，
+        排行榜算分时才读到新权重——此前只改版本表导致排行榜不生效。"""
+        if not weights or not isinstance(weights, dict):
+            return
+        from sqlalchemy import select
+        from infrastructure.persistence.models import ContributorBoardSettings
+
+        row = (await db.execute(
+            select(ContributorBoardSettings).where(
+                ContributorBoardSettings.setting_key == "scoring_weights"
+            )
+        )).scalars().first()
+        if row:
+            cur = row.setting_value if isinstance(row.setting_value, dict) else {}
+            cur.update(weights)
+            row.setting_value = cur
+        else:
+            db.add(ContributorBoardSettings(setting_key="scoring_weights", setting_value=dict(weights)))
+
+        logger.info("Scoring weights synced to ContributorBoardSettings from applied version")
+
+    @staticmethod
     async def _create_snapshot_and_recalculate(
         db,
         version: ContributorScoringVersion,
@@ -414,10 +439,14 @@ class ScoringVersionService:
             m["contribution_score"] = calculate_contribution_score(metrics, weights, commit_type_counts={})
             m["error_score"] = round(error_score, 2)
 
-        # 2) Compute quadrants
+        # 2) Compute quadrants — 只对有贡献的活跃贡献者算象限，零分者不参与阈值计算
         y_axis_type = "review_count"
-        points, _, _ = calculate_quadrants(pr_metrics, y_axis_type=y_axis_type)
-        quad_map = {p.login: p.quadrant for p in points}
+        active = [m for m in pr_metrics if m.get("contribution_score", 0) > 0]
+        if active:
+            points, _, _ = calculate_quadrants(active, y_axis_type=y_axis_type)
+            quad_map = {p.login: p.quadrant for p in points}
+        else:
+            quad_map = {}
         for m in pr_metrics:
             m["quadrant"] = quad_map.get(m["login"], "unknown")
 
