@@ -880,6 +880,46 @@ async def get_compliance(
     return await tp.get_compliance_check(run_id)
 
 
+@router.get("/release-management/third-party/runs")
+async def list_third_party_runs(
+    db: DbSession,
+    current_user: CurrentUser,
+    workflow_id: int = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """列出已同步三方件数据的构建执行"""
+    tp = ThirdPartyService(db)
+    return await tp.list_runs_with_third_party(workflow_id, limit)
+
+
+@router.get("/release-management/third-party/run-snapshot/{run_id}")
+async def get_third_party_run_snapshot(
+    db: DbSession,
+    current_user: CurrentUser,
+    run_id: int,
+):
+    """获取单次执行的三方件版本快照"""
+    tp = ThirdPartyService(db)
+    snapshot = await tp.get_run_snapshot(run_id)
+    if not snapshot:
+        raise HTTPException(404, f"构建记录 {run_id} 不存在或无三方件数据")
+    return snapshot
+
+
+@router.get("/release-management/third-party/run-diff/{run_id}")
+async def get_third_party_run_diff(
+    db: DbSession,
+    current_user: CurrentUser,
+    run_id: int,
+):
+    """对比当前执行与上一次执行的三方件版本差异"""
+    tp = ThirdPartyService(db)
+    diff = await tp.get_run_diff(run_id)
+    if not diff:
+        raise HTTPException(404, f"构建记录 {run_id} 不存在或无三方件数据")
+    return diff
+
+
 # ==================== AI Evaluation ====================
 
 @router.post("/release-management/evaluate")

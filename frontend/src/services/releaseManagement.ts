@@ -187,6 +187,67 @@ export interface ComplianceCheckResult {
   compliance_rate: number
 }
 
+export interface ThirdPartyRunItem {
+  id: number
+  workflow_id: number
+  workflow_name: string
+  github_run_id: number
+  status: string
+  branch: string | null
+  commit_sha: string
+  created_at: string | null
+  component_count: number
+}
+
+export interface ThirdPartySnapshotComponent {
+  component_name: string
+  component_version: string
+  component_category: string | null
+  source_line: string | null
+  baseline_status: 'compliant' | 'violation' | 'no_baseline'
+  approved_versions: string[]
+}
+
+export interface ThirdPartySnapshot {
+  run_id: number
+  github_run_id: number
+  workflow_id: number
+  status: string
+  branch: string | null
+  commit_sha: string | null
+  created_at: string | null
+  components: ThirdPartySnapshotComponent[]
+  total_components: number
+}
+
+export interface ThirdPartyDiffItem {
+  component_name: string
+  previous_version: string | null
+  current_version: string | null
+  change_type: 'unchanged' | 'added' | 'removed' | 'changed'
+}
+
+export interface ThirdPartyRunDiff {
+  current_run: {
+    run_id: number
+    github_run_id: number
+    branch: string | null
+    commit_sha: string | null
+    created_at: string | null
+  }
+  previous_run: {
+    run_id: number
+    github_run_id: number
+    branch: string | null
+    commit_sha: string | null
+    created_at: string | null
+  } | null
+  components: ThirdPartySnapshotComponent[]
+  diffs: ThirdPartyDiffItem[]
+  changed_count: number
+  unchanged_count: number
+}
+
 export interface AIEvaluationSummary {
   id: number
   workflow_id: number
@@ -454,6 +515,23 @@ export const getComplianceCheck = async (runId: number) => {
   const response = await api.get<ComplianceCheckResult>('/release-management/third-party/compliance', {
     params: { run_id: runId },
   })
+  return response.data
+}
+
+export const getThirdPartyRuns = async (workflowId?: number, limit = 50) => {
+  const params: Record<string, unknown> = { limit }
+  if (workflowId) params.workflow_id = workflowId
+  const response = await api.get<ThirdPartyRunItem[]>('/release-management/third-party/runs', { params })
+  return response.data
+}
+
+export const getThirdPartyRunSnapshot = async (runId: number) => {
+  const response = await api.get<ThirdPartySnapshot>(`/release-management/third-party/run-snapshot/${runId}`)
+  return response.data
+}
+
+export const getThirdPartyRunDiff = async (runId: number) => {
+  const response = await api.get<ThirdPartyRunDiff>(`/release-management/third-party/run-diff/${runId}`)
   return response.data
 }
 

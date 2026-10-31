@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.persistence.models import (
@@ -18,17 +18,67 @@ from infrastructure.persistence.models import (
 logger = logging.getLogger(__name__)
 
 
-DETECTION_PATTERNS = {
-    "CANN": r"CANN[_\s-]*([dv]?\s*\d+\.\d+(?:\.\d+)?(?:\.[A-Za-z0-9_]+)?)",
-    "torch-npu": r"torch-npu[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "torch": r"(?:^|[\s=])torch[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "ascendc": r"ascend-c[_\s-]*(\d+\.\d+(?:\.\d+)?)",
-    "numpy": r"numpy[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "protobuf": r"protobuf[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "grpcio": r"grpcio[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "huggingface": r"huggingface[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "transformers": r"transformers[\s=]*(\d+\.\d+(?:\.\d+)?)",
-    "accelerate": r"accelerate[\s=]*(\d+\.\d+(?:\.\d+)?)",
+DETECTION_PATTERNS: dict[str, dict[str, str]] = {
+    "CANN": {
+        "pattern": r"CANN[\s_-]*([v]?\d+\.\d+(?:\.\d+)?(?:\.\d+)?(?:[a-zA-Z]?\d)?)",
+        "category": "runtime",
+    },
+    "triton": {
+        "pattern": r"(?:^|[\s=/])triton[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-zA-Z]?\d)?)",
+        "category": "compiler",
+    },
+    "vllm": {
+        "pattern": r"(?:^|[\s=/])vllm[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "framework",
+    },
+    "vllm-ascend": {
+        "pattern": r"vllm[-_]?ascend[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "framework",
+    },
+    "Framework-PT-Adapter": {
+        "pattern": r"(?:framework[\s_-]?pt[\s_-]?adapter|pt[\s_-]?adapter)[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "adapter",
+    },
+    "torch": {
+        "pattern": r"(?:^|[\s=])torch\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "framework",
+    },
+    "torch-npu": {
+        "pattern": r"torch-npu[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "runtime",
+    },
+    "ascendc": {
+        "pattern": r"ascend[-_]?c[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "runtime",
+    },
+    "numpy": {
+        "pattern": r"numpy[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "library",
+    },
+    "protobuf": {
+        "pattern": r"protobuf[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "library",
+    },
+    "grpcio": {
+        "pattern": r"grpcio[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "library",
+    },
+    "transformers": {
+        "pattern": r"transformers[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "framework",
+    },
+    "accelerate": {
+        "pattern": r"accelerate[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "framework",
+    },
+    "huggingface": {
+        "pattern": r"huggingface[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "library",
+    },
+    "docker": {
+        "pattern": r"(?:docker|image)[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "category": "infra",
+    },
 }
 
 
@@ -57,7 +107,9 @@ class ThirdPartyService:
         seen: set[tuple[str, str]] = set()
         detected: list[dict[str, Any]] = []
 
-        for component, pattern in DETECTION_PATTERNS.items():
+        for component, config in DETECTION_PATTERNS.items():
+            pattern = config["pattern"]
+            category = config.get("category", self._guess_category(component))
             matches = re.finditer(pattern, log_content, re.IGNORECASE)
             for match in matches:
                 version = match.group(1).strip().lstrip("v")
@@ -70,7 +122,7 @@ class ThirdPartyService:
                     run_id=run_id,
                     component_name=component,
                     component_version=version,
-                    component_category=self._guess_category(component),
+                    component_category=category,
                     source_type="build_log",
                     source_line=match.group(0),
                 )
@@ -306,4 +358,204 @@ class ThirdPartyService:
             "notes": b.notes,
             "is_active": b.is_active,
             "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        }
+
+    # ─── 版本快照 & 差异对比 ───
+
+    async def list_runs_with_third_party(
+        self,
+        workflow_id: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """列出已同步三方件数据的构建执行列表"""
+        from sqlalchemy import exists
+
+        stmt = (
+            select(ReleaseBuildRun)
+            .where(
+                exists().where(
+                    ReleaseThirdPartyVersion.run_id == ReleaseBuildRun.id
+                )
+            )
+            .order_by(ReleaseBuildRun.created_at_remote.desc())
+            .limit(limit)
+        )
+        if workflow_id:
+            stmt = stmt.where(ReleaseBuildRun.workflow_id == workflow_id)
+
+        result = await self.db.execute(stmt)
+        runs = result.scalars().all()
+
+        # 获取 workflow 名称映射
+        wf_ids = list({r.workflow_id for r in runs})
+        wf_names: dict[int, str] = {}
+        if wf_ids:
+            from sqlalchemy import select as _sel
+            from infrastructure.persistence.models import ReleaseWorkflow
+            wf_result = await self.db.execute(
+                _sel(ReleaseWorkflow).where(ReleaseWorkflow.id.in_(wf_ids))
+            )
+            wf_names = {w.id: w.workflow_name for w in wf_result.scalars().all()}
+
+        # 获取每个 run 的组件数量
+        run_ids = [r.id for r in runs]
+        comp_counts: dict[int, int] = {}
+        if run_ids:
+            count_result = await self.db.execute(
+                select(
+                    ReleaseThirdPartyVersion.run_id,
+                    func.count(ReleaseThirdPartyVersion.id),
+                ).where(ReleaseThirdPartyVersion.run_id.in_(run_ids)).group_by(
+                    ReleaseThirdPartyVersion.run_id
+                )
+            )
+            comp_counts = {row[0]: row[1] for row in count_result.all()}
+
+        return [
+            {
+                "id": r.id,
+                "workflow_id": r.workflow_id,
+                "workflow_name": wf_names.get(r.workflow_id, f"WF-{r.workflow_id}"),
+                "github_run_id": r.github_run_id,
+                "status": r.status,
+                "branch": r.branch,
+                "commit_sha": (r.commit_sha or "")[:8],
+                "created_at": r.created_at_remote.isoformat() if r.created_at_remote else None,
+                "component_count": comp_counts.get(r.id, 0),
+            }
+            for r in runs
+        ]
+
+    async def get_run_snapshot(self, run_id: int) -> dict[str, Any] | None:
+        """获取单次执行的三方件版本快照"""
+        run = await self.db.get(ReleaseBuildRun, run_id)
+        if not run:
+            return None
+
+        versions = (await self.db.execute(
+            select(ReleaseThirdPartyVersion).where(
+                ReleaseThirdPartyVersion.run_id == run_id
+            ).order_by(ReleaseThirdPartyVersion.component_name)
+        )).scalars().all()
+
+        # 加载基线
+        baselines_result = await self.db.execute(
+            select(ReleaseThirdPartyBaseline).where(ReleaseThirdPartyBaseline.is_active)
+        )
+        baseline_map = {b.component_name: b for b in baselines_result.scalars().all()}
+
+        components: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for v in versions:
+            key = f"{v.component_name}::{v.component_version}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            baseline = baseline_map.get(v.component_name)
+            baseline_status = "no_baseline"
+            approved_versions: list[str] = []
+            if baseline:
+                approved_versions = json.loads(baseline.approved_versions or "[]")
+                baseline_status = "compliant" if self._check_compliance(v.component_version, baseline) else "violation"
+
+            components.append({
+                "component_name": v.component_name,
+                "component_version": v.component_version,
+                "component_category": v.component_category,
+                "source_line": v.source_line,
+                "baseline_status": baseline_status,
+                "approved_versions": approved_versions,
+            })
+
+        return {
+            "run_id": run.id,
+            "github_run_id": run.github_run_id,
+            "workflow_id": run.workflow_id,
+            "status": run.status,
+            "branch": run.branch,
+            "commit_sha": run.commit_sha,
+            "created_at": run.created_at_remote.isoformat() if run.created_at_remote else None,
+            "components": components,
+            "total_components": len(seen),
+        }
+
+    async def get_run_diff(self, run_id: int) -> dict[str, Any] | None:
+        """对比当前执行与上一次执行的三方件版本差异 + 基线合规"""
+        current = await self.get_run_snapshot(run_id)
+        if not current:
+            return None
+
+        run = await self.db.get(ReleaseBuildRun, run_id)
+        if not run:
+            return None
+
+        # 查找上一次同 workflow 的执行（排除当前）
+        prev_result = await self.db.execute(
+            select(ReleaseBuildRun)
+            .where(
+                ReleaseBuildRun.workflow_id == run.workflow_id,
+                ReleaseBuildRun.id != run_id,
+                exists().where(
+                    ReleaseThirdPartyVersion.run_id == ReleaseBuildRun.id
+                ),
+            )
+            .order_by(ReleaseBuildRun.created_at_remote.desc())
+            .limit(1)
+        )
+        prev_run = prev_result.scalars().first()
+        prev_snapshot = await self.get_run_snapshot(prev_run.id) if prev_run else None
+
+        # 构建对比
+        prev_versions: dict[str, str] = {}
+        if prev_snapshot:
+            for c in prev_snapshot["components"]:
+                prev_versions[c["component_name"]] = c["component_version"]
+
+        cur_versions: dict[str, str] = {}
+        for c in current["components"]:
+            cur_versions[c["component_name"]] = c["component_version"]
+
+        all_components = sorted(set(prev_versions) | set(cur_versions))
+
+        diffs: list[dict[str, Any]] = []
+        for comp in all_components:
+            prev_v = prev_versions.get(comp)
+            cur_v = cur_versions.get(comp)
+            if prev_v == cur_v:
+                change_type = "unchanged"
+            elif prev_v is None:
+                change_type = "added"
+            elif cur_v is None:
+                change_type = "removed"
+            else:
+                change_type = "changed"
+            diffs.append({
+                "component_name": comp,
+                "previous_version": prev_v,
+                "current_version": cur_v,
+                "change_type": change_type,
+            })
+
+        changed = [d for d in diffs if d["change_type"] != "unchanged"]
+
+        return {
+            "current_run": {
+                "run_id": current["run_id"],
+                "github_run_id": current["github_run_id"],
+                "branch": current["branch"],
+                "commit_sha": current["commit_sha"],
+                "created_at": current["created_at"],
+            },
+            "previous_run": {
+                "run_id": prev_run.id,
+                "github_run_id": prev_run.github_run_id,
+                "branch": prev_run.branch,
+                "commit_sha": prev_run.commit_sha,
+                "created_at": prev_run.created_at_remote.isoformat() if prev_run and prev_run.created_at_remote else None,
+            } if prev_run else None,
+            "components": current["components"],
+            "diffs": diffs,
+            "changed_count": len(changed),
+            "unchanged_count": len(diffs) - len(changed),
         }

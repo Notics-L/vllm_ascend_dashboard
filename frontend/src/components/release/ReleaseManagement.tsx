@@ -857,7 +857,7 @@ export default function ReleaseManagement() {
             ),
           },
           { key: 'comparison', label: <><GlobalOutlined /> 多工作流对比</>, children: <ComparisonTab /> },
-          { key: 'third-party', label: <><SafetyOutlined /> 三方件监控</>, children: <ThirdPartyTab selectedIds={selectedWfId ? [selectedWfId] : null} /> },
+          { key: 'third-party', label: <><SafetyOutlined /> 三方件监控</>, children: <ThirdPartyTab selectedIds={selectedWfId ? [selectedWfId] : null} workflows={workflows} /> },
           { key: 'ai-evaluation', label: <><ExperimentOutlined /> AI 评估</>, children: <AIEvaluationTab selectedIds={selectedWfId ? [selectedWfId] : null} workflows={workflows} /> },
         ]}
       />
