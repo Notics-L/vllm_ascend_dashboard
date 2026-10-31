@@ -765,10 +765,9 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
 type SortRule = { field: string; order: 'asc' | 'desc' }
 
 const sortableColumns: { key: string; label: string }[] = [
-  { key: 'score', label: '分数' },
+  { key: 'pr_count', label: 'PR 数' },
   { key: 'merged_pr_count', label: '合并 PR' },
   { key: 'pending_pr_count', label: '未合并 PR' },
-  { key: 'commit_count', label: 'Commits' },
   { key: 'code_additions', label: '代码增加' },
   { key: 'code_deletions', label: '代码删除' },
   { key: 'review_count', label: 'Review 数' },
@@ -778,7 +777,7 @@ const sortableColumns: { key: string; label: string }[] = [
 
 function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRepo: string | undefined }) {
   const navigate = useNavigate()
-  const [roleType, setRoleType] = useState('developer')
+  const [roleType, setRoleType] = useState('author')
   const [rankings, setRankings] = useState<RankingItem[]>([])
   const [rankingLoading, setRankingLoading] = useState(false)
   const [rankingTotal, setRankingTotal] = useState(0)
@@ -797,17 +796,10 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const fetchRanking = useCallback(async (page: number, size: number) => {
     setRankingLoading(true)
     try {
-      // 当没有自定义排序时，按当前 Y 轴类型默认排序
-      const axisSortMap: Record<string, string> = {
-        error_score: 'error_score',
-        review_count: 'review_count',
-        merged_pr_count: 'merged_pr_count',
-        code_additions: 'code_additions',
-      }
-      const defaultSortField = axisSortMap[rankingYAxis] || rankingYAxis
-      const defaultSortOrder = rankingYAxis === 'error_score' ? 'asc' : 'desc'
-      const sortKey = sortRules.length > 0 ? sortRules[0].field : defaultSortField
-      const sortDir = sortRules.length > 0 ? sortRules[0].order : defaultSortOrder
+      // 默认排序：贡献者按 pr_count，评审人按 review_count
+      const defaultSortField = roleType === 'reviewer' ? 'review_count' : 'pr_count'
+      const sortKey = sortRules.length > 0 ? (sortRules[0].field === 'score' ? 'pr_count' : sortRules[0].field) : defaultSortField
+      const sortDir = sortRules.length > 0 ? sortRules[0].order : 'desc'
       const data = await getRanking(roleType, size, {
         repo_name: selectedRepo || null,
         sort_by: sortKey,
@@ -871,7 +863,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     URL.revokeObjectURL(url)
   }
 
-  const roleTypeLabel = roleType === 'developer' ? '开发者' : roleType === 'reviewer' ? '检视者' : 'Maintainer'
+  const roleTypeLabel = roleType === 'reviewer' ? '评审人' : '贡献者'
 
   const applySort = useCallback((data: RankingItem[], rules: SortRule[]) => {
     if (rules.length === 0) return data
@@ -1053,9 +1045,8 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={24}>
           <Space wrap>
-            <Button type={roleType === 'developer' ? 'primary' : 'default'} onClick={() => { setRoleType('developer'); setPagination(p => ({ ...p, current: 1 })) }}>开发者排行</Button>
-            <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>检视者排行</Button>
-            <Button type={roleType === 'maintainer' ? 'primary' : 'default'} onClick={() => { setRoleType('maintainer'); setPagination(p => ({ ...p, current: 1 })) }}>Maintainer 排行</Button>
+            <Button type={roleType === 'author' ? 'primary' : 'default'} onClick={() => { setRoleType('author'); setPagination(p => ({ ...p, current: 1 })) }}>贡献者排行</Button>
+            <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>评审人排行</Button>
             <Divider type="vertical" />
             <span style={{ fontSize: 13, color: '#8c8c8c' }}>象限筛选:</span>
             <Button type={!quadrantFilter ? 'primary' : 'default'} onClick={() => { setQuadrantFilter(''); setPagination(p => ({ ...p, current: 1 })) }}>全部</Button>
@@ -1082,17 +1073,12 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="开发者人数" value={roleStats?.developer_count ?? 0} valueStyle={{ color: '#1890ff' }} />
+            <Statistic title="贡献者（作者）人数" value={roleStats?.developer_count ?? 0} valueStyle={{ color: '#1890ff' }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="检视者人数" value={roleStats?.reviewer_count ?? 0} valueStyle={{ color: '#722ed1' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic title="Maintainer 人数" value={roleStats?.maintainer_count ?? 0} valueStyle={{ color: '#fa8c16' }} />
+            <Statistic title="评审人人数" value={roleStats?.reviewer_count ?? 0} valueStyle={{ color: '#722ed1' }} />
           </Card>
         </Col>
         <Col span={6}>
@@ -1100,14 +1086,9 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             <Statistic title="总 PR 数" value={roleStats?.total_pr ?? 0} valueStyle={{ color: '#52c41a' }} />
           </Card>
         </Col>
-
-        <Col span={12}>
-          <Card title="角色统计详情" size="small">
-            <Descriptions bordered size="small" column={1}>
-              <Descriptions.Item label="总代码行数">{roleStats?.total_code_lines ?? 0} 行</Descriptions.Item>
-              <Descriptions.Item label="总 Review 数">{roleStats?.total_reviews ?? 0} 次</Descriptions.Item>
-              <Descriptions.Item label="总 Approval 数">{roleStats?.total_approvals ?? 0} 次</Descriptions.Item>
-            </Descriptions>
+        <Col span={6}>
+          <Card size="small">
+            <Statistic title="总代码行数" value={roleStats?.total_code_lines ?? 0} valueStyle={{ color: '#fa8c16' }} />
           </Card>
         </Col>
       </Row>

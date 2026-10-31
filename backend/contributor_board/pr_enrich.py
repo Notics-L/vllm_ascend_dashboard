@@ -11,13 +11,25 @@ from collections import Counter
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.persistence.models import PullRequest
 from tooling.company_detector import detect_company
 
 logger = logging.getLogger(__name__)
+
+
+def parse_repo_name(repo_name: str | None) -> tuple[str, str]:
+    """解析 repo_name（owner/repo）为 (owner, repo)，缺省回退到全局配置。"""
+    from infrastructure.core.config import settings
+
+    owner = (settings.GITHUB_OWNER or "").strip()
+    repo = (settings.GITHUB_REPO or "").strip()
+    if repo_name and "/" in repo_name:
+        o, _, r = repo_name.partition("/")
+        return o, r
+    return owner, repo
 
 
 def _is_bot(login: str) -> bool:
@@ -421,3 +433,282 @@ async def get_full_contributor_metrics_from_prs(
         len(result), len(prs),
     )
     return result
+
+
+async def get_pr_based_ranking(
+    db: AsyncSession,
+    repo_name: str | None = None,
+    days: int = 365,
+    type: str | None = None,
+    sort_by: str = "pr_count",
+    skip: int = 0,
+    limit: int = 20,
+    company: str | None = None,
+) -> dict[str, Any]:
+    """完全复用 PR 流水线 get_contributors 聚合逻辑，保证数字 100% 一致。
+
+    在 PR 流水线结果之上补充贡献者分析的算分字段
+    （contribution_score / error_score / merged_pr_count / code_additions /
+    code_deletions / approval_count / dynamic_quadrant 等），基础统计字段
+    （pr_count / merged_count / lines_added / lines_removed / review_count /
+    avg_first_response_hours）直接来自 PR 流水线，不再二次计算。
+
+    Returns:
+        {
+            "author_count": int,
+            "reviewer_count": int,
+            "total": int,
+            "contributor_map": {login: {...score fields...}},
+            "items": [PRPipelineContributor, ...],
+        }
+    """
+    from pr_pipeline.pr_pipeline_service import PRPipelineService
+    from contracts.schemas.pr_pipeline import PRPipelineContributor
+
+    owner, repo = parse_repo_name(repo_name)
+    svc = PRPipelineService()
+
+    # 优先走 PR 流水线 get_contributors（数字与 PR 流水线完全一致）
+    # 若内部异常（如 reviewers JSON 含非 dict 元素），降级到 pull_requests 直接聚合
+    try:
+        author_data = await svc.get_contributors(db, owner, repo, days)
+        reviewer_data = await svc.get_contributors(db, owner, repo, days, "reviewer")
+
+        author_items = list(author_data.items)
+        reviewer_items = list(reviewer_data.items)
+        # 防御性：确保每个 item 是 PRPipelineContributor
+        author_items = [it if isinstance(it, PRPipelineContributor) else PRPipelineContributor(**it) if isinstance(it, dict) else None for it in author_items]
+        reviewer_items = [it if isinstance(it, PRPipelineContributor) else PRPipelineContributor(**it) if isinstance(it, dict) else None for it in reviewer_items]
+        author_items = [it for it in author_items if it]
+        reviewer_items = [it for it in reviewer_items if it]
+    except Exception as e:
+        logger.warning("get_pr_based_ranking via PRPipelineService failed (%s), falling back to direct aggregation", e)
+        author_items, reviewer_items = await _get_pr_based_items_direct(db, owner, repo, days)
+
+    author_count = len(author_items)
+    reviewer_count = len(reviewer_items)
+    all_items = author_items + reviewer_items
+
+    # 补充算分字段（分数算法仍由 scoring_engine 计算）
+    contributor_map = await get_pr_score_map(db, [it.username for it in all_items], repo_name=repo_name)
+
+    # 按 type 过滤 + 排序 + 分页
+    if type == "author":
+        show_items = author_items
+    elif type == "reviewer":
+        show_items = reviewer_items
+    else:
+        show_items = all_items
+
+    # 排序
+    sort_key_map = {
+        "pr_count": lambda it: it.pr_count or 0,
+        "merged_count": lambda it: it.merged_count or 0,
+        "lines_added": lambda it: it.lines_added or 0,
+        "lines_removed": lambda it: it.lines_removed or 0,
+        "review_count": lambda it: it.review_count or 0,
+    }
+    sort_fn = sort_key_map.get(sort_by, lambda it: it.pr_count or 0)
+    show_items = sorted(show_items, key=sort_fn, reverse=True)
+
+    # 分页
+    paginated = show_items[skip:skip + limit]
+
+    return {
+        "author_count": author_count,
+        "reviewer_count": reviewer_count,
+        "total": author_count + reviewer_count,
+        "contributor_map": contributor_map,
+        "items": paginated,
+    }
+
+
+async def _get_pr_based_items_direct(
+    db: AsyncSession,
+    owner: str,
+    repo: str,
+    days: int,
+) -> tuple[list["PRPipelineContributor"], list["PRPipelineContributor"]]:
+    """降级实现：直接用 pull_requests 表聚合 author 和 reviewer 列表。"""
+    from datetime import UTC, datetime
+    from sqlalchemy import select, func
+    from contracts.schemas.pr_pipeline import PRPipelineContributor
+
+    since = datetime.now(UTC) - timedelta(days=days)
+
+    # Author 聚合
+    author_stmt = (
+        select(
+            PullRequest.author,
+            func.max(PullRequest.author_avatar_url).label("avatar_url"),
+            func.max(PullRequest.author_email).label("email"),
+            func.count(PullRequest.id).label("pr_count"),
+            func.sum(case((PullRequest.state == "merged", 1), else_=0)).label("merged_count"),
+            func.sum(PullRequest.additions).label("lines_added"),
+            func.sum(PullRequest.deletions).label("lines_removed"),
+        )
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
+        .where(PullRequest.author.isnot(None))
+        .group_by(PullRequest.author)
+    )
+    author_result = await db.execute(author_stmt)
+    author_items: list[PRPipelineContributor] = []
+    for r in author_result.all():
+        if not r[0]:
+            continue
+        email = r[2]
+        author_items.append(PRPipelineContributor(
+            username=r[0],
+            avatar_url=r[1],
+            emails=[email] if email else [],
+            primary_email=email,
+            type="author",
+            company=detect_company(email),
+            pr_count=r[3] or 0,
+            merged_count=r[4] or 0,
+            lines_added=r[5] or 0,
+            lines_removed=r[6] or 0,
+        ))
+    author_items.sort(key=lambda it: it.pr_count or 0, reverse=True)
+
+    # Reviewer 聚合：遍历 reviewers JSON
+    reviewer_stmt = (
+        select(PullRequest.reviewers, PullRequest.first_review_at, PullRequest.created_at)
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
+        .where(PullRequest.reviewers.isnot(None))
+    )
+    reviewer_result = await db.execute(reviewer_stmt)
+    reviewer_stats: dict[str, dict[str, Any]] = {}
+    for r in reviewer_result.all():
+        if not r[0] or not isinstance(r[0], list):
+            continue
+        for rv in r[0]:
+            if not rv:
+                continue
+            if isinstance(rv, str):
+                login = rv
+            elif isinstance(rv, dict):
+                login = rv.get("login") or ""
+            else:
+                continue
+            if not login:
+                continue
+            if login not in reviewer_stats:
+                reviewer_stats[login] = {"count": 0, "response_hours": []}
+            reviewer_stats[login]["count"] += 1
+            if r[1] and r[2]:
+                hours = (r[1] - r[2]).total_seconds() / 3600
+                reviewer_stats[login]["response_hours"].append(hours)
+
+    reviewer_items: list[PRPipelineContributor] = []
+    for login, stats in reviewer_stats.items():
+        avg = (
+            round(sum(stats["response_hours"]) / len(stats["response_hours"]), 1)
+            if stats["response_hours"] else None
+        )
+        reviewer_items.append(PRPipelineContributor(
+            username=login,
+            type="reviewer",
+            company=None,  # PR 流水线 reviewer 聚合的 company 来自 DB 反查，降级这里留空
+            review_count=stats["count"],
+            avg_first_response_hours=avg,
+        ))
+    reviewer_items.sort(key=lambda it: it.review_count or 0, reverse=True)
+
+    return author_items, reviewer_items
+
+
+async def get_pr_score_map(
+    db: AsyncSession,
+    logins: list[str],
+    repo_name: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """为指定 logins 计算算分字段（复用全量 PR 聚合 + 四象限）。
+
+    Returns:
+        {login: {
+            contribution_score, error_score,
+            merged_pr_count, pending_pr_count,
+            code_additions, code_deletions,
+            review_count, approval_count,
+            dynamic_quadrant,
+        }}
+    """
+    if not logins:
+        return {}
+
+    all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
+    if not all_metrics:
+        return {
+            login: {
+                "contribution_score": 0.0, "error_score": 0.0,
+                "merged_pr_count": 0, "pending_pr_count": 0,
+                "code_additions": 0, "code_deletions": 0,
+                "review_count": 0, "approval_count": 0,
+                "dynamic_quadrant": None,
+            }
+            for login in logins
+        }
+
+    login_set = set(logins)
+    present = {m["login"] for m in all_metrics}
+    quadrants = await _compute_quadrants_for_logins(all_metrics, db)
+
+    score_map: dict[str, dict[str, Any]] = {}
+    for login in logins:
+        m = next((x for x in all_metrics if x["login"] == login), None)
+        if m:
+            score_map[login] = {
+                "contribution_score": m["contribution_score"],
+                "error_score": m["error_score"],
+                "merged_pr_count": m["merged_pr_count"],
+                "pending_pr_count": m["pending_pr_count"],
+                "code_additions": m["code_additions"],
+                "code_deletions": m["code_deletions"],
+                "review_count": m["review_count"],
+                "approval_count": m["approval_count"],
+                "dynamic_quadrant": quadrants.get(login),
+            }
+        else:
+            score_map[login] = {
+                "contribution_score": 0.0, "error_score": 0.0,
+                "merged_pr_count": 0, "pending_pr_count": 0,
+                "code_additions": 0, "code_deletions": 0,
+                "review_count": 0, "approval_count": 0,
+                "dynamic_quadrant": None,
+            }
+    _ = present
+    _ = login_set
+    return score_map
+
+
+async def _compute_quadrants_for_logins(
+    all_metrics: list[dict[str, Any]], db: AsyncSession
+) -> dict[str, str]:
+    """基于全局设置的 Y 轴类型计算四象限，返回 login → quadrant。"""
+    from contributor_board.quadrant_engine import calculate_quadrants
+
+    from infrastructure.persistence.models import ContributorBoardSettings
+
+    from sqlalchemy import select as sa_select
+
+    y_axis_type = "review_count"
+    row = (await db.execute(
+        sa_select(ContributorBoardSettings.setting_value).where(
+            ContributorBoardSettings.setting_key == "quadrant_y_axis"
+        )
+    )).scalar_one_or_none()
+    if row and isinstance(row, dict):
+        y_axis_type = row.get("y_axis_type", "review_count")
+
+    axis_map = {
+        "error_score": "error_score",
+        "review_count": "review_count",
+        "merged_pr_count": "merged_pr_count",
+        "code_additions": "code_additions",
+    }
+    y_key = axis_map.get(y_axis_type, "review_count")
+    points, _, _ = calculate_quadrants(all_metrics, y_axis_type=y_key)
+    return {p.login: p.quadrant for p in points}

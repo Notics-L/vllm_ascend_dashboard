@@ -166,7 +166,11 @@ async def refresh_all_roles(db) -> int:
 
 async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
     """
-    获取角色维度统计（从 pull_requests 表实时聚合，与排行榜数据源一致）
+    获取角色维度统计（与 PR 流水线贡献者 Tab 一致，只分贡献者/评审人）。
+
+    优先复用 PR 流水线 get_contributors 聚合逻辑；
+    若 PR 流水线内部遇到异常（如 reviewers JSON 含非 dict 元素导致 .get() 报错），
+    降级到 pull_requests 表直接聚合（同样基于 PR 流水线数据源，结果一致）。
 
     Args:
         db: 数据库会话
@@ -175,50 +179,93 @@ async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
     Returns:
         角色统计信息
     """
-    from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+    from pr_pipeline.pr_pipeline_service import PRPipelineService
+    from contributor_board.pr_enrich import parse_repo_name
 
-    all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
+    owner, repo = parse_repo_name(repo_name)
+    days = 365
 
-    role_data: dict[str, dict[str, int | float]] = {
-        "developer": {"count": 0, "total_pr": 0, "total_code": 0, "total_score": 0},
-        "reviewer": {"count": 0, "total_review": 0, "total_approval": 0, "total_score": 0},
-        "maintainer": {"count": 0, "total_merge": 0, "total_score": 0},
-    }
+    try:
+        svc = PRPipelineService()
+        author_data = await svc.get_contributors(db, owner, repo, days)
+        reviewer_data = await svc.get_contributors(db, owner, repo, days, "reviewer")
 
-    for m in all_metrics:
-        roles = detect_roles(
-            merged_pr_count=m.get("merged_pr_count", 0),
-            review_count=m.get("review_count", 0),
-            approval_count=m.get("approval_count", 0),
-            merge_count=0,
-            code_additions=m.get("code_additions", 0),
+        author_items = list(author_data.items)
+        reviewer_items = list(reviewer_data.items)
+
+        total_pr = sum(getattr(it, "pr_count", 0) or 0 for it in author_items)
+        total_code_lines = sum(getattr(it, "lines_added", 0) or 0 for it in author_items)
+        total_reviews = sum(getattr(it, "review_count", 0) or 0 for it in reviewer_items)
+
+        return RoleStats(
+            developer_count=len(author_items),
+            reviewer_count=len(reviewer_items),
+            maintainer_count=0,
+            total_pr=total_pr,
+            total_code_lines=total_code_lines,
+            total_reviews=total_reviews,
+            total_approvals=0,
         )
+    except Exception as e:
+        logger.warning("get_role_stats via PRPipelineService failed (%s), falling back to direct aggregation", e)
+        return await _get_role_stats_direct(db, repo_name)
 
-        if "developer" in roles:
-            role_data["developer"]["count"] += 1
-            role_data["developer"]["total_pr"] += m.get("merged_pr_count", 0)
-            role_data["developer"]["total_code"] += m.get("code_additions", 0)
-            role_data["developer"]["total_score"] += m.get("contribution_score", 0)
 
-        if "reviewer" in roles:
-            role_data["reviewer"]["count"] += 1
-            role_data["reviewer"]["total_review"] += m.get("review_count", 0)
-            role_data["reviewer"]["total_approval"] += m.get("approval_count", 0)
-            role_data["reviewer"]["total_score"] += m.get("contribution_score", 0)
+async def _get_role_stats_direct(db, repo_name: str | None = None) -> RoleStats:
+    """
+    降级实现：直接用 pull_requests 表聚合（与 PR 流水线数据源一致）。
+    """
+    from sqlalchemy import select
+    from infrastructure.persistence.models import PullRequest
+    from contributor_board.pr_enrich import parse_repo_name
 
-        if "maintainer" in roles:
-            role_data["maintainer"]["count"] += 1
-            role_data["maintainer"]["total_merge"] += m.get("merged_pr_count", 0)
-            role_data["maintainer"]["total_score"] += m.get("contribution_score", 0)
+    owner, repo = parse_repo_name(repo_name)
+
+    # 贡献者（作者）：distinct author
+    author_stmt = (
+        select(PullRequest.author,
+               PullRequest.additions)
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.author.isnot(None))
+    )
+    author_result = await db.execute(author_stmt)
+    author_rows = author_result.all()
+    author_logins = {r[0] for r in author_rows if r[0]}
+    total_code_lines = sum(r[1] or 0 for r in author_rows if r[1])
+
+    # 总 PR 数
+    total_pr = len(author_rows) if author_rows else 0
+
+    # 评审人：遍历 reviewers JSON
+    reviewer_stmt = (
+        select(PullRequest.reviewers)
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.reviewers.isnot(None))
+    )
+    reviewer_result = await db.execute(reviewer_stmt)
+    reviewer_set: set[str] = set()
+    total_reviews = 0
+    for (r,) in reviewer_result.all():
+        if not r or not isinstance(r, list):
+            continue
+        for rv in r:
+            if isinstance(rv, str) and rv:
+                reviewer_set.add(rv)
+                total_reviews += 1
+            elif isinstance(rv, dict):
+                login = rv.get("login") or ""
+                if login:
+                    reviewer_set.add(login)
+                    total_reviews += 1
 
     return RoleStats(
-        developer_count=int(role_data["developer"]["count"]),
-        reviewer_count=int(role_data["reviewer"]["count"]),
-        maintainer_count=int(role_data["maintainer"]["count"]),
-        total_pr=int(role_data["developer"]["total_pr"]),
-        total_code_lines=int(role_data["developer"]["total_code"]),
-        total_reviews=int(role_data["reviewer"]["total_review"]),
-        total_approvals=int(role_data["reviewer"]["total_approval"]),
+        developer_count=len(author_logins),
+        reviewer_count=len(reviewer_set),
+        maintainer_count=0,
+        total_pr=total_pr,
+        total_code_lines=total_code_lines,
+        total_reviews=total_reviews,
+        total_approvals=0,
     )
 
 

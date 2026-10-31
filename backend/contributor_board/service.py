@@ -3,7 +3,7 @@
 """
 import asyncio
 import logging
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from contracts.schemas.contributor_board import (
@@ -318,58 +318,69 @@ class ContributorBoardService:
 
     @staticmethod
     async def get_overview_stats(db) -> ContributorOverviewStats:
-        contributors_result = await db.execute(
-            select(func.count(Contributor.id))
-        )
-        total_contributors = int(contributors_result.scalar() or 0)
+        """顶部统计卡片：完全复用 PR 流水线数据源，与排行榜/四象限对齐。"""
+        from contributor_board.pr_enrich import get_pr_based_ranking
+        from contributor_board.quadrant_engine import calculate_quadrants
 
-        community_result = await db.execute(
-            select(func.sum(Contributor.is_community.cast(Integer)))
-        )
-        community_contributors = int(community_result.scalar() or 0)
+        ranking = await get_pr_based_ranking(db, repo_name=None, days=365, type=None)
+        all_items = list(ranking["items"])
+        score_map = ranking["contributor_map"]
 
-        quadrant_result = await db.execute(
-            select(
-                ContributorMetrics.quadrant,
-                func.count(ContributorMetrics.id),
-            ).group_by(ContributorMetrics.quadrant)
-        )
-        quadrant_distribution: dict[str, int] = {k: int(v) for k, v in quadrant_result.all()}
+        total_contributors = len(all_items)
+        community_contributors = 0
+        for it in all_items:
+            # PR 流水线 author 聚合不单独返回公司，author 有 company
+            company = it.company
+            if company != "华为" and company is not None:
+                community_contributors += 1
 
-        top_result = await db.execute(
-            select(
-                Contributor.login,
-                Contributor.avatar_url,
-                ContributorMetrics.contribution_score,
-                ContributorMetrics.merge_count,
-                ContributorMetrics.review_count,
-                ContributorMetrics.approval_count,
-                ContributorMetrics.quadrant,
-            )
-            .outerjoin(ContributorMetrics, Contributor.id == ContributorMetrics.contributor_id)
-            .order_by(ContributorMetrics.contribution_score.desc())
-            .limit(10)
-        )
-        top_rows = top_result.all()
+        # 象限分布：复用与四象限看板相同的算法（基于算分字段）
+        all_metrics = [
+            {
+                "login": it.username,
+                "avatar_url": it.avatar_url,
+                "contribution_score": score_map.get(it.username, {}).get("contribution_score", 0),
+                "error_score": score_map.get(it.username, {}).get("error_score", 0),
+                "merged_pr_count": it.merged_count,
+                "code_additions": it.lines_added,
+                "code_deletions": it.lines_removed,
+                "review_count": it.review_count,
+                "approval_count": score_map.get(it.username, {}).get("approval_count", 0),
+                "is_community": community_contributors > 0,
+                "role_label": None,
+            }
+            for it in all_items
+        ]
+        quadrant_distribution: dict[str, int] = {}
+        for m in all_metrics:
+            q = score_map.get(m["login"], {}).get("dynamic_quadrant")
+            if q:
+                quadrant_distribution[q] = quadrant_distribution.get(q, 0) + 1
+
+        # Top 10 贡献者（按 contribution_score 排序）
+        top_metrics = sorted(all_metrics, key=lambda m: m["contribution_score"], reverse=True)[:10]
         top_contributors: list[ContributorRankingItem] = [
             ContributorRankingItem(
-                login=r[0],
-                avatar_url=r[1],
-                score=float(r[2] or 0),
+                login=m["login"],
+                avatar_url=m["avatar_url"],
+                score=m["contribution_score"],
                 rank=i + 1,
-                merged_pr_count=int(r[3] or 0),
-                review_count=int(r[4] or 0),
-                approval_count=int(r[5] or 0),
-                contribution_score=float(r[2] or 0),
-                quadrant=r[6] or None,
+                merged_pr_count=m["merged_pr_count"],
+                review_count=m["review_count"],
+                approval_count=m["approval_count"],
+                contribution_score=m["contribution_score"],
+                quadrant=m["login"] and score_map.get(m["login"], {}).get("dynamic_quadrant"),
+                contributor_type=next((it.type for it in all_items if it.username == m["login"]), "author"),
             )
-            for i, r in enumerate(top_rows)
+            for i, m in enumerate(top_metrics)
         ]
 
-        last_sync_result = await db.execute(
-            select(func.max(CommitClassification.created_at))
-        )
-        last_synced = last_sync_result.scalar()
+        # last_synced：取 PR 流水线里最近的 PR 创建时间
+        from sqlalchemy import select as sa_select
+        from infrastructure.persistence.models import PullRequest
+        last_synced = (await db.execute(
+            sa_select(func.max(PullRequest.created_at))
+        )).scalar()
 
         classification_summary = await ContributorBoardService.get_classification_summary_from_db(db)
         build_stats = await ContributorBoardService.get_build_optimization_stats_from_db(db)
@@ -636,7 +647,7 @@ class ContributorBoardService:
     @staticmethod
     async def get_ranking(
         db,
-        role_type: str = "developer",
+        role_type: str = "author",
         repo_name: str | None = None,
         sort_by: str | None = None,
         sort_order: str = "desc",
@@ -644,93 +655,106 @@ class ContributorBoardService:
         limit: int = 20,
         quadrant: str | None = None,
         y_axis_type: str | None = None,
+        days: int = 365,
     ) -> ContributorRankingResponse:
-        agg_columns: dict[str, Any] = {
-            "score": "contribution_score",
-            "merged_pr_count": "merged_pr_count",
-            "pending_pr_count": "pending_pr_count",
-            "commit_count": "commit_count",
-            "code_additions": "code_additions",
-            "code_deletions": "code_deletions",
-            "review_count": "review_count",
-            "approval_count": "approval_count",
-            "error_score": "error_score",
-            "login": "login",
+        """排行榜：完全复用 PR 流水线 get_contributors 聚合逻辑。
+
+        基础统计字段（pr_count / merged_count / lines_added / lines_removed /
+        review_count / avg_first_response_hours / company / primary_email）
+        直接来自 PR 流水线，与 PR 流水线贡献者 Tab 完全一致。
+        贡献者分数/四象限等算分字段由 scoring_engine 附加。
+        """
+        from contributor_board.pr_enrich import get_pr_based_ranking
+
+        # role_type 兼容：旧值 developer→author, maintainer→author, all→None
+        type_map = {
+            "developer": "author",
+            "author": "author",
+            "reviewer": "reviewer",
+            "maintainer": "author",
+            "all": None,
+            None: None,
         }
+        contributor_type = type_map.get(role_type, "author")
 
-        # 获取全量聚合数据
-        all_metrics = await ContributorBoardService._build_aggregated_metrics(db, repo_name=repo_name)
+        # 默认排序：贡献者按 pr_count，评审人按 review_count
+        default_sort = "review_count" if contributor_type == "reviewer" else "pr_count"
+        pr_sort_by = sort_by or default_sort
 
-        # 计算动态四象限（配置驱动，支持外部指定 Y 轴类型）
-        if y_axis_type:
-            axis_map = {
-                "error_score": "error_score",
-                "review_count": "review_count",
-                "merged_pr_count": "merged_pr_count",
-                "code_additions": "code_additions",
-            }
-            y_key = axis_map.get(y_axis_type, "error_score")
-            from contributor_board.quadrant_engine import calculate_quadrants
-            points, _, _ = calculate_quadrants(all_metrics, y_axis_type=y_key)
-            quadrant_map = {p.login: p.quadrant for p in points}
-        else:
-            quadrant_map = await ContributorBoardService._compute_quadrants_for_metrics(all_metrics, db)
+        ranking = await get_pr_based_ranking(
+            db, repo_name=repo_name, days=days,
+            type=contributor_type, sort_by=pr_sort_by,
+            skip=offset, limit=limit,
+        )
 
-        # 四象限过滤
+        items = ranking["items"]
+        score_map = ranking["contributor_map"]
+
+        # 四象限过滤（基于算分字段）
         if quadrant:
-            all_metrics = [
-                m for m in all_metrics
-                if quadrant_map.get(m["login"]) == quadrant
-            ]
+            items = [it for it in items if score_map.get(it.username, {}).get("dynamic_quadrant") == quadrant]
 
-        # 按角色类型排序
-        if role_type == "reviewer":
-            default_sort = "review_count"
-        elif role_type == "maintainer":
-            default_sort = "merged_pr_count"
-        else:
-            default_sort = "score"
+        # 排序字段名统一映射到 PR 流水线结果字段（兼容前端/后端字段名）
+        def _field_value(it, field: str) -> float:
+            sc = score_map.get(it.username, {})
+            mapping = {
+                "pr_count": it.pr_count,
+                "commit_count": it.pr_count,
+                "merged_count": it.merged_count,
+                "merged_pr_count": it.merged_count,
+                "lines_added": it.lines_added,
+                "code_additions": it.lines_added,
+                "lines_removed": it.lines_removed,
+                "code_deletions": it.lines_removed,
+                "review_count": it.review_count,
+                "avg_first_response_hours": it.avg_first_response_hours or 0,
+                "score": sc.get("contribution_score", 0),
+                "contribution_score": sc.get("contribution_score", 0),
+                "error_score": sc.get("error_score", 0),
+                "approval_count": sc.get("approval_count", 0),
+                "pending_pr_count": sc.get("pending_pr_count", 0),
+                "login": it.username,
+            }
+            return mapping.get(field, 0) or 0
 
-        sort_key = (sort_by or default_sort)
-        sort_field = agg_columns.get(sort_key, default_sort)
+        effective_sort = (sort_by or default_sort)
         reverse = sort_order == "desc"
+        # 平均响应时长越小越好，asc 更合理
+        if effective_sort == "avg_first_response_hours":
+            if not sort_order:
+                reverse = False
+        items = sorted(items, key=lambda it: _field_value(it, effective_sort), reverse=reverse)
 
-        sorted_metrics = sorted(all_metrics, key=lambda m: m.get(sort_field, 0), reverse=reverse)
-
-        # 应用分页
-        paginated = sorted_metrics[offset:offset + limit]
-        total = len(sorted_metrics)
-
-        # PR 数据已包含 company/primary_email/is_bot
-        rankings: list[ContributorRankingItem] = [
-            ContributorRankingItem(
-                login=m["login"],
-                avatar_url=m["avatar_url"],
-                employee_id=m["employee_id"],
-                score=m["contribution_score"],
+        rankings: list[ContributorRankingItem] = []
+        for i, it in enumerate(items):
+            sc = score_map.get(it.username, {})
+            rankings.append(ContributorRankingItem(
+                login=it.username,
+                avatar_url=it.avatar_url,
+                employee_id=None,
+                score=sc.get("contribution_score", 0.0),
                 rank=i + 1 + offset,
-                merged_pr_count=m["merged_pr_count"],
-                pending_pr_count=m["pending_pr_count"],
-                code_additions=m["code_additions"],
-                code_deletions=m["code_deletions"],
-                review_count=m["review_count"],
-                approval_count=m["approval_count"],
-                contribution_score=m["contribution_score"],
-                error_score=m["error_score"],
-                commit_count=m.get("commit_count", 0),
-                dynamic_quadrant=quadrant_map.get(m["login"]),
-                role_label=m["role_label"],
-                company=m.get("company"),
-                primary_email=m.get("primary_email"),
-                is_bot=m.get("is_bot", False),
-            )
-            for i, m in enumerate(paginated)
-        ]
+                merged_pr_count=it.merged_count,
+                pending_pr_count=sc.get("pending_pr_count", 0),
+                code_additions=it.lines_added,
+                code_deletions=it.lines_removed,
+                review_count=it.review_count,
+                approval_count=sc.get("approval_count", 0),
+                contribution_score=sc.get("contribution_score", 0.0),
+                error_score=sc.get("error_score", 0.0),
+                commit_count=it.pr_count,
+                dynamic_quadrant=sc.get("dynamic_quadrant"),
+                role_label=None,
+                company=it.company,
+                primary_email=it.primary_email,
+                is_bot=it.username.lower().endswith("[bot]") or it.username.lower().endswith("-bot"),
+                contributor_type=it.type,
+            ))
 
         return ContributorRankingResponse(
             role_type=role_type,
             rankings=rankings,
-            total=total,
+            total=ranking["total"],
             repo_name=repo_name,
         )
 
@@ -1060,114 +1084,184 @@ class ContributorBoardService:
         period_start: date | None = None,
         period_end: date | None = None,
     ) -> ExtendedTrendResponse:
-        from sqlalchemy import select, func as sa_func, case as sa_case
+        """贡献者趋势：完全复用 PR 流水线数据源（pull_requests 表）。
 
-        from contributor_board.policy_engine import get_trend_data
+        - 提交量趋势：该作者的 PR 按天聚合（合并数 / 代码增加 / 代码删除）
+        - Review 趋势：该作者作为 reviewer 的 PR 按天聚合（review 数 / approval 数）
+        - 多维分数趋势：基于当日累计统计 + scoring_engine 计算
+        """
+        from sqlalchemy import case as sa_case, func as sa_func, select as sa_select
+
+        from contributor_board.scoring_engine import (
+            calculate_contribution_score,
+            get_default_weights,
+        )
         from contracts.schemas.contributor_board import (
             CommitTrendPoint,
             ReviewTrendPoint,
             ScoreTrendPoint,
         )
-        from infrastructure.persistence.models import CommitClassification
+        from infrastructure.persistence.models import PullRequest
 
-        # ContributorReview model may not exist in all deployments
-        try:
-            from infrastructure.persistence.models import ContributorReview  # noqa: F401
-            has_review_model = True
-        except ImportError:
-            ContributorReview = None  # type: ignore[assignment,misc]
-            has_review_model = False
+        since_utc = datetime.now(UTC) - timedelta(days=365)
 
-        metrics = await ContributorBoardService._fetch_contributor_metrics(
-            db, login, period_start, period_end
-        )
-
-        # Monthly score trend from ContributorMetrics (unchanged)
-        trend = get_trend_data(login, list(metrics))
-
-        # Day-level commit trend from CommitClassification
-        commit_stmt = (
-            select(
-                sa_func.date(CommitClassification.created_at).label("day"),
-                sa_func.count(CommitClassification.id).label("commit_count"),
-                sa_func.count(
-                    sa_case(
-                        (CommitClassification.commit_type == "Feature", 1)
-                    )
-                ).label("feature_count"),
-                sa_func.count(
-                    sa_case(
-                        (CommitClassification.commit_type == "BugFix", 1)
-                    )
-                ).label("bugfix_count"),
+        # 1. 该作者作为 author 的 PR
+        author_stmt = (
+            sa_select(
+                sa_func.date(PullRequest.created_at).label("day"),
+                sa_func.count(PullRequest.id).label("pr_count"),
+                sa_func.sum(sa_case((PullRequest.state == "merged", PullRequest.additions), else_=0)).label("merged_additions"),
+                sa_func.sum(PullRequest.additions).label("total_additions"),
+                sa_func.sum(PullRequest.deletions).label("total_deletions"),
+                sa_func.sum(sa_case((PullRequest.state == "merged", 1), else_=0)).label("merged_count"),
             )
-            .where(CommitClassification.contributor_login == login)
-            .group_by(sa_func.date(CommitClassification.created_at))
-            .order_by(sa_func.date(CommitClassification.created_at))
+            .where(PullRequest.author == login)
+            .where(PullRequest.created_at >= since_utc)
+            .group_by(sa_func.date(PullRequest.created_at))
+            .order_by(sa_func.date(PullRequest.created_at))
         )
         if period_start:
-            commit_stmt = commit_stmt.where(CommitClassification.created_at >= period_start)
+            author_stmt = author_stmt.where(PullRequest.created_at >= datetime.combine(period_start, time(0, 0, 0), tzinfo=UTC))
         if period_end:
-            commit_stmt = commit_stmt.where(CommitClassification.created_at <= period_end)
+            author_stmt = author_stmt.where(PullRequest.created_at <= datetime.combine(period_end, time(23, 59, 59, 999999), tzinfo=UTC))
 
-        commit_result = await db.execute(commit_stmt)
-        commit_rows = commit_result.all()
+        author_result = await db.execute(author_stmt)
+        author_rows = {str(r[0]): r for r in author_result.all()}
 
-        commit_trend: list[CommitTrendPoint] = [
-            CommitTrendPoint(
-                date=str(r[0]),
-                merged_pr_count=r[1],
-                code_additions=r[2],
-                code_deletions=r[3],
+        # 2. 该作者作为 reviewer 的 PR（遍历 reviewers JSON 数组）
+        reviewer_stmt = (
+            sa_select(
+                PullRequest.id,
+                PullRequest.reviewers,
+                sa_func.date(PullRequest.first_approved_at).label("approved_day"),
+                sa_func.date(PullRequest.first_review_at).label("review_day"),
             )
-            for r in commit_rows
-        ]
+            .where(PullRequest.reviewers.isnot(None))
+            .where(PullRequest.created_at >= since_utc)
+        )
+        reviewer_result = await db.execute(reviewer_stmt)
 
-        # Day-level review trend - fall back to monthly data if model doesn't exist
-        review_trend_list: list[dict] = []
-        if has_review_model:
-            try:
-                review_stmt = (
-                    select(
-                        sa_func.date(ContributorReview.reviewed_at).label("day"),
-                        sa_func.count(ContributorReview.id).label("review_count"),
-                        sa_func.count(
-                            sa_case(
-                                (ContributorReview.review_state == "APPROVED", 1)
-                            )
-                        ).label("approval_count"),
-                    )
-                    .where(ContributorReview.contributor_login == login)
-                    .group_by(sa_func.date(ContributorReview.reviewed_at))
-                    .order_by(sa_func.date(ContributorReview.reviewed_at))
+        review_by_day: dict[str, dict[str, int]] = {}
+        for pr_id, reviewers, approved_day, review_day in reviewer_result.all():
+            if not reviewers or not isinstance(reviewers, list):
+                continue
+            for rv in reviewers:
+                if isinstance(rv, str):
+                    rv_login = rv
+                elif isinstance(rv, dict):
+                    rv_login = rv.get("login") or ""
+                else:
+                    continue
+                if rv_login != login:
+                    continue
+                day = review_day
+                if not day:
+                    continue
+                key = str(day)
+                d = review_by_day.setdefault(key, {"review": 0, "approval": 0})
+                d["review"] += 1
+                # 同日 approved 且该 reviewer approve 的，计 approval（PR 流水线 reviewers JSON 无 state，用 first_approved_at 当日近似）
+                if approved_day and str(approved_day) == key:
+                    d["approval"] += 1
+        if period_start:
+            review_by_day = {k: v for k, v in review_by_day.items() if k >= str(period_start)}
+        if period_end:
+            review_by_day = {k: v for k, v in review_by_day.items() if k <= str(period_end)}
+
+        # 3. 合并日期
+        all_days = sorted(set(author_rows.keys()) | set(review_by_day.keys()))
+        if not all_days:
+            return ExtendedTrendResponse(login=login)
+
+        # 读取评分权重
+        settings_row = (await db.execute(
+            sa_select(ContributorBoardSettings).where(
+                ContributorBoardSettings.setting_key == "scoring_weights"
+            )
+        )).scalars().first()
+        weights = get_default_weights()
+        if settings_row and isinstance(settings_row.setting_value, dict):
+            weights.update(settings_row.setting_value)
+
+        # 4. 构建逐日趋势 + 累计分数
+        commit_trend: list[CommitTrendPoint] = []
+        review_trend: list[ReviewTrendPoint] = []
+        score_trend: list[ScoreTrendPoint] = []
+
+        cum_merged = 0
+        cum_additions = 0
+        cum_deletions = 0
+        cum_reviews = 0
+        cum_approvals = 0
+
+        for day in all_days:
+            a = author_rows.get(day)
+            merged_pr = int(a[5]) if a else 0
+            pr_count = int(a[1]) if a else 0
+            merged_additions = int(a[2] or 0) if a else 0
+            total_additions = int(a[3] or 0) if a else 0
+            total_deletions = int(a[4] or 0) if a else 0
+
+            r = review_by_day.get(day)
+            review_count = r["review"] if r else 0
+            approval_count = r["approval"] if r else 0
+
+            cum_merged += merged_pr
+            cum_additions += merged_additions
+            cum_deletions += total_deletions
+            cum_reviews += review_count
+            cum_approvals += approval_count
+
+            # 当日 PR 效率（CI 失败数当日累加）
+            ci_failure_count = 0
+            if a:
+                ci_stmt = (
+                    sa_select(sa_func.count(PullRequest.id))
+                    .where(PullRequest.author == login)
+                    .where(PullRequest.created_at >= since_utc)
+                    .where(sa_func.date(PullRequest.created_at) == day)
+                    .where(PullRequest.ci_status.in_(["failure", "failed"]))
                 )
-                if period_start:
-                    review_stmt = review_stmt.where(ContributorReview.reviewed_at >= period_start)
-                if period_end:
-                    review_stmt = review_stmt.where(ContributorReview.reviewed_at <= period_end)
+                ci_failure_count = int((await db.execute(ci_stmt)).scalar() or 0)
 
-                review_result = await db.execute(review_stmt)
-                review_rows = review_result.all()
-                review_trend_list = [
-                    {
-                        "date": str(r[0]),
-                        "review_count": int(r[1]),
-                        "approval_count": int(r[2]),
-                    }
-                    for r in review_rows
-                ]
-            except Exception:
-                review_trend_list = trend.get("review_trend", [])
-        else:
-            review_trend_list = trend.get("review_trend", [])
+            score = calculate_contribution_score(
+                {
+                    "merged_pr_count": cum_merged,
+                    "code_additions": cum_additions,
+                    "code_deletions": cum_deletions,
+                    "review_count": cum_reviews,
+                    "approval_count": cum_approvals,
+                    "error_score": ci_failure_count * 0.1,
+                },
+                weights,
+                commit_type_counts={},
+            )
+
+            commit_trend.append(CommitTrendPoint(
+                date=day,
+                merged_pr_count=pr_count,
+                code_additions=total_additions,
+                code_deletions=total_deletions,
+            ))
+            review_trend.append(ReviewTrendPoint(
+                date=day,
+                review_count=review_count,
+                approval_count=approval_count,
+            ))
+            score_trend.append(ScoreTrendPoint(
+                date=day,
+                contribution_score=round(score, 2),
+                error_score=round(ci_failure_count * 0.1, 2),
+                review_count=cum_reviews,
+                merged_pr_count=cum_merged,
+                code_additions=cum_additions,
+            ))
 
         return ExtendedTrendResponse(
             login=login,
             commit_trend=commit_trend,
-            review_trend=[ReviewTrendPoint(**p) for p in review_trend_list],
-            score_trend=[
-                ScoreTrendPoint(**p) for p in trend.get("score_trend", [])
-            ],
+            review_trend=review_trend,
+            score_trend=score_trend,
         )
 
     # ---- 同步接口 ----

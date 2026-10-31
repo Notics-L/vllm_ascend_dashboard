@@ -211,10 +211,11 @@ class ContributorRankingItem(BaseModel):
     company: str | None = Field(None, description="公司（来自邮箱域名）")
     primary_email: str | None = Field(None, description="主要邮箱")
     is_bot: bool = Field(default=False, description="是否为机器人账号")
+    contributor_type: str = Field(default="author", description="贡献者类型: author/reviewer（与 PR 流水线一致）")
 
 
 class ContributorRankingResponse(BaseModel):
-    role_type: str = Field(description="角色类型")
+    role_type: str = Field(description="贡献者类型: author/reviewer/all")
     rankings: list[ContributorRankingItem] = []
     total: int = Field(default=0, description="总记录数")
     repo_name: str | None = Field(None, description="当前筛选的仓库")
@@ -426,9 +427,10 @@ class ContributorSyncSummary(BaseModel):
 # ============ Role Stats ============
 
 class RoleStats(BaseModel):
-    developer_count: int = 0
-    reviewer_count: int = 0
-    maintainer_count: int = 0
+    """贡献者统计（与 PR 流水线贡献者 Tab 一致，只分贡献者/评审人）。"""
+    developer_count: int = Field(default=0, description="贡献者（作者）人数")
+    reviewer_count: int = Field(default=0, description="评审人人数")
+    maintainer_count: int = Field(default=0, description="[deprecated] 不再使用")
     total_pr: int = 0
     total_code_lines: int = 0
     total_reviews: int = 0

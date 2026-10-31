@@ -219,21 +219,25 @@ async def get_quadrant_data(
 async def get_ranking(
     db: DbSession,
     _access: CurrentSuperAdminUser,
-    role_type: str = Query("developer", description="角色类型: developer/reviewer/maintainer"),
+    type: str | None = Query(None, description="贡献者类型: author/reviewer/all（与 PR 流水线一致）"),
+    role_type: str | None = Query(None, description="[deprecated] 旧参数，等价于 type"),
     repo_name: str | None = Query(None, description="仓库名过滤"),
-    sort_by: str | None = Query(None, description="排序字段"),
+    sort_by: str | None = Query(None, description="排序字段: pr_count/review_count/merged_count/lines_added/lines_removed/score/..."),
     sort_order: str = Query("desc", description="排序方向: asc/desc"),
     offset: int = Query(0, ge=0, description="分页偏移"),
     limit: int = Query(20, ge=1, le=200, description="分页大小"),
     quadrant: str | None = Query(None, description="四象限过滤: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE"),
     y_axis_type: str | None = Query(None, description="四象限Y轴类型: error_score/review_count/merged_pr_count/code_additions"),
+    days: int = Query(365, ge=1, le=365, description="统计时间窗（天）"),
 ):
-    """获取排行榜（全量统计，管理员可见）"""
+    """获取排行榜（完全复用 PR 流水线贡献者数据，管理员可见）"""
     service = get_contributor_board_service()
+    # type 优先，role_type 作为 deprecated 兼容
+    effective_type = type or role_type or "author"
     return await service.get_ranking(
-        db, role_type=role_type, repo_name=repo_name,
+        db, role_type=effective_type, repo_name=repo_name,
         sort_by=sort_by, sort_order=sort_order, offset=offset, limit=limit,
-        quadrant=quadrant, y_axis_type=y_axis_type,
+        quadrant=quadrant, y_axis_type=y_axis_type, days=days,
     )
 
 

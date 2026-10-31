@@ -225,6 +225,7 @@ export interface RankingItem {
   company?: string | null
   primary_email?: string | null
   is_bot?: boolean
+  contributor_type?: 'author' | 'reviewer'
 }
 
 export interface ContributorRanking {
@@ -289,10 +290,12 @@ export const getContributorDetail = async (login: string) => {
 }
 
 /**
- * 获取排行榜
+ * 获取排行榜（完全复用 PR 流水线贡献者数据）
+ *
+ * @param type 'author'=贡献者（作者），'reviewer'=评审人，'all'=全部
  */
 export const getRanking = async (
-  roleType: string = 'developer',
+  type: string = 'author',
   limit: number = 20,
   params?: {
     repo_name?: string | null
@@ -301,10 +304,11 @@ export const getRanking = async (
     offset?: number
     quadrant?: string | null
     y_axis_type?: string | null
+    days?: number
   }
 ) => {
   const response = await api.get<ContributorRanking>('/contributor-board/ranking', {
-    params: { role_type: roleType, limit, offset: params?.offset ?? 0, ...params },
+    params: { type, limit, offset: params?.offset ?? 0, ...params },
   })
   return response.data
 }
@@ -423,12 +427,15 @@ export interface SyncSummary {
   last_sync_status: string | null
 }
 
-// ==================== 角色统计 ====================
+// ==================== 贡献者统计（与 PR 流水线贡献者 Tab 一致）====================
 
 export interface RoleStats {
+  /** 贡献者（作者）人数 */
   developer_count: number
+  /** 评审人人数 */
   reviewer_count: number
-  maintainer_count: number
+  /** [deprecated] 不再使用，保留字段以兼容 */
+  maintainer_count?: number
   total_pr: number
   total_code_lines: number
   total_reviews: number
