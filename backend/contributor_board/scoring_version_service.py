@@ -390,6 +390,9 @@ class ScoringVersionService:
         from sqlalchemy import select
         from infrastructure.persistence.models import ContributorBoardSettings
 
+        from contributor_board.pr_enrich import normalize_weights
+        weights = normalize_weights(weights)
+
         row = (await db.execute(
             select(ContributorBoardSettings).where(
                 ContributorBoardSettings.setting_key == "scoring_weights"
@@ -398,7 +401,7 @@ class ScoringVersionService:
         if row:
             cur = row.setting_value if isinstance(row.setting_value, dict) else {}
             cur.update(weights)
-            row.setting_value = cur
+            row.setting_value = normalize_weights(cur)
         else:
             db.add(ContributorBoardSettings(setting_key="scoring_weights", setting_value=dict(weights)))
 
@@ -425,6 +428,8 @@ class ScoringVersionService:
         weights: dict[str, float] = dict(get_default_weights())
         if version.weights and isinstance(version.weights, dict):
             weights.update(version.weights)
+        from contributor_board.pr_enrich import normalize_weights
+        weights = normalize_weights(weights)
 
         for m in pr_metrics:
             error_score = float(m.get("error_score", 0))

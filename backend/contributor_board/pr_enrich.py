@@ -36,6 +36,24 @@ def _is_bot(login: str) -> bool:
     return login.lower().endswith("[bot]") or login.lower().endswith("-bot")
 
 
+# code_line_weight 合理上界：代码行数是原始量纲（单贡献者可达数十万行），
+# 该维度权重必须保持极低，否则分会被代码量淹没（历史 bug 曾出现 0.5 导致 70 万+ 分）。
+MAX_CODE_LINE_WEIGHT = 0.01
+
+
+def normalize_weights(weights: dict[str, Any]) -> dict[str, Any]:
+    """规范化权重：强制 code_line_weight 不超过合理上界，防止历史脏数据/异常权重
+    导致分数数量级失真。其余维度原样保留。"""
+    w = dict(weights)
+    try:
+        clw = float(w.get("code_line_weight", 0))
+    except (TypeError, ValueError):
+        clw = 0.0
+    if clw > MAX_CODE_LINE_WEIGHT:
+        w["code_line_weight"] = MAX_CODE_LINE_WEIGHT
+    return w
+
+
 def _extract_emails_from_data(data: dict | None) -> list[str]:
     """从 PR data JSON 的 commits 中提取 author emails"""
     if not data or not isinstance(data, dict):
@@ -275,6 +293,7 @@ async def get_full_contributor_metrics_from_prs(
     weights = get_default_weights()
     if settings_row and isinstance(settings_row.setting_value, dict):
         weights.update(settings_row.setting_value)
+    weights = normalize_weights(weights)
 
     # 2) 加载所有 PR
     stmt = select(
@@ -649,6 +668,7 @@ async def _build_contributor_score_map(
     weights = get_default_weights()
     if settings_row and isinstance(settings_row.setting_value, dict):
         weights.update(settings_row.setting_value)
+    weights = normalize_weights(weights)
 
     # 2) 构建用于四象限的 metrics（与四象限看板 _build_aggregated_metrics 字段对齐）
     metrics: list[dict[str, Any]] = []

@@ -1184,6 +1184,8 @@ class ContributorBoardService:
         weights = get_default_weights()
         if settings_row and isinstance(settings_row.setting_value, dict):
             weights.update(settings_row.setting_value)
+        from contributor_board.pr_enrich import normalize_weights
+        weights = normalize_weights(weights)
 
         # 4. 构建逐日趋势 + 累计分数
         commit_trend: list[CommitTrendPoint] = []
