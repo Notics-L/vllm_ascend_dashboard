@@ -437,64 +437,94 @@ class ContributorBoardService:
 
     @staticmethod
     async def get_contributor_detail(db, login: str) -> ContributorDetailResponse | None:
-        stmt = (
-            select(Contributor, ContributorMetrics)
-            .outerjoin(
-                ContributorMetrics,
-                and_(
-                    Contributor.id == ContributorMetrics.contributor_id,
-                    ContributorMetrics.period_end == ContributorMetrics.period_end,
-                ),
-            )
-            .where(Contributor.login == login)
-            .order_by(ContributorMetrics.updated_at.desc())
-            .limit(1)
-        )
-        result = await db.execute(stmt)
-        row = result.one_or_none()
+        from contributor_board.pr_enrich import enrich_ranking_with_pr_data, get_full_contributor_metrics_from_prs
 
-        if not row:
+        # 1. 尝试从 contributors 表获取基本信息（如果存在）
+        contributor_row = (await db.execute(
+            select(Contributor).where(Contributor.login == login)
+        )).scalars().first()
+
+        # 2. 从 pull_requests 实时聚合该贡献者的指标（唯一数据源）
+        pr_data = await enrich_ranking_with_pr_data(db, [login], repo_name=None, days=365)
+        pe = pr_data.get(login)
+
+        # 如果 PR 表里完全没有这个人的记录，也尝试 contributors 表兜底
+        if not pe and not contributor_row:
             return None
 
-        contributor, metrics = row
+        # 3. 从全量 PR 聚合中获取 score 和 quadrant（与排行榜一致）
+        all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None)
+        m = next((x for x in all_metrics if x["login"] == login), None)
 
-        # 从 PR 流水线补充公司/邮箱/机器人/效率指标
-        from contributor_board.pr_enrich import enrich_ranking_with_pr_data
-        pr_enriched = await enrich_ranking_with_pr_data(
-            db, [login], repo_name=None, days=365,
-        )
-        pe = pr_enriched.get(login, {})
+        # 4. 如果排行榜聚合中也没有，但 contributors 表有记录，则返回基本信息
+        if not m and contributor_row:
+            c = contributor_row
+            return ContributorDetailResponse(
+                id=c.id,
+                github_id=c.github_id,
+                login=c.login,
+                avatar_url=c.avatar_url,
+                email=c.email,
+                name=c.name,
+                is_community=c.is_community,
+                role_types=c.role_types,
+                company=c.company,
+                employee_id=c.employee_id,
+                first_contribution_at=c.first_contribution_at,
+                last_contribution_at=c.last_contribution_at,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+                merged_pr_count=0,
+                pending_pr_count=0,
+                code_additions=0,
+                code_deletions=0,
+                review_count=0,
+                approval_count=0,
+                contribution_score=0,
+                error_score=0,
+                quadrant=None,
+            )
+
+        if not m:
+            return None
+
+        c = contributor_row
+        # 计算象限
+        from contributor_board.quadrant_engine import calculate_quadrants
+        active_metrics = [x for x in all_metrics if x.get("contribution_score", 0) > 0]
+        points, _, _ = calculate_quadrants(active_metrics, y_axis_type="review_count")
+        quad_map = {p.login: p.quadrant for p in points}
 
         return ContributorDetailResponse(
-            id=contributor.id,
-            github_id=contributor.github_id,
-            login=contributor.login,
-            avatar_url=contributor.avatar_url,
-            email=contributor.email,
-            name=contributor.name,
-            is_community=contributor.is_community,
-            role_types=contributor.role_types,
-            company=contributor.company or pe.get("company"),
-            employee_id=contributor.employee_id,
-            first_contribution_at=contributor.first_contribution_at,
-            last_contribution_at=contributor.last_contribution_at,
-            created_at=contributor.created_at,
-            updated_at=contributor.updated_at,
-            merged_pr_count=int(metrics.merged_pr_count or 0) if metrics else 0,
-            pending_pr_count=int(metrics.pending_pr_count or 0) if metrics else 0,
-            code_additions=int(metrics.code_additions or 0) if metrics else 0,
-            code_deletions=int(metrics.code_deletions or 0) if metrics else 0,
-            review_count=int(metrics.review_count or 0) if metrics else 0,
-            approval_count=int(metrics.approval_count or 0) if metrics else 0,
-            contribution_score=float(metrics.contribution_score or 0) if metrics else 0,
-            error_score=float(metrics.error_score or 0) if metrics else 0,
-            quadrant=metrics.quadrant if metrics else None,
-            emails=pe.get("emails", []),
-            is_bot=pe.get("is_bot", False),
-            ci_failure_count=pe.get("ci_failure_count", 0),
-            first_review_hours_avg=pe.get("first_review_hours_avg"),
-            merge_hours_avg=pe.get("merge_hours_avg"),
-            ci_duration_hours_avg=pe.get("ci_duration_hours_avg"),
+            id=c.id if c else 0,
+            github_id=c.github_id if c else 0,
+            login=login,
+            avatar_url=m.get("avatar_url") or (c.avatar_url if c else None),
+            email=m.get("primary_email") or (c.email if c else None),
+            name=c.name if c else login,
+            is_community=c.is_community if c else False,
+            role_types=c.role_types if c else None,
+            company=m.get("company") or (c.company if c else None),
+            employee_id=c.employee_id if c else None,
+            first_contribution_at=c.first_contribution_at if c else None,
+            last_contribution_at=c.last_contribution_at if c else None,
+            created_at=c.created_at if c else None,
+            updated_at=c.updated_at if c else None,
+            merged_pr_count=m.get("merged_pr_count", 0),
+            pending_pr_count=m.get("pending_pr_count", 0),
+            code_additions=m.get("code_additions", 0),
+            code_deletions=m.get("code_deletions", 0),
+            review_count=m.get("review_count", 0),
+            approval_count=m.get("approval_count", 0),
+            contribution_score=m.get("contribution_score", 0),
+            error_score=m.get("error_score", 0),
+            quadrant=quad_map.get(login),
+            emails=pe.get("emails", []) if pe else [],
+            is_bot=m.get("is_bot", False),
+            ci_failure_count=m.get("ci_failure_count", 0),
+            first_review_hours_avg=m.get("first_review_hours_avg"),
+            merge_hours_avg=m.get("merge_hours_avg"),
+            ci_duration_hours_avg=m.get("ci_duration_hours_avg"),
         )
 
     # ---- 四象限数据 ----
@@ -792,25 +822,15 @@ class ContributorBoardService:
     async def recalculate_scores(
         db, repo_name: str | None = None
     ) -> dict[str, Any]:
-        """权重变更后，读取最新权重配置并批量重算所有贡献者分数。"""
-        from contributor_board.scoring_engine import recalculate_all_scores, calculate_contribution_score
+        """权重变更后，从 PR 数据源重新计算分数（不修改 contributor_metrics）。
 
-        # 读取当前权重配置
-        weights = await ContributorBoardService._get_scoring_weights(db)
-        weights_dict: dict[str, float] = {
-            "merged_pr_weight": float(weights.merged_pr_weight),
-            "code_line_weight": float(weights.code_line_weight),
-            "review_weight": float(weights.review_weight),
-            "approval_weight": float(weights.approval_weight),
-            "core_module_weight": float(weights.core_module_weight),
-            "files_changed_weight": float(weights.files_changed_weight),
-            "bugfix_weight": float(weights.bugfix_weight),
-            "feature_weight": float(weights.feature_weight),
-            "active_duration_weight": float(weights.active_duration_weight),
-        }
+        返回重算的贡献者数量，用于前端提示。
+        分数实际展示时由 get_ranking/get_quadrant_data 实时计算。
+        """
+        from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
 
-        count = await recalculate_all_scores(db, weights_dict, repo_name)
-        return {"recalculated_count": count}
+        pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
+        return {"recalculated_count": len(pr_metrics)}
 
     @staticmethod
     async def update_role_thresholds(
