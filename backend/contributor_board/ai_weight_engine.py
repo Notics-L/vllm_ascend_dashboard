@@ -79,26 +79,65 @@ def _build_prompt(data_summary: dict[str, Any]) -> str:
 # ── 结果解析 ────────────────────────────────────────────────
 
 
+def _extract_json_block(text: str) -> str | None:
+    """从 LLM 回复中提取完整的 JSON 对象（支持 markdown 代码块）。
+
+    策略：
+    1. 先尝试剥离 markdown ```json ... ``` 代码块
+    2. 用花括号计数找到第一个完整的顶层 JSON 对象
+    """
+    text = text.strip()
+
+    # 剥离 markdown 代码块
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            p = part.strip()
+            if p.startswith("{"):
+                text = p
+                break
+            # 处理 ```json\n{...}\n``` 的情况
+            if p.startswith("json"):
+                continue
+            if "{" in p and "}" in p:
+                candidate = p[p.find("{"):p.rfind("}") + 1].strip()
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except json.JSONDecodeError:
+                    pass
+
+    # 花括号计数法：找到第一个平衡的 { ... }
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def _parse_llm_response(text: str) -> tuple[dict[str, float], str]:
     """
     从 LLM 返回的文本中解析权重和建议。
 
     Returns: (weights_dict, analysis_text)
     """
-    text = text.strip()
-
-    # 尝试提取 JSON 块
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
-        json_text = text[start:end]
-    else:
-        json_text = text
+    json_text = _extract_json_block(text)
+    if json_text is None:
+        logger.warning("No JSON block found in LLM response: %s", text[:300])
+        return {}, text
 
     try:
         parsed = json.loads(json_text)
     except json.JSONDecodeError:
-        logger.warning("Failed to parse LLM JSON response: %s", text[:200])
+        logger.warning("Failed to parse LLM JSON: %s", json_text[:300])
         return {}, text
 
     weights_raw = parsed.get("weights", {})

@@ -785,25 +785,23 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [rankingYAxis, setRankingYAxis] = useState('error_score')
-  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [rankingDays, setRankingDays] = useState(30)
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
-  const [sortRules, setSortRules] = useState<SortRule[]>([{ field: 'score', order: 'desc' }])
+  const [sortRules, setSortRules] = useState<SortRule[]>([{ field: 'contribution_score', order: 'desc' }])
 
   const [form] = Form.useForm()
 
   const fetchRanking = useCallback(async (page: number, size: number) => {
     setRankingLoading(true)
     try {
-      // 默认排序：贡献者按 pr_count，评审人按 review_count
-      const defaultSortField = roleType === 'reviewer' ? 'review_count' : 'pr_count'
-      const sortKey = sortRules.length > 0 ? (sortRules[0].field === 'score' ? 'pr_count' : sortRules[0].field) : defaultSortField
+      const sortField = sortRules.length > 0 ? sortRules[0].field : 'contribution_score'
       const sortDir = sortRules.length > 0 ? sortRules[0].order : 'desc'
       const data = await getRanking(roleType, size, {
         repo_name: selectedRepo || null,
-        sort_by: sortKey,
+        sort_by: sortField,
         sort_order: sortDir,
         offset: (page - 1) * size,
         quadrant: quadrantFilter || undefined,
@@ -812,17 +810,18 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       })
       setRankings(data.rankings)
       setRankingTotal(data.total)
+      setHasLoadedOnce(true)
     } finally {
       setRankingLoading(false)
     }
-    }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis, rankingDays])
+  }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis, rankingDays])
 
-  // 首次加载：settings 完成后只发起一次 fetchRanking
+  // 立即加载排行榜数据（不等待 settings/stats）
   useEffect(() => {
-    if (!settingsLoaded) return
     fetchRanking(pagination.current, pagination.pageSize)
-  }, [settingsLoaded, fetchRanking, pagination.current, pagination.pageSize])
+  }, [fetchRanking, pagination.current, pagination.pageSize])
 
+  // 异步加载 stats 和 settings（不阻塞排行榜表格）
   useEffect(() => {
     let cancelled = false
     const loadStats = async () => {
@@ -836,8 +835,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           if (_settings?.quadrant_config) {
             setRankingYAxis(_settings.quadrant_config.y_axis_type || 'error_score')
           }
-          // settings 加载完成后再触发 fetchRanking（统一触发，避免双 loading）
-          setSettingsLoaded(true)
         }
       } catch { /* ignore */ }
     }

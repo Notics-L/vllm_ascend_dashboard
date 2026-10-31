@@ -919,5 +919,8 @@ async def _compute_quadrants_for_logins(
         "code_additions": "code_additions",
     }
     y_key = axis_map.get(y_axis_type, "review_count")
-    points, _, _ = calculate_quadrants(all_metrics, y_axis_type=y_key)
-    return {p.login: p.quadrant for p in points}
+    active = [m for m in all_metrics if m.get("contribution_score", 0) > 0]
+    if active:
+        points, _, _ = calculate_quadrants(active, y_axis_type=y_key)
+        return {p.login: p.quadrant for p in points}
+    return {}
