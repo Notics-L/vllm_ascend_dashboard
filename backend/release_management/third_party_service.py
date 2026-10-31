@@ -18,67 +18,128 @@ from infrastructure.persistence.models import (
 logger = logging.getLogger(__name__)
 
 
+# 版本号通用后缀：B020, RC1, rc1, master 等
+_VER = r"(\d+(?:\.\d+)*[A-Za-z0-9._-]*?)(?=[\s,;)\]]|$)"
+
 DETECTION_PATTERNS: dict[str, dict[str, str]] = {
-    "CANN": {
-        "pattern": r"CANN[\s_-]*([v]?\d+\.\d+(?:\.\d+)?(?:\.\d+)?(?:[a-zA-Z]?\d)?)",
-        "category": "runtime",
+    # ── vLLM ──
+    "vLLM": {
+        "pattern": r"(?:^|[\s=:/])vLLM[\s=:_v]+(" + _VER + ")",
+        "category": "vllm",
+        "repo": "https://github.com/vllm-project/vllm",
     },
-    "triton": {
-        "pattern": r"(?:^|[\s=/])triton[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-zA-Z]?\d)?)",
-        "category": "compiler",
-    },
-    "vllm": {
-        "pattern": r"(?:^|[\s=/])vllm[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "framework",
-    },
-    "vllm-ascend": {
-        "pattern": r"vllm[-_]?ascend[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "framework",
-    },
-    "Framework-PT-Adapter": {
-        "pattern": r"(?:framework[\s_-]?pt[\s_-]?adapter|pt[\s_-]?adapter)[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "adapter",
+    "vLLM Ascend": {
+        "pattern": r"vLLM[\s_-]?Ascend[\s=:_]+(?:releases/)?(?:v?)(" + _VER + r")(?:\s+[0-9a-f]{40})?",
+        "category": "vllm",
+        "repo": "https://github.com/vllm-project/vllm-ascend",
     },
     "torch": {
-        "pattern": r"(?:^|[\s=])torch\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "framework",
+        "pattern": r"(?:^|[\s=:/])torch[\s=]+(" + _VER + ")",
+        "category": "vllm",
+        "repo": "https://github.com/pytorch/pytorch",
     },
     "torch-npu": {
-        "pattern": r"torch-npu[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "runtime",
+        "pattern": r"torch-npu[\s=]+(" + _VER + ")",
+        "category": "vllm",
+        "repo": "https://github.com/Ascend/pytorch",
     },
-    "ascendc": {
-        "pattern": r"ascend[-_]?c[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "runtime",
+
+    # ── 核心框架（按卡型） ──
+    "CANN": {
+        "pattern": r"CANN[\s_-]*(" + _VER + ")",
+        "category": "core",
+        "repo": "https://www.hiascend.com/software/cann",
     },
+    "FrameworkPTAdapter": {
+        "pattern": r"(?:Framework[\s_-]?PT[\s_-]?Adapter|PT[\s_-]?Adapter)[\s_-]*(" + _VER + ")",
+        "category": "core",
+        "repo": "",
+    },
+    "Triton Performance Optimization": {
+        "pattern": r"Triton[\s_-]*Performance[\s_-]*Optimization[\s_-]*(" + _VER + ")",
+        "category": "core",
+        "repo": "",
+    },
+
+    # ── 工具 ──
+    "Mooncake": {
+        "pattern": r"Mooncake[\s_-]*v?(\d+(?:\.\d+)*(?:-rc\d+)?)",
+        "category": "tool",
+        "repo": "https://github.com/kvcache-ai/Mooncake",
+    },
+    "memcache": {
+        "pattern": r"memcache[\s_-]*(" + _VER + ")",
+        "category": "tool",
+        "repo": "",
+    },
+    "memfabric_hybrid": {
+        "pattern": r"memfabric[_\s-]*hybrid[\s_-]*(" + _VER + ")",
+        "category": "tool",
+        "repo": "",
+    },
+    "AISBench": {
+        "pattern": r"AISBench[\s_-]*v?(" + _VER + ")",
+        "category": "tool",
+        "repo": "https://github.com/AISBench/benchmark",
+    },
+
+    # ── 生态仓 ──
+    "生态仓": {
+        "pattern": r"(?:生态仓|flash[_\s-]*linear[_\s-]*attention[_\s-]*npu[_\s-]*a3)[\s_-]*v?(" + _VER + ")",
+        "category": "ecosystem",
+        "repo": "https://mirrors.huaweicloud.com/ascend/repos/pypi/flash_linear_attention_npu_a3/",
+    },
+
+    # ── 镜像 ──
+    "镜像归档": {
+        "pattern": r"镜像归档[\s_-]*(\S+)?",
+        "category": "image",
+        "repo": "",
+    },
+
+    # ── 通用依赖（保留） ──
     "numpy": {
-        "pattern": r"numpy[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "pattern": r"numpy[\s=]+(" + _VER + ")",
         "category": "library",
     },
     "protobuf": {
-        "pattern": r"protobuf[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "pattern": r"protobuf[\s=]+(" + _VER + ")",
         "category": "library",
     },
     "grpcio": {
-        "pattern": r"grpcio[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "pattern": r"grpcio[\s=]+(" + _VER + ")",
         "category": "library",
     },
     "transformers": {
-        "pattern": r"transformers[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "framework",
-    },
-    "accelerate": {
-        "pattern": r"accelerate[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "framework",
-    },
-    "huggingface": {
-        "pattern": r"huggingface[\s=]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+        "pattern": r"transformers[\s=]+(" + _VER + ")",
         "category": "library",
     },
-    "docker": {
-        "pattern": r"(?:docker|image)[\s_-]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
-        "category": "infra",
+    "accelerate": {
+        "pattern": r"accelerate[\s=]+(" + _VER + ")",
+        "category": "library",
     },
+    "huggingface": {
+        "pattern": r"huggingface[\s=]+(" + _VER + ")",
+        "category": "library",
+    },
+    "ascendc": {
+        "pattern": r"ascend[-_]?c[\s_-]*(" + _VER + ")",
+        "category": "core",
+    },
+    "docker-image": {
+        "pattern": r"(?:docker[\s_-]*image|image[\s_-]*tag)[\s_:]+([\w./:@-]+)",
+        "category": "image",
+    },
+}
+
+CATEGORY_ORDER = ["vllm", "core", "tool", "ecosystem", "image", "library"]
+CATEGORY_LABELS = {
+    "vllm": "vLLM 框架",
+    "core": "核心框架",
+    "tool": "工具",
+    "ecosystem": "生态仓",
+    "image": "镜像",
+    "library": "通用依赖",
 }
 
 
@@ -110,9 +171,12 @@ class ThirdPartyService:
         for component, config in DETECTION_PATTERNS.items():
             pattern = config["pattern"]
             category = config.get("category", self._guess_category(component))
+            repo_url = config.get("repo", "")
             matches = re.finditer(pattern, log_content, re.IGNORECASE)
             for match in matches:
-                version = match.group(1).strip().lstrip("v")
+                version = match.group(1).strip()
+                if not version or version.lower() == "none":
+                    continue
                 key = (component, version)
                 if key in seen:
                     continue
@@ -125,6 +189,7 @@ class ThirdPartyService:
                     component_category=category,
                     source_type="build_log",
                     source_line=match.group(0),
+                    repository_url=repo_url or None,
                 )
                 self.db.add(record)
                 detected.append({
@@ -464,9 +529,18 @@ class ThirdPartyService:
                 "component_version": v.component_version,
                 "component_category": v.component_category,
                 "source_line": v.source_line,
+                "repository_url": v.repository_url,
                 "baseline_status": baseline_status,
                 "approved_versions": approved_versions,
             })
+
+        # 按分类分组
+        by_category: dict[str, list[dict[str, Any]]] = {}
+        for c in components:
+            cat = c["component_category"] or "other"
+            if cat not in by_category:
+                by_category[cat] = []
+            by_category[cat].append(c)
 
         return {
             "run_id": run.id,
@@ -477,6 +551,9 @@ class ThirdPartyService:
             "commit_sha": run.commit_sha,
             "created_at": run.created_at_remote.isoformat() if run.created_at_remote else None,
             "components": components,
+            "components_by_category": by_category,
+            "category_order": CATEGORY_ORDER,
+            "category_labels": CATEGORY_LABELS,
             "total_components": len(seen),
         }
 

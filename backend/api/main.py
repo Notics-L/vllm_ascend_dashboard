@@ -185,6 +185,32 @@ async def legacy_schema_upgrade_test_case_columns():
         logger.warning(f"test_cases column migration skipped (non-fatal): {e}")
 
 
+async def legacy_schema_upgrade_third_party_columns():
+    """Ensure release_third_party_versions table has repository_url column."""
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            def _get_columns(sync_session):
+                rows = sync_session.execute(text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'release_third_party_versions'"
+                )).fetchall()
+                return [r[0] for r in rows]
+            existing_cols = await db.run_sync(_get_columns)
+
+            if "repository_url" not in existing_cols:
+                logger.info("Adding missing column 'repository_url' to release_third_party_versions")
+                await db.execute(text(
+                    "ALTER TABLE release_third_party_versions ADD COLUMN repository_url VARCHAR(500) DEFAULT NULL"
+                ))
+                await db.commit()
+    except Exception as e:
+        logger.warning(f"release_third_party_versions column migration skipped (non-fatal): {e}")
+
+
 async def _warmup_claude_code_cli():
     """Claude Code CLI 预热：验证 CLI 可用 + API key 有效"""
     try:
@@ -439,6 +465,8 @@ async def lifespan(app: FastAPI):
 
     # 启动时初始化数据库（含 app_logs 表）
     await init_db()
+
+    await legacy_schema_upgrade_third_party_columns()
 
     try:
         from infrastructure.core.app_runtime_config import load_app_runtime_config

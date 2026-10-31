@@ -102,6 +102,7 @@ class ReleaseThirdPartyVersion(Base):
     component_category = Column(String(50))
     source_type = Column(String(50))
     source_line = Column(Text)
+    repository_url = Column(String(500))
     detected_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     __table_args__ = (

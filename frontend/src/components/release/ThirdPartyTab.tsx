@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Descriptions,
   Empty,
   Form,
@@ -347,18 +348,25 @@ export default function ThirdPartyTab({ selectedIds, workflows: externalWorkflow
     {
       title: '组件',
       dataIndex: 'component_name',
-      width: 180,
-      render: (name: string) => (
-        <a onClick={() => { setHistoryComponent(name); setHistoryDrawerOpen(true); }}>
-          <SafetyOutlined style={{ marginRight: 4, color: '#1890ff' }} />
-          {name}
-        </a>
+      width: 200,
+      render: (name: string, r: ThirdPartySnapshot['components'][0]) => (
+        <Space>
+          <a onClick={() => { setHistoryComponent(name); setHistoryDrawerOpen(true); }}>
+            <SafetyOutlined style={{ marginRight: 4, color: '#1890ff' }} />
+            {name}
+          </a>
+          {r.repository_url && (
+            <a href={r.repository_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#999' }}>
+              仓库 →
+            </a>
+          )}
+        </Space>
       ),
     },
     {
       title: '版本',
       dataIndex: 'component_version',
-      width: 140,
+      width: 160,
       render: (v: string, r: ThirdPartySnapshot['components'][0]) => {
         const changed = diff?.diffs.find(d => d.component_name === r.component_name)
         const isChanged = changed && changed.change_type === 'changed'
@@ -373,12 +381,6 @@ export default function ThirdPartyTab({ selectedIds, workflows: externalWorkflow
           </Space>
         )
       },
-    },
-    {
-      title: '分类',
-      dataIndex: 'component_category',
-      width: 100,
-      render: (v: string) => v ? <Tag color="cyan">{v}</Tag> : '-',
     },
     {
       title: '基线',
@@ -578,17 +580,42 @@ export default function ThirdPartyTab({ selectedIds, workflows: externalWorkflow
         </Row>
       )}
 
-      {/* 版本快照表格 */}
+      {/* 版本快照 — 按分类分组 */}
       {snapshotLoading ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
       ) : snapshot ? (
-        <Table
-          dataSource={snapshot.components}
-          rowKey={(r) => `${r.component_name}-${r.component_version}`}
-          size="small"
-          scroll={{ x: 800 }}
-          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个组件` }}
-          columns={componentColumns}
+        <Collapse
+          defaultActiveKey={snapshot.category_order || []}
+          style={{ marginBottom: 16 }}
+          items={(snapshot.category_order || Object.keys(snapshot.components_by_category || {})).map((cat) => {
+            const items = snapshot.components_by_category?.[cat] || []
+            if (items.length === 0) return null
+            const label = snapshot.category_labels?.[cat] || cat
+            const changedInCat = items.filter(c => {
+              const d = diff?.diffs.find(dd => dd.component_name === c.component_name)
+              return d && d.change_type !== 'unchanged'
+            }).length
+            return {
+              key: cat,
+              label: (
+                <Space>
+                  <strong>{label}</strong>
+                  <Tag>{items.length}</Tag>
+                  {changedInCat > 0 && <Tag color="red">{changedInCat} 变更</Tag>}
+                </Space>
+              ),
+              children: (
+                <Table
+                  dataSource={items}
+                  rowKey={(r) => `${r.component_name}-${r.component_version}`}
+                  size="small"
+                  pagination={false}
+                  scroll={{ x: 800 }}
+                  columns={componentColumns}
+                />
+              ),
+            }
+          }).filter(Boolean)}
         />
       ) : (
         <Empty description={wfId ? '请选择一次构建执行' : '请先选择工作流'} image={Empty.PRESENTED_IMAGE_SIMPLE} />

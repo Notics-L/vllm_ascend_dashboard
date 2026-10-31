@@ -204,6 +204,7 @@ export interface ThirdPartySnapshotComponent {
   component_version: string
   component_category: string | null
   source_line: string | null
+  repository_url: string | null
   baseline_status: 'compliant' | 'violation' | 'no_baseline'
   approved_versions: string[]
 }
@@ -217,6 +218,9 @@ export interface ThirdPartySnapshot {
   commit_sha: string | null
   created_at: string | null
   components: ThirdPartySnapshotComponent[]
+  components_by_category: Record<string, ThirdPartySnapshotComponent[]>
+  category_order: string[]
+  category_labels: Record<string, string>
   total_components: number
 }
 
