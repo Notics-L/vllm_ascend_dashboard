@@ -317,12 +317,14 @@ class ContributorBoardService:
         return {"commit_types": commit_types, "build_types": build_types}
 
     @staticmethod
-    async def get_overview_stats(db) -> ContributorOverviewStats:
-        """顶部统计卡片：完全复用 PR 流水线数据源，与排行榜/四象限对齐。"""
-        from contributor_board.pr_enrich import get_pr_based_ranking
-        from contributor_board.quadrant_engine import calculate_quadrants
+    async def get_overview_stats(db, repo_name: str | None = None, days: int = 30) -> ContributorOverviewStats:
+        """顶部统计卡片：完全复用 PR 流水线数据源，与排行榜/四象限对齐。
 
-        ranking = await get_pr_based_ranking(db, repo_name=None, days=365, type=None)
+        days 默认 30，与 PR 流水线贡献者 Tab 一致；如需全量可传 days=365。
+        """
+        from contributor_board.pr_enrich import get_pr_based_ranking
+
+        ranking = await get_pr_based_ranking(db, repo_name=repo_name, days=days, type=None)
         all_items = list(ranking["items"])
         score_map = ranking["contributor_map"]
 
@@ -987,8 +989,8 @@ class ContributorBoardService:
     # ---- 角色统计 ----
 
     @staticmethod
-    async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
-        return await role_analytics.get_role_stats(db, repo_name=repo_name)
+    async def get_role_stats(db, repo_name: str | None = None, days: int = 30) -> RoleStats:
+        return await role_analytics.get_role_stats(db, repo_name=repo_name, days=days)
 
     @staticmethod
     async def get_module_hotspot(db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> ModuleHotspotResponse:

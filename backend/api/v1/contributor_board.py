@@ -150,10 +150,12 @@ async def evaluate_build(
 @router.get("/stats/overview", response_model=ContributorOverviewStats)
 async def get_overview_stats(
     db: DbSession,
+    repo_name: str | None = Query(None, description="仓库名过滤"),
+    days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 与 PR 流水线一致"),
 ):
-    """获取总体统计数据"""
+    """获取总体统计数据（与 PR 流水线贡献者 Tab 对齐）"""
     service = get_contributor_board_service()
-    return await service.get_overview_stats(db)
+    return await service.get_overview_stats(db, repo_name=repo_name, days=days)
 
 
 # ---- 贡献者列表 ----
@@ -228,7 +230,7 @@ async def get_ranking(
     limit: int = Query(20, ge=1, le=200, description="分页大小"),
     quadrant: str | None = Query(None, description="四象限过滤: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE"),
     y_axis_type: str | None = Query(None, description="四象限Y轴类型: error_score/review_count/merged_pr_count/code_additions"),
-    days: int = Query(365, ge=1, le=365, description="统计时间窗（天）"),
+    days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 天与 PR 流水线一致"),
 ):
     """获取排行榜（完全复用 PR 流水线贡献者数据，管理员可见）"""
     service = get_contributor_board_service()
@@ -395,10 +397,11 @@ async def get_role_stats(
     db: DbSession,
     _access: CurrentSuperAdminUser,
     repo_name: str | None = Query(None),
+    days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 与 PR 流水线一致"),
 ):
     """获取角色维度统计（管理员可见）"""
     service = get_contributor_board_service()
-    return await service.get_role_stats(db, repo_name=repo_name)
+    return await service.get_role_stats(db, repo_name=repo_name, days=days)
 
 
 # ---- 模块热点（管理员可见）----

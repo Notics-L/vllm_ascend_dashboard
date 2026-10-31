@@ -293,6 +293,7 @@ export const getContributorDetail = async (login: string) => {
  * 获取排行榜（完全复用 PR 流水线贡献者数据）
  *
  * @param type 'author'=贡献者（作者），'reviewer'=评审人，'all'=全部
+ * @param days 统计时间窗（天），默认 30 与 PR 流水线一致
  */
 export const getRanking = async (
   type: string = 'author',
@@ -308,7 +309,7 @@ export const getRanking = async (
   }
 ) => {
   const response = await api.get<ContributorRanking>('/contributor-board/ranking', {
-    params: { type, limit, offset: params?.offset ?? 0, ...params },
+    params: { ...params, type, limit, offset: params?.offset ?? 0, days: params?.days ?? 30 },
   })
   return response.data
 }
@@ -460,7 +461,7 @@ export interface ModuleHotspotResponse {
 /**
  * 获取角色维度统计
  */
-export const getRoleStats = async (params?: { repo_name?: string | null }) => {
+export const getRoleStats = async (params?: { repo_name?: string | null; days?: number }) => {
   const response = await api.get<RoleStats>('/contributor-board/stats/roles', { params })
   return response.data
 }

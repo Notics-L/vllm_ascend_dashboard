@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import Integer, and_, desc, func, or_, select
@@ -164,7 +164,7 @@ async def refresh_all_roles(db) -> int:
     return updated
 
 
-async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
+async def get_role_stats(db, repo_name: str | None = None, days: int = 30) -> RoleStats:
     """
     获取角色维度统计（与 PR 流水线贡献者 Tab 一致，只分贡献者/评审人）。
 
@@ -183,23 +183,34 @@ async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
     from contributor_board.pr_enrich import parse_repo_name
 
     owner, repo = parse_repo_name(repo_name)
-    days = 365
+    FETCH_CAP = 100000  # 拉够 items 用于计算 total_pr / total_code_lines / total_reviews
 
     try:
         svc = PRPipelineService()
-        author_data = await svc.get_contributors(db, owner, repo, days)
-        reviewer_data = await svc.get_contributors(db, owner, repo, days, "reviewer")
+        # 注意：get_contributors 返回的 total 字段才是真实人数（GROUP BY 子查询 count），
+        # items 只是分页后的结果——之前用 len(items) 导致排行榜只有 40/20 人。
+        author_data = await svc.get_contributors(
+            db, owner, repo, days, "author", 0, FETCH_CAP,
+        )
+        reviewer_data = await svc.get_contributors(
+            db, owner, repo, days, "reviewer", 0, FETCH_CAP,
+        )
 
         author_items = list(author_data.items)
         reviewer_items = list(reviewer_data.items)
 
+        # 真实人数：用 PR 流水线的 total 字段（不受 items 分页影响）
+        developer_count = int(author_data.total)
+        reviewer_count = int(reviewer_data.total)
+
+        # PR 总行数：用 items 里的 lines_added 累加（items 已拉够，不受分页影响）
         total_pr = sum(getattr(it, "pr_count", 0) or 0 for it in author_items)
         total_code_lines = sum(getattr(it, "lines_added", 0) or 0 for it in author_items)
         total_reviews = sum(getattr(it, "review_count", 0) or 0 for it in reviewer_items)
 
         return RoleStats(
-            developer_count=len(author_items),
-            reviewer_count=len(reviewer_items),
+            developer_count=developer_count,
+            reviewer_count=reviewer_count,
             maintainer_count=0,
             total_pr=total_pr,
             total_code_lines=total_code_lines,
@@ -208,24 +219,27 @@ async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
         )
     except Exception as e:
         logger.warning("get_role_stats via PRPipelineService failed (%s), falling back to direct aggregation", e)
-        return await _get_role_stats_direct(db, repo_name)
+        return await _get_role_stats_direct(db, repo_name, days=days)
 
 
-async def _get_role_stats_direct(db, repo_name: str | None = None) -> RoleStats:
+async def _get_role_stats_direct(db, repo_name: str | None = None, days: int = 30) -> RoleStats:
     """
     降级实现：直接用 pull_requests 表聚合（与 PR 流水线数据源一致）。
     """
+    from datetime import UTC, datetime
     from sqlalchemy import select
     from infrastructure.persistence.models import PullRequest
     from contributor_board.pr_enrich import parse_repo_name
 
     owner, repo = parse_repo_name(repo_name)
+    since = datetime.now(UTC) - timedelta(days=days)
 
     # 贡献者（作者）：distinct author
     author_stmt = (
         select(PullRequest.author,
                PullRequest.additions)
         .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
         .where(PullRequest.author.isnot(None))
     )
     author_result = await db.execute(author_stmt)
@@ -240,6 +254,7 @@ async def _get_role_stats_direct(db, repo_name: str | None = None) -> RoleStats:
     reviewer_stmt = (
         select(PullRequest.reviewers)
         .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
         .where(PullRequest.reviewers.isnot(None))
     )
     reviewer_result = await db.execute(reviewer_stmt)

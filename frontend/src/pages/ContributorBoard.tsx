@@ -786,6 +786,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [rankingYAxis, setRankingYAxis] = useState('error_score')
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [rankingDays, setRankingDays] = useState(30)
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
@@ -807,15 +808,14 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
         offset: (page - 1) * size,
         quadrant: quadrantFilter || undefined,
         y_axis_type: rankingYAxis,
+        days: rankingDays,
       })
-      // 最小 loading 延迟 300ms，避免接口返回太快导致闪烁
-      await new Promise(r => setTimeout(r, 300))
       setRankings(data.rankings)
       setRankingTotal(data.total)
     } finally {
       setRankingLoading(false)
     }
-    }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis])
+    }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis, rankingDays])
 
   // 首次加载：settings 完成后只发起一次 fetchRanking
   useEffect(() => {
@@ -828,7 +828,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     const loadStats = async () => {
       try {
         const [_roleStats, _settings] = await Promise.all([
-          getRoleStats({ repo_name: selectedRepo || undefined }),
+          getRoleStats({ repo_name: selectedRepo || undefined, days: rankingDays }),
           getContributorBoardSettings().catch(() => null),
         ])
         if (!cancelled) {
@@ -843,7 +843,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     }
     loadStats()
     return () => { cancelled = true }
-  }, [selectedRepo])
+  }, [selectedRepo, rankingDays])
 
   const handleExportCSV = () => {
     const headers = ['排名', '用户名', '工号', '分数', '贡献分数', '合并PR', '未合并PR', 'Commits', '代码增加', '代码删除', 'Review', 'Approval', '四象限', '角色']
@@ -1047,6 +1047,20 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
           <Space wrap>
             <Button type={roleType === 'author' ? 'primary' : 'default'} onClick={() => { setRoleType('author'); setPagination(p => ({ ...p, current: 1 })) }}>贡献者排行</Button>
             <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>评审人排行</Button>
+            <Divider type="vertical" />
+            <span style={{ fontSize: 13, color: '#8c8c8c' }}>时间范围:</span>
+            <Select
+              value={rankingDays}
+              onChange={(v) => { setRankingDays(v); setPagination(p => ({ ...p, current: 1 })) }}
+              style={{ width: 110 }}
+              options={[
+                { value: 7, label: '近 7 天' },
+                { value: 30, label: '近 30 天' },
+                { value: 90, label: '近 90 天' },
+                { value: 180, label: '近 180 天' },
+                { value: 365, label: '近 365 天' },
+              ]}
+            />
             <Divider type="vertical" />
             <span style={{ fontSize: 13, color: '#8c8c8c' }}>象限筛选:</span>
             <Button type={!quadrantFilter ? 'primary' : 'default'} onClick={() => { setQuadrantFilter(''); setPagination(p => ({ ...p, current: 1 })) }}>全部</Button>

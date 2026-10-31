@@ -438,7 +438,7 @@ async def get_full_contributor_metrics_from_prs(
 async def get_pr_based_ranking(
     db: AsyncSession,
     repo_name: str | None = None,
-    days: int = 365,
+    days: int = 30,
     type: str | None = None,
     sort_by: str = "pr_count",
     skip: int = 0,
@@ -447,52 +447,70 @@ async def get_pr_based_ranking(
 ) -> dict[str, Any]:
     """完全复用 PR 流水线 get_contributors 聚合逻辑，保证数字 100% 一致。
 
-    在 PR 流水线结果之上补充贡献者分析的算分字段
-    （contribution_score / error_score / merged_pr_count / code_additions /
-    code_deletions / approval_count / dynamic_quadrant 等），基础统计字段
-    （pr_count / merged_count / lines_added / lines_removed / review_count /
-    avg_first_response_hours）直接来自 PR 流水线，不再二次计算。
+    基础统计字段（pr_count / merged_count / lines_added / lines_removed /
+    review_count / avg_first_response_hours / company / primary_email /
+    author_count / reviewer_count）**直接取自 PR 流水线的 author_data.total /
+    reviewer_data.total 与 items**，不再二次计算——这是之前排行榜人数
+    （40/20）和 PR 流水线（420/240）对不上的根因修复。
+
+    算分字段（contribution_score / error_score / dynamic_quadrant）基于
+    PR 流水线的 items 字段通过 scoring_engine 计算，与四象限看板
+    共用同一权重体系。
 
     Returns:
         {
-            "author_count": int,
-            "reviewer_count": int,
-            "total": int,
+            "author_count": int,       # PR 流水线 author 总数
+            "reviewer_count": int,     # PR 流水线 reviewer 总数
+            "total": int,              # author_count + reviewer_count
             "contributor_map": {login: {...score fields...}},
             "items": [PRPipelineContributor, ...],
         }
     """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import case, func, select
+
     from pr_pipeline.pr_pipeline_service import PRPipelineService
     from contracts.schemas.pr_pipeline import PRPipelineContributor
 
     owner, repo = parse_repo_name(repo_name)
     svc = PRPipelineService()
 
-    # 优先走 PR 流水线 get_contributors（数字与 PR 流水线完全一致）
-    # 若内部异常（如 reviewers JSON 含非 dict 元素），降级到 pull_requests 直接聚合
+    # 1) 拉 PR 流水线全量 contributor（author + reviewer），分页交给 PR 流水线
+    #    一次拉够 100000 避免分页丢失，但 total 字段才是真实总数
+    FETCH_CAP = 100000
     try:
-        author_data = await svc.get_contributors(db, owner, repo, days)
-        reviewer_data = await svc.get_contributors(db, owner, repo, days, "reviewer")
-
-        author_items = list(author_data.items)
-        reviewer_items = list(reviewer_data.items)
-        # 防御性：确保每个 item 是 PRPipelineContributor
-        author_items = [it if isinstance(it, PRPipelineContributor) else PRPipelineContributor(**it) if isinstance(it, dict) else None for it in author_items]
-        reviewer_items = [it if isinstance(it, PRPipelineContributor) else PRPipelineContributor(**it) if isinstance(it, dict) else None for it in reviewer_items]
-        author_items = [it for it in author_items if it]
-        reviewer_items = [it for it in reviewer_items if it]
+        author_data = await svc.get_contributors(
+            db, owner, repo, days, "author", 0, FETCH_CAP,
+        )
+        reviewer_data = await svc.get_contributors(
+            db, owner, repo, days, "reviewer", 0, FETCH_CAP,
+        )
+        author_items: list[PRPipelineContributor] = list(author_data.items)
+        reviewer_items: list[PRPipelineContributor] = list(reviewer_data.items)
+        author_total = int(author_data.total)
+        reviewer_total = int(reviewer_data.total)
     except Exception as e:
-        logger.warning("get_pr_based_ranking via PRPipelineService failed (%s), falling back to direct aggregation", e)
+        logger.warning("get_pr_based_ranking via PRPipelineService failed (%s), falling back", e)
         author_items, reviewer_items = await _get_pr_based_items_direct(db, owner, repo, days)
+        author_total = len(author_items)
+        reviewer_total = len(reviewer_items)
 
-    author_count = len(author_items)
-    reviewer_count = len(reviewer_items)
     all_items = author_items + reviewer_items
 
-    # 补充算分字段（分数算法仍由 scoring_engine 计算）
-    contributor_map = await get_pr_score_map(db, [it.username for it in all_items], repo_name=repo_name)
+    # 2) 轻量级查 PR 表：只为拿到 PR 流水线 items 里没有的字段
+    #    （pending_pr_count / ci_failure_count / approval_count）
+    #    只拉 5 个字段，单次 SQL，性能远好于 get_full_contributor_metrics_from_prs
+    since = datetime.now(UTC) - timedelta(days=days)
+    logins = list({it.username for it in all_items if it.username})
+    extra_map = await _fetch_pr_extra_fields(db, logins, owner, repo, since)
 
-    # 按 type 过滤 + 排序 + 分页
+    # 3) 算分：基于 PR 流水线的 items 字段（与四象限看板共用 scoring_engine）
+    contributor_map = await _build_contributor_score_map(
+        db, all_items, extra_map, repo_name=repo_name,
+    )
+
+    # 4) 按 type 过滤 + 排序 + 分页
     if type == "author":
         show_items = author_items
     elif type == "reviewer":
@@ -500,27 +518,218 @@ async def get_pr_based_ranking(
     else:
         show_items = all_items
 
-    # 排序
     sort_key_map = {
         "pr_count": lambda it: it.pr_count or 0,
         "merged_count": lambda it: it.merged_count or 0,
         "lines_added": lambda it: it.lines_added or 0,
         "lines_removed": lambda it: it.lines_removed or 0,
         "review_count": lambda it: it.review_count or 0,
+        "contribution_score": lambda it: contributor_map.get(it.username, {}).get("contribution_score", 0),
+        "score": lambda it: contributor_map.get(it.username, {}).get("contribution_score", 0),
     }
     sort_fn = sort_key_map.get(sort_by, lambda it: it.pr_count or 0)
     show_items = sorted(show_items, key=sort_fn, reverse=True)
 
-    # 分页
     paginated = show_items[skip:skip + limit]
 
     return {
-        "author_count": author_count,
-        "reviewer_count": reviewer_count,
-        "total": author_count + reviewer_count,
+        "author_count": author_total,
+        "reviewer_count": reviewer_total,
+        "total": author_total + reviewer_total,
         "contributor_map": contributor_map,
         "items": paginated,
     }
+
+
+async def _fetch_pr_extra_fields(
+    db: AsyncSession,
+    logins: list[str],
+    owner: str,
+    repo: str,
+    since: datetime,
+) -> dict[str, dict[str, Any]]:
+    """轻量级查 PR 表，只拉排行榜 items 里没有的 3 个字段。
+
+    一次 SQL，按 author 聚合 pending_pr_count / ci_failure_count，
+    另起一次 SQL 拉 approval_count（reviewer 维度）。
+    """
+    if not logins:
+        return {}
+
+    from sqlalchemy import case, func, select
+
+    # Author 维度：pending / ci_failure
+    author_stmt = (
+        select(
+            PullRequest.author,
+            func.count(PullRequest.id).label("total_pr"),
+            func.sum(case((PullRequest.state == "open", 1), else_=0)).label("pending"),
+            func.sum(case((PullRequest.ci_status.in_(["failure", "failed"]), 1), else_=0)).label("ci_failure"),
+        )
+        .where(PullRequest.author.in_(logins))
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
+        .group_by(PullRequest.author)
+    )
+    extra: dict[str, dict[str, Any]] = {}
+    for r in (await db.execute(author_stmt)).all():
+        if not r[0]:
+            continue
+        extra[r[0]] = {
+            "pending_pr_count": int(r[2] or 0),
+            "ci_failure_count": int(r[3] or 0),
+        }
+
+    # Reviewer 维度：approval_count（reviewers JSON 里 state == APPROVED）
+    #    用 Python 层遍历（与 PR 流水线 get_contributors 的 reviewer 聚合逻辑一致）
+    reviewer_stmt = (
+        select(PullRequest.reviewers)
+        .where(PullRequest.owner == owner, PullRequest.repo == repo)
+        .where(PullRequest.created_at >= since)
+        .where(PullRequest.reviewers.isnot(None))
+    )
+    approval_map: dict[str, int] = {}
+    for (r,) in (await db.execute(reviewer_stmt)).all():
+        if not r or not isinstance(r, list):
+            continue
+        for rv in r:
+            if not rv:
+                continue
+            if isinstance(rv, str):
+                continue  # str 没有 state
+            if not isinstance(rv, dict):
+                continue
+            login = rv.get("login") or ""
+            if not login:
+                continue
+            if rv.get("state") in ("APPROVED", "approved"):
+                approval_map[login] = approval_map.get(login, 0) + 1
+
+    for login in logins:
+        e = extra.setdefault(login, {"pending_pr_count": 0, "ci_failure_count": 0})
+        e["approval_count"] = approval_map.get(login, 0)
+
+    return extra
+
+
+async def _build_contributor_score_map(
+    db: AsyncSession,
+    items: list["PRPipelineContributor"],
+    extra_map: dict[str, dict[str, Any]],
+    repo_name: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """基于 PR 流水线的 items 字段 + 额外 PR 字段，计算算分字段。
+
+    分数 = calculate_contribution_score() + 四象限。
+    基础指标（merged_pr_count / code_additions / review_count / approval_count）
+    全部取自 PR 流水线的 items，与四象限看板一致。
+    """
+    if not items:
+        return {}
+
+    from contributor_board.quadrant_engine import calculate_quadrants
+    from contributor_board.scoring_engine import (
+        calculate_contribution_score,
+        get_default_weights,
+    )
+    from contracts.schemas.contributor_board import ScoringWeightsConfig  # noqa: F401
+    from infrastructure.persistence.models import ContributorBoardSettings
+
+    # 1) 权重
+    settings_row = (await db.execute(
+        select(ContributorBoardSettings).where(
+            ContributorBoardSettings.setting_key == "scoring_weights"
+        )
+    )).scalars().first()
+    weights = get_default_weights()
+    if settings_row and isinstance(settings_row.setting_value, dict):
+        weights.update(settings_row.setting_value)
+
+    # 2) 构建用于四象限的 metrics（与四象限看板 _build_aggregated_metrics 字段对齐）
+    metrics: list[dict[str, Any]] = []
+    for it in items:
+        extra = extra_map.get(it.username, {})
+        ci_failure = int(extra.get("ci_failure_count", 0))
+        error_score = float(ci_failure) * 0.1
+        metrics.append({
+            "login": it.username,
+            "avatar_url": it.avatar_url,
+            "contribution_score": 0,  # 占位
+            "error_score": error_score,
+            "merged_pr_count": it.merged_count or 0,
+            "code_additions": it.lines_added or 0,
+            "code_deletions": it.lines_removed or 0,
+            "review_count": it.review_count or 0,
+            "approval_count": int(extra.get("approval_count", 0)),
+            "is_community": False,
+            "role_label": None,
+        })
+
+    # 3) 用 scoring_engine 算分
+    for m in metrics:
+        score = calculate_contribution_score(
+            {
+                "merged_pr_count": m["merged_pr_count"],
+                "code_additions": m["code_additions"],
+                "code_deletions": m["code_deletions"],
+                "review_count": m["review_count"],
+                "approval_count": m["approval_count"],
+                "error_score": m["error_score"],
+            },
+            weights,
+            commit_type_counts={},
+        )
+        m["contribution_score"] = score
+
+    # 4) 四象限
+    y_axis_type = await _get_quadrant_y_axis_from_settings(db)
+    axis_map = {
+        "error_score": "error_score",
+        "review_count": "review_count",
+        "merged_pr_count": "merged_pr_count",
+        "code_additions": "code_additions",
+    }
+    y_key = axis_map.get(y_axis_type, "review_count")
+    active_metrics = [m for m in metrics if m["contribution_score"] > 0]
+    if active_metrics:
+        points, _, _ = calculate_quadrants(active_metrics, y_axis_type=y_key)
+        quadrant_map = {p.login: p.quadrant for p in points}
+    else:
+        quadrant_map = {}
+
+    # 5) 组装结果
+    result: dict[str, dict[str, Any]] = {}
+    for it in items:
+        extra = extra_map.get(it.username, {})
+        m = next((x for x in metrics if x["login"] == it.username), None)
+        if not m:
+            continue
+        result[it.username] = {
+            "contribution_score": m["contribution_score"],
+            "error_score": m["error_score"],
+            "merged_pr_count": it.merged_count or 0,
+            "pending_pr_count": int(extra.get("pending_pr_count", 0)),
+            "code_additions": it.lines_added or 0,
+            "code_deletions": it.lines_removed or 0,
+            "review_count": it.review_count or 0,
+            "approval_count": int(extra.get("approval_count", 0)),
+            "dynamic_quadrant": quadrant_map.get(it.username),
+        }
+    return result
+
+
+async def _get_quadrant_y_axis_from_settings(db: AsyncSession) -> str:
+    """从 ContributorBoardSettings 读四象限 Y 轴，默认 review_count。"""
+    from infrastructure.persistence.models import ContributorBoardSettings
+
+    row = (await db.execute(
+        select(ContributorBoardSettings.setting_value).where(
+            ContributorBoardSettings.setting_key == "quadrant_y_axis"
+        )
+    )).scalar_one_or_none()
+    if row and isinstance(row, dict):
+        return row.get("y_axis_type", "review_count")
+    return "review_count"
 
 
 async def _get_pr_based_items_direct(
