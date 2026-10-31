@@ -189,10 +189,11 @@ async def list_contributors(
 async def get_contributor(
     login: str,
     db: DbSession,
+    days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 与排行榜一致"),
 ):
     """获取贡献者详情"""
     service = get_contributor_board_service()
-    detail = await service.get_contributor_detail(db, login=login)
+    detail = await service.get_contributor_detail(db, login=login, days=days)
     if detail is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"Contributor {login} not found")

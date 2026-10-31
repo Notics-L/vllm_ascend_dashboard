@@ -449,7 +449,7 @@ class ContributorBoardService:
         )
 
     @staticmethod
-    async def get_contributor_detail(db, login: str) -> ContributorDetailResponse | None:
+    async def get_contributor_detail(db, login: str, days: int = 30) -> ContributorDetailResponse | None:
         from contributor_board.pr_enrich import enrich_ranking_with_pr_data, get_full_contributor_metrics_from_prs
 
         # 1. 尝试从 contributors 表获取基本信息（如果存在）
@@ -457,16 +457,16 @@ class ContributorBoardService:
             select(Contributor).where(Contributor.login == login)
         )).scalars().first()
 
-        # 2. 从 pull_requests 实时聚合该贡献者的指标（唯一数据源）
-        pr_data = await enrich_ranking_with_pr_data(db, [login], repo_name=None, days=365)
+        # 2. 从 pull_requests 实时聚合该贡献者的指标（与排行榜 days 一致）
+        pr_data = await enrich_ranking_with_pr_data(db, [login], repo_name=None, days=days)
         pe = pr_data.get(login)
 
         # 如果 PR 表里完全没有这个人的记录，也尝试 contributors 表兜底
         if not pe and not contributor_row:
             return None
 
-        # 3. 从全量 PR 聚合中获取 score 和 quadrant（与排行榜一致）
-        all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None)
+        # 3. 从 PR 聚合中获取 score 和 quadrant（与排行榜一致，同一 days 窗口）
+        all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None, days=days)
         m = next((x for x in all_metrics if x["login"] == login), None)
 
         # 4. 如果排行榜聚合中也没有，但 contributors 表有记录，则返回基本信息

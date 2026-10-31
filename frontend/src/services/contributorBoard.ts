@@ -282,9 +282,10 @@ export const getContributors = async (
 /**
  * 获取贡献者详情
  */
-export const getContributorDetail = async (login: string) => {
+export const getContributorDetail = async (login: string, days: number = 30) => {
   const response = await api.get<ContributorDetail>(
-    `/contributor-board/contributors/${login}`
+    `/contributor-board/contributors/${login}`,
+    { params: { days } }
   )
   return response.data
 }
@@ -579,15 +580,15 @@ export interface WeightDimensionConfig {
 }
 
 export const WEIGHT_DIMENSIONS: WeightDimensionConfig[] = [
-  { key: 'merged_pr_weight', label: 'PR 合并', min: 0, max: 30, step: 1 },
-  { key: 'code_line_weight', label: '代码行', min: 0, max: 5, step: 0.1 },
-  { key: 'review_weight', label: 'Review', min: 0, max: 15, step: 0.5 },
-  { key: 'approval_weight', label: 'Approval', min: 0, max: 15, step: 0.5 },
-  { key: 'core_module_weight', label: '核心模块', min: 0, max: 20, step: 1 },
-  { key: 'files_changed_weight', label: '变更文件', min: 0, max: 5, step: 0.1 },
-  { key: 'bugfix_weight', label: 'Bug 修复', min: 0, max: 5, step: 0.1 },
-  { key: 'feature_weight', label: '新功能', min: 0, max: 5, step: 0.1 },
-  { key: 'active_duration_weight', label: '活跃时长', min: 0, max: 1, step: 0.01 },
+  { key: 'merged_pr_weight', label: 'PR 合并', min: 0, max: 20, step: 0.5 },
+  { key: 'code_line_weight', label: '代码行(每千行)', min: 0, max: 0.1, step: 0.001 },
+  { key: 'review_weight', label: 'Review', min: 0, max: 10, step: 0.5 },
+  { key: 'approval_weight', label: 'Approval', min: 0, max: 10, step: 0.5 },
+  { key: 'core_module_weight', label: '核心模块', min: 0, max: 10, step: 0.5 },
+  { key: 'files_changed_weight', label: '变更文件', min: 0, max: 1, step: 0.01 },
+  { key: 'bugfix_weight', label: 'Bug 修复', min: 0, max: 5, step: 0.5 },
+  { key: 'feature_weight', label: '新功能', min: 0, max: 5, step: 0.5 },
+  { key: 'active_duration_weight', label: '活跃时长', min: 0, max: 0.1, step: 0.001 },
 ]
 
 export const WEIGHT_LABELS: Record<WeightKey, string> = Object.fromEntries(

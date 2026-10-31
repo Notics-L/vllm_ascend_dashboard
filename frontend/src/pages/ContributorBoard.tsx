@@ -2608,7 +2608,7 @@ function ContributorDetailPage() {
     setLoading(true)
     try {
       const [detailData, policyData, trendData] = await Promise.all([
-        getContributorDetail(login).catch(() => null),
+        getContributorDetail(login, 30).catch(() => null),
         getContributorPolicy(login).catch(() => null),
         getExtendedTrend(login).catch(() => null),
       ])

@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 
 # 默认权重配置（与 ScoringWeightsConfig 保持一致）
 _default_weights: dict[str, float] = {
-    "merged_pr_weight": 10.0,
-    "code_line_weight": 0.5,
+    "merged_pr_weight": 5.0,
+    "code_line_weight": 0.005,
     "review_weight": 3.0,
     "approval_weight": 5.0,
-    "core_module_weight": 8.0,
-    "files_changed_weight": 0.3,
-    "bugfix_weight": 6.0,
-    "feature_weight": 4.0,
+    "core_module_weight": 5.0,
+    "files_changed_weight": 0.1,
+    "bugfix_weight": 3.0,
+    "feature_weight": 2.0,
     "active_duration_weight": 0.01,
     "revert_rate_weight": 8.0,
 }

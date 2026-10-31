@@ -56,6 +56,31 @@ class QuadrantPoint:
     is_community: bool
 
 
+def _clip_outliers(values: list[float]) -> list[float]:
+    """用 IQR 方法裁剪极端异常值，保留 1.5*IQR 范围内的数据。
+
+    如果裁剪后数据不足，退化为直接裁剪到 min/max。
+    """
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    if n < 4:
+        return values
+
+    q1 = sorted_vals[n // 4]
+    q3 = sorted_vals[(3 * n) // 4]
+    iqr = q3 - q1
+    if iqr <= 0:
+        return values
+
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    clipped = [v for v in values if lower <= v <= upper]
+    # 如果裁剪掉太多（<50%），放弃裁剪
+    if len(clipped) < n * 0.5:
+        return values
+    return clipped
+
+
 def _compute_threshold(
     values: list[float],
 ) -> float:
@@ -63,10 +88,11 @@ def _compute_threshold(
     计算分割线阈值。基于数据分布的动态百分位算法，使四象限分布更均衡。
 
     策略：
-    1. 如果所有值相同 -> 用 0，使所有点在上方
-    2. 如果数据呈长尾分布（偏度 > 1）-> 用中位数（P50），避免极端值影响
-    3. 如果数据相对均匀 -> 用 P45 稍微倾向下方划分，使激励区更有成就感
-    4. 如果值域极窄（变异系数 < 0.1）-> 用 P33 保证区分度
+    1. 先用 IQR 裁剪极端异常值
+    2. 如果所有值相同 -> 用 0
+    3. 如果值域极窄（变异系数 < 0.1）-> 用 P33
+    4. 如果数据呈长尾分布（偏度 > 1.5）-> 用中位数
+    5. 相对均匀 -> 用 P48
     """
     n = len(values)
     if n == 0:
@@ -74,27 +100,26 @@ def _compute_threshold(
 
     unique = set(values)
     if len(unique) <= 1:
-        # 所有值相同，分割线设为 0，所有人归为低侧
         return 0.0
 
-    sorted_vals = sorted(values)
-    mean = statistics.mean(values)
+    clipped = _clip_outliers(values)
+    sorted_vals = sorted(clipped)
+    cn = len(sorted_vals)
+    mean = statistics.mean(clipped)
 
-    if n > 1:
-        std = statistics.stdev(values)
+    if cn > 1:
+        std = statistics.stdev(clipped)
         cv = std / mean if mean > 0 else 0
     else:
         cv = 0
 
     if cv < 0.1:
-        # 值域极窄，用 P33 切分保证基础区分度
-        idx = max(1, n // 3)
+        idx = max(1, cn // 3)
         return sorted_vals[idx]
 
-    # 计算偏度（skewness），判断是否长尾分布
-    if n > 2:
-        m2 = sum((x - mean) ** 2 for x in values) / n
-        m3 = sum((x - mean) ** 3 for x in values) / n
+    if cn > 2:
+        m2 = sum((x - mean) ** 2 for x in clipped) / cn
+        m3 = sum((x - mean) ** 3 for x in clipped) / cn
         if m2 > 0:
             skewness = m3 / (m2 ** 1.5)
         else:
@@ -103,15 +128,12 @@ def _compute_threshold(
         skewness = 0
 
     if skewness > 1.5:
-        # 长右尾分布（极少数高贡献者），使用中位数让多数人进入低侧
-        return statistics.median(values)
+        return statistics.median(clipped)
     elif skewness < -1.5:
-        # 长左尾分布（大多数值集中在右侧），用 P55 让更多人进入高侧
-        idx = min(n - 1, int(n * 0.55))
+        idx = min(cn - 1, int(cn * 0.55))
         return sorted_vals[idx]
     else:
-        # 相对均匀分布，用 P48 稍微偏下，使激励区人数适度
-        idx = min(n - 1, max(1, int(n * 0.48)))
+        idx = min(cn - 1, max(1, int(cn * 0.48)))
         return sorted_vals[idx]
 
 

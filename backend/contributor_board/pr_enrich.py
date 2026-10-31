@@ -245,6 +245,7 @@ async def enrich_ranking_with_pr_data(
 async def get_full_contributor_metrics_from_prs(
     db: AsyncSession,
     repo_name: str | None = None,
+    days: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     从 pull_requests 表聚合全量贡献者指标（替代 _build_aggregated_metrics）。
@@ -294,6 +295,10 @@ async def get_full_contributor_metrics_from_prs(
         stmt = stmt.where(PullRequest.owner == owner, PullRequest.repo == repo)
     elif repo_name:
         stmt = stmt.where(PullRequest.repo == repo_name)
+
+    if days:
+        since = datetime.now(UTC) - timedelta(days=days)
+        stmt = stmt.where(PullRequest.created_at >= since)
 
     prs = (await db.execute(stmt)).all()
 
