@@ -211,6 +211,41 @@ async def legacy_schema_upgrade_third_party_columns():
         logger.warning(f"release_third_party_versions column migration skipped (non-fatal): {e}")
 
 
+async def legacy_schema_upgrade_contributor_metrics_columns():
+    """Ensure contributor_metrics table has PR-efficiency columns for recalc-from-prs."""
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            def _get_columns(sync_session):
+                rows = sync_session.execute(text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_metrics'"
+                )).fetchall()
+                return [r[0] for r in rows]
+            existing_cols = await db.run_sync(_get_columns)
+
+            new_columns = [
+                ("ci_failure_count", "INT DEFAULT 0"),
+                ("first_review_hours_avg", "FLOAT DEFAULT NULL"),
+                ("merge_hours_avg", "FLOAT DEFAULT NULL"),
+                ("ci_duration_hours_avg", "FLOAT DEFAULT NULL"),
+            ]
+            added = []
+            for col_name, col_type in new_columns:
+                if col_name not in existing_cols:
+                    logger.info("Adding missing column '%s' to contributor_metrics", col_name)
+                    await db.execute(text(f"ALTER TABLE contributor_metrics ADD COLUMN {col_name} {col_type}"))
+                    added.append(col_name)
+            if added:
+                await db.commit()
+                logger.info("Added contributor_metrics columns: %s", ", ".join(added))
+    except Exception as e:
+        logger.warning(f"contributor_metrics column migration skipped (non-fatal): {e}")
+
+
 async def _warmup_claude_code_cli():
     """Claude Code CLI 预热：验证 CLI 可用 + API key 有效"""
     try:
@@ -467,6 +502,7 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     await legacy_schema_upgrade_third_party_columns()
+    await legacy_schema_upgrade_contributor_metrics_columns()
 
     try:
         from infrastructure.core.app_runtime_config import load_app_runtime_config

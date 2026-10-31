@@ -1075,6 +1075,10 @@ class ContributorMetrics(Base):
     contribution_score = Column(Float, default=0)
     error_score = Column(Float, default=0)
     quadrant = Column(String(20))
+    ci_failure_count = Column(Integer, default=0)
+    first_review_hours_avg = Column(Float, nullable=True)
+    merge_hours_avg = Column(Float, nullable=True)
+    ci_duration_hours_avg = Column(Float, nullable=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 

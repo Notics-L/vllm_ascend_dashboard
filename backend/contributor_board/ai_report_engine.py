@@ -191,101 +191,55 @@ async def generate_ai_report(
 
 async def build_report_context(db: Any, repo_name: str | None = None) -> dict[str, Any]:
     """
-    从数据库构建报表所需的上下文数据。
+    从 pull_requests 表 + 快照表构建报表所需的上下文数据。
 
-    包括：各周期快照、top 贡献者、权重变更、人员变动等。
+    包括：当前周期 PR 聚合指标、历史快照、top 贡献者、权重变更等。
     """
-    from sqlalchemy import select as sa_select, func
+    from sqlalchemy import select as sa_select
     from infrastructure.persistence.models import (
-        ContributorMetrics,
-        QuadrantSnapshot,
+        ContributorScoreSnapshot,
         ContributorScoringVersion,
     )
 
+    from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+
     context = {}
 
-    # 1. 获取所有不同的统计周期
-    metrics_stmt = (
-        sa_select(
-            ContributorMetrics.period_start,
-            ContributorMetrics.period_end,
-        )
-        .distinct()
-        .order_by(ContributorMetrics.period_start)
-    )
-    if repo_name:
-        metrics_stmt = metrics_stmt.where(ContributorMetrics.repo_name == repo_name)
+    # 1. 从 pull_requests 实时聚合当前贡献者指标
+    pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
 
-    periods_result = await db.execute(metrics_stmt)
-    periods = []
-    all_login_set = set()
-    period_logins = {}
+    # 计算象限
+    from contributor_board.quadrant_engine import calculate_quadrants
+    active_prs = [m for m in pr_metrics if m.get("contribution_score", 0) > 0]
+    points, _, _ = calculate_quadrants(active_prs, y_axis_type="review_count")
+    quad_map = {p.login: p.quadrant for p in points}
 
-    for row in periods_result.all():
-        ps, pe = row
-        periods.append({"start": str(ps), "end": str(pe)})
-
-        # 获取该周期的所有贡献者
-        cm_stmt = (
-            sa_select(
-                ContributorMetrics.contributor_login,
-                ContributorMetrics.quadrant,
-                ContributorMetrics.contribution_score,
-            )
-            .where(
-                ContributorMetrics.period_start == ps,
-                ContributorMetrics.period_end == pe,
-            )
-        )
-        if repo_name:
-            cm_stmt = cm_stmt.where(ContributorMetrics.repo_name == repo_name)
-
-        cm_result = await db.execute(cm_stmt)
-        logins_in_period = set()
-        quad_dist = {}
-        scores = []
-        for cm_row in cm_result.all():
-            login, quad, score = cm_row
-            all_login_set.add(login)
-            logins_in_period.add(login)
-            scores.append({"login": login, "score": score or 0, "quadrant": quad})
-            quad_dist[quad] = quad_dist.get(quad, 0) + 1
-
-        period_logins[f"{ps}|{pe}"] = logins_in_period
-        context.setdefault("snapshots", []).append({
-            "snapshot_date": str(ps),
-            "quadrant_distribution": quad_dist,
-            "contributor_count": len(scores),
-            "scores": scores,
+    cur_scores = []
+    quad_dist = {}
+    for m in active_prs:
+        q = quad_map.get(m["login"], "unknown")
+        cur_scores.append({
+            "login": m["login"],
+            "score": m.get("contribution_score", 0),
+            "quadrant": q,
         })
+        quad_dist[q] = quad_dist.get(q, 0) + 1
 
-    context["periods"] = periods
-    context["summary"] = {"total_contributors": len(all_login_set)}
+    # 当前周期快照
+    from datetime import date
+    today = str(date.today())
+    context["snapshots"] = [{
+        "snapshot_date": today,
+        "quadrant_distribution": quad_dist,
+        "contributor_count": len(cur_scores),
+        "scores": cur_scores,
+    }]
+    context["periods"] = [{"start": today, "end": today}]
+    context["summary"] = {"total_contributors": len(cur_scores)}
 
-    # 2. Top 贡献者（取最新周期）
-    if periods:
-        latest = periods[-1]
-        latest_stmt = (
-            sa_select(
-                ContributorMetrics.contributor_login,
-                ContributorMetrics.contribution_score,
-                ContributorMetrics.quadrant,
-            )
-            .where(
-                ContributorMetrics.period_start == latest["start"],
-                ContributorMetrics.period_end == latest["end"],
-            )
-            .order_by(ContributorMetrics.contribution_score.desc())
-            .limit(10)
-        )
-        if repo_name:
-            latest_stmt = latest_stmt.where(ContributorMetrics.repo_name == repo_name)
-
-        latest_result = await db.execute(latest_stmt)
-        context["top_contributors"] = [
-            {"login": r[0], "score": r[1] or 0, "quadrant": r[2]}
-            for r in latest_result.all()
-        ]
+    # 2. Top 贡献者
+    top_sorted = sorted(cur_scores, key=lambda x: x["score"], reverse=True)
+    context["top_contributors"] = top_sorted[:10]
 
     # 3. 权重变更记录
     v_stmt = (
@@ -306,33 +260,44 @@ async def build_report_context(db: Any, repo_name: str | None = None) -> dict[st
         for r in v_result.all()
     ]
 
-    # 4. 人员变动（对比相邻周期）
-    period_keys = sorted(period_logins.keys())
-    if len(period_keys) >= 2:
-        prev_logins = period_logins[period_keys[-2]]
-        curr_logins = period_logins[period_keys[-1]]
+    # 4. 历史快照对比（用于人员变动检测）
+    snap_stmt = (
+        sa_select(ContributorScoreSnapshot)
+        .order_by(ContributorScoreSnapshot.created_at.desc())
+        .limit(2)
+    )
+    if repo_name:
+        snap_stmt = snap_stmt.where(ContributorScoreSnapshot.repo_name == repo_name)
+    snap_result = await db.execute(snap_stmt)
+    hist_snaps = snap_result.scalars().all()
 
-        new_c = curr_logins - prev_logins
-        left_c = prev_logins - curr_logins
+    prev_scores_map: dict[str, str] = {}
+    if len(hist_snaps) >= 1:
+        prev_snap = hist_snaps[0]
+        prev_scores = prev_snap.scores or []
+        for ps in prev_scores:
+            prev_scores_map[ps.get("login", "")] = ps.get("quadrant", "unknown")
 
-        # 简单象限变动检测（需要在 snapshots 中查找）
-        shifts = []
-        snaps = context.get("snapshots", [])
-        if len(snaps) >= 2:
-            prev_map = {s["login"]: s["quadrant"] for s in snaps[-2].get("scores", [])}
-            curr_map = {s["login"]: s["quadrant"] for s in snaps[-1].get("scores", [])}
-            for login in curr_logins & prev_logins:
-                if prev_map.get(login) != curr_map.get(login):
-                    shifts.append({
-                        "login": login,
-                        "from": prev_map.get(login, "unknown"),
-                        "to": curr_map.get(login, "unknown"),
-                    })
+    curr_logins = {s["login"] for s in cur_scores}
+    prev_logins = set(prev_scores_map.keys())
 
-        context["contributor_changes"] = {
-            "new_contributors": len(new_c),
-            "left_contributors": len(left_c),
-            "quadrant_shifts": shifts[:10],
-        }
+    new_c = curr_logins - prev_logins
+    left_c = prev_logins - curr_logins
+
+    shifts = []
+    curr_quad_map = {s["login"]: s["quadrant"] for s in cur_scores}
+    for login in curr_logins & prev_logins:
+        if prev_scores_map.get(login) != curr_quad_map.get(login):
+            shifts.append({
+                "login": login,
+                "from": prev_scores_map.get(login, "unknown"),
+                "to": curr_quad_map.get(login, "unknown"),
+            })
+
+    context["contributor_changes"] = {
+        "new_contributors": len(new_c),
+        "left_contributors": len(left_c),
+        "quadrant_shifts": shifts[:10],
+    }
 
     return context

@@ -106,28 +106,17 @@ class AIReportService:
     ) -> AIReportResponse:
         repo_name = request.repo_name
 
-        # Build context from existing data
+        # Build context from PR data
         context = await build_report_context(db, repo_name=repo_name)
 
-        # Build snapshot data from snapshots
-        from infrastructure.persistence.models import (
-            ContributorScoreSnapshot,
-            ContributorScoringVersion,
-        )
-
-        snap_stmt = _build_snapshot_query(repo_name)
-        snap_result = await db.execute(snap_stmt)
-        snapshots = snap_result.scalars().all()
-
+        # Build snapshot data from current PR context + history
         snapshot_data = []
-        for s in snapshots:
-            stats = s.statistics or {}
-            quad_dist = stats.get("quadrant_distribution", {})
-            snapshot_data.append({
-                "snapshot_date": str(s.snapshot_date),
-                "contributor_count": s.contributor_count,
-                "quadrant_distribution": quad_dist,
-            })
+        cur_snap = context.get("snapshots", [{}])[0]
+        snapshot_data.append({
+            "snapshot_date": cur_snap.get("snapshot_date", ""),
+            "contributor_count": cur_snap.get("contributor_count", 0),
+            "quadrant_distribution": cur_snap.get("quadrant_distribution", {}),
+        })
 
         # Call LLM
         report_content, model_name = await generate_ai_report(

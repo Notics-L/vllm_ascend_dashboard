@@ -457,6 +457,14 @@ class ContributorBoardService:
             return None
 
         contributor, metrics = row
+
+        # 从 PR 流水线补充公司/邮箱/机器人/效率指标
+        from contributor_board.pr_enrich import enrich_ranking_with_pr_data
+        pr_enriched = await enrich_ranking_with_pr_data(
+            db, [login], repo_name=None, days=365,
+        )
+        pe = pr_enriched.get(login, {})
+
         return ContributorDetailResponse(
             id=contributor.id,
             github_id=contributor.github_id,
@@ -466,7 +474,7 @@ class ContributorBoardService:
             name=contributor.name,
             is_community=contributor.is_community,
             role_types=contributor.role_types,
-            company=contributor.company,
+            company=contributor.company or pe.get("company"),
             employee_id=contributor.employee_id,
             first_contribution_at=contributor.first_contribution_at,
             last_contribution_at=contributor.last_contribution_at,
@@ -481,6 +489,12 @@ class ContributorBoardService:
             contribution_score=float(metrics.contribution_score or 0) if metrics else 0,
             error_score=float(metrics.error_score or 0) if metrics else 0,
             quadrant=metrics.quadrant if metrics else None,
+            emails=pe.get("emails", []),
+            is_bot=pe.get("is_bot", False),
+            ci_failure_count=pe.get("ci_failure_count", 0),
+            first_review_hours_avg=pe.get("first_review_hours_avg"),
+            merge_hours_avg=pe.get("merge_hours_avg"),
+            ci_duration_hours_avg=pe.get("ci_duration_hours_avg"),
         )
 
     # ---- 四象限数据 ----
@@ -494,53 +508,10 @@ class ContributorBoardService:
         if not y_axis_type:
             y_axis_type = await ContributorBoardService._get_quadrant_y_axis(db)
 
-        conditions = []
-        if repo_name:
-            conditions.append(ContributorMetrics.repo_name == repo_name)
-
-        # 按 contributor 聚合（取最新周期数据或总和），避免同一人出现多次
-        agg_stmt = (
-            select(
-                Contributor.login,
-                Contributor.avatar_url,
-                func.coalesce(func.sum(ContributorMetrics.contribution_score), 0).label("contribution_score"),
-                func.coalesce(func.sum(ContributorMetrics.error_score), 0).label("error_score"),
-                func.coalesce(func.sum(ContributorMetrics.review_count), 0).label("review_count"),
-                func.coalesce(func.sum(ContributorMetrics.merged_pr_count), 0).label("merged_pr_count"),
-                func.coalesce(func.sum(ContributorMetrics.code_additions), 0).label("code_additions"),
-                func.coalesce(func.max(ContributorMetrics.quadrant), "").label("role_label"),
-            )
-            .join(ContributorMetrics, Contributor.id == ContributorMetrics.contributor_id)
+        # 从 pull_requests 表实时聚合全量指标
+        contributors_metrics = await ContributorBoardService._build_aggregated_metrics(
+            db, repo_name=repo_name
         )
-
-        if conditions:
-            agg_stmt = agg_stmt.where(and_(*conditions))
-
-        agg_stmt = agg_stmt.group_by(Contributor.login, Contributor.avatar_url)
-        result = await db.execute(agg_stmt)
-        rows = result.all()
-
-        contributors_metrics: list[dict[str, Any]] = []
-        for r in rows:
-            contributors_metrics.append({
-                "login": r[0],
-                "avatar_url": r[1],
-                "contribution_score": float(r[2]),
-                "error_score": float(r[3]),
-                "review_count": int(r[4]),
-                "merged_pr_count": int(r[5]),
-                "code_additions": int(r[6]),
-                "role_label": r[7],
-                "is_community": False,
-            })
-
-        # 去重：同一 login 取 contribution_score 最高的
-        deduped: dict[str, dict[str, Any]] = {}
-        for m in contributors_metrics:
-            login = m["login"]
-            if login not in deduped or m["contribution_score"] > deduped[login]["contribution_score"]:
-                deduped[login] = m
-        contributors_metrics = list(deduped.values())
 
         # 只保留有贡献的记录
         contributors_metrics = [m for m in contributors_metrics if m["contribution_score"] > 0]
@@ -559,10 +530,12 @@ class ContributorBoardService:
         for p in points:
             quadrant_counts[p.quadrant] = quadrant_counts.get(p.quadrant, 0) + 1
 
-        # 构建 points 响应，保留原始字段名兼容前端
+        # 构建 points 响应（数据已含 company/primary_email/is_bot）
+        metrics_map = {m["login"]: m for m in contributors_metrics}
+
         resp_points = []
         for p in points:
-            m = deduped.get(p.login, {})
+            m = metrics_map.get(p.login, {})
             resp_points.append({
                 "login": p.login,
                 "avatar_url": p.avatar_url,
@@ -574,6 +547,9 @@ class ContributorBoardService:
                 "merged_pr_count": p.merged_pr_count,
                 "is_community": p.is_community,
                 "role_label": m.get("role_label", ""),
+                "company": m.get("company"),
+                "primary_email": m.get("primary_email"),
+                "is_bot": m.get("is_bot", False),
             })
 
         return QuadrantDataResponse(
@@ -594,49 +570,9 @@ class ContributorBoardService:
     async def _build_aggregated_metrics(
         db, repo_name: str | None = None
     ) -> list[dict[str, Any]]:
-        """聚合所有贡献者指标（无时间过滤，全量统计）"""
-        stmt = (
-            select(
-                Contributor.login,
-                Contributor.avatar_url,
-                Contributor.employee_id,
-                func.sum(ContributorMetrics.contribution_score).label('contribution_score'),
-                func.sum(ContributorMetrics.merged_pr_count).label('merged_pr_count'),
-                func.sum(ContributorMetrics.pending_pr_count).label('pending_pr_count'),
-                func.sum(ContributorMetrics.code_additions).label('code_additions'),
-                func.sum(ContributorMetrics.code_deletions).label('code_deletions'),
-                func.sum(ContributorMetrics.review_count).label('review_count'),
-                func.sum(ContributorMetrics.approval_count).label('approval_count'),
-                func.sum(ContributorMetrics.error_score).label('error_score'),
-                func.sum(ContributorMetrics.commit_count).label('commit_count'),
-                func.max(ContributorMetrics.quadrant).label('role_label'),
-            )
-            .join(ContributorMetrics, Contributor.id == ContributorMetrics.contributor_id)
-        )
-        if repo_name:
-            stmt = stmt.where(ContributorMetrics.repo_name == repo_name)
-        stmt = stmt.group_by(Contributor.login, Contributor.avatar_url, Contributor.employee_id)
-
-        result = await db.execute(stmt)
-        rows = result.all()
-
-        return [
-            {
-                "login": r[0], "avatar_url": r[1], "employee_id": r[2],
-                "contribution_score": float(r[3] or 0),
-                "merged_pr_count": int(r[4] or 0),
-                "pending_pr_count": int(r[5] or 0),
-                "code_additions": int(r[6] or 0),
-                "code_deletions": int(r[7] or 0),
-                "review_count": int(r[8] or 0),
-                "approval_count": int(r[9] or 0),
-                "error_score": float(r[10] or 0),
-                "commit_count": int(r[11] or 0),
-                "role_label": r[12],
-                "is_community": False,
-            }
-            for r in rows
-        ]
+        """聚合所有贡献者指标（从 pull_requests 表实时计算）"""
+        from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+        return await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
 
     @staticmethod
     async def _get_quadrant_y_axis(db) -> str:
@@ -735,6 +671,7 @@ class ContributorBoardService:
         paginated = sorted_metrics[offset:offset + limit]
         total = len(sorted_metrics)
 
+        # PR 数据已包含 company/primary_email/is_bot
         rankings: list[ContributorRankingItem] = [
             ContributorRankingItem(
                 login=m["login"],
@@ -753,6 +690,9 @@ class ContributorBoardService:
                 commit_count=m.get("commit_count", 0),
                 dynamic_quadrant=quadrant_map.get(m["login"]),
                 role_label=m["role_label"],
+                company=m.get("company"),
+                primary_email=m.get("primary_email"),
+                is_bot=m.get("is_bot", False),
             )
             for i, m in enumerate(paginated)
         ]

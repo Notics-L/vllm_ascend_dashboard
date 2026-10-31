@@ -1,11 +1,11 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
+﻿import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import * as echarts from 'echarts'
 import {useNavigate, useParams} from 'react-router-dom'
 
 /** 保存当前 tab/repo 到 sessionStorage 以便详情页返回时恢复，然后导航到详情页 */
 function navigateToDetail(navigate: ReturnType<typeof useNavigate>, login: string, tab: string, repo: string | undefined) {
   try {
-    if (tab !== 'classification') sessionStorage.setItem('cb_last_tab', tab)
+    sessionStorage.setItem('cb_last_tab', tab)
     if (repo) sessionStorage.setItem('cb_last_repo', repo)
   } catch { /* ignore */ }
   navigate(`/contributor-board/detail/${login}`)
@@ -46,7 +46,6 @@ import {
 import {
   CalendarOutlined,
   ClockCircleOutlined,
-  CodeOutlined,
   CloudUploadOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -71,16 +70,9 @@ import {
 import dayjs from 'dayjs'
 import { formatTimezone, fromTimezoneNow } from '@/utils/timezone'
 import {
-  type BuildOptimizationStats,
-  type BuildPlan,
-  type ClassificationSummary,
   type ContributorDetail,
   ExtendedTrend,
   getExtendedTrend,
-  getBuildFilterOptions,
-  getBuildOptimizationStats,
-  getBuildPlans,
-  getClassificationSummary,
   getContributorDetail,
   getContributorDistribution,
   getContributorHeatmap,
@@ -93,12 +85,11 @@ import {
   type ModuleDistributionItem,
   type TypeDistributionItem,
   type TimelineCommitItem,
-  getModuleHotspot,
   getQuadrantData,
   getRanking,
   getReposList,
   getRoleStats,
-  type ModuleHotspotResponse, PolicyResult,
+  PolicyResult,
   type QuadrantData,
   type RankingItem,
   type RoleStats,
@@ -140,10 +131,10 @@ import {
     syncContributors,
     type SyncRecord,
     type SyncSummary,
-    getSyncStatus,
-    getSyncHistory,
-    getSyncSummary,
-    cancelSync,
+     getSyncStatus,
+     getSyncHistory,
+     getSyncSummary,
+     cancelSync,
 } from '../services/contributorBoard'
 import { getLLMProviders, type LLMProvider } from '../services/dailySummary'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -153,38 +144,6 @@ const { Title, Text, Paragraph } = Typography
 /* ------------------------------------------------------------------ */
 /*                             颜色映射                                 */
 /* ------------------------------------------------------------------ */
-
-const buildTypeColors: Record<string, string> = {
-  full_build: 'red',
-  minimal_build: 'orange',
-  nightly_only: 'blue',
-  skip: 'green',
-  smart_check: 'purple',
-  conservative: 'default',
-}
-
-const buildTypeLabels: Record<string, string> = {
-  full_build: '完整构建',
-  minimal_build: '精简构建',
-  nightly_only: '仅夜间构建',
-  skip: '跳过构建',
-  smart_check: '智能检查',
-  conservative: '保守策略',
-}
-
-const typeColors: Record<string, string> = {
-  BugFix: 'red',
-  Feature: 'green',
-  Performance: 'blue',
-  Revert: 'volcano',
-  CI: 'orange',
-  Doc: 'cyan',
-  Test: 'purple',
-  Refactor: 'magenta',
-  Misc: 'default',
-}
-
-const pieColors = ['#ff4d4f', '#52c41a', '#1890ff', '#fa8c16', '#ff7a45', '#13c2c2', '#722ed1', '#eb2f96', '#d9d9d9']
 
 const roleLabels: Record<string, string> = {
   developer: '开发者',
@@ -212,7 +171,6 @@ const quadrantColors: Record<string, string> = {
   REPLACE: '#ff4d4f',
 }
 
-// 提交类型映射（用于 Timeline 和类型分布图表）
 const classificationLabels: Record<string, string> = {
   BugFix: 'Bug 修复',
   Feature: '新功能',
@@ -237,8 +195,6 @@ const classificationColors: Record<string, string> = {
   Misc: 'default',
 }
 
-const chartColors = ['#5b46f5', '#52c41a', '#ff4d4f', '#1890ff', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#d9d9d9']
-
 const quadrantRoleLabels: Record<string, string> = {
   star: '明星',
   active: '活跃',
@@ -251,845 +207,6 @@ const quadrantRoleColors: Record<string, string> = {
   active: 'blue',
   observer: 'default',
   at_risk: 'red',
-}
-
-/* ------------------------------------------------------------------ */
-/*                            分类 Tab 内容                            */
-/* ------------------------------------------------------------------ */
-
-function ModuleHotspotGrid({ modules, maxCount }: { modules: Array<{ name: string; count: number }>; maxCount: number }) {
-  if (modules.length === 0) return <Empty description="暂无模块热点数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-
-  const top3Gradients = [
-    'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-    'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-  ]
-  const normalGradient = 'linear-gradient(135deg, #e0e7ff 0%, #f0f4ff 100%)'
-
-  return (
-    <Row gutter={[12, 12]}>
-      {modules.map((item, index) => {
-        const pct = Math.round((item.count / maxCount) * 100)
-        const isTop3 = index < 3
-        const gradient = isTop3 ? top3Gradients[index] : normalGradient
-        return (
-          <Col xs={12} sm={8} md={8} lg={6} key={item.name}>
-            <div style={{
-              background: gradient,
-              borderRadius: 10,
-              padding: '12px 14px',
-              position: 'relative',
-              overflow: 'hidden',
-              minHeight: 80,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-              boxShadow: isTop3 ? '0 4px 12px rgba(0,0,0,0.15)' : '0 2px 6px rgba(0,0,0,0.06)',
-              transition: 'transform 0.2s, box-shadow 0.2s',
-              cursor: 'default',
-            }}>
-              {/* Rank badge */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                {isTop3 ? (
-                  <div style={{
-                    background: 'rgba(255,255,255,0.3)',
-                    borderRadius: '50%',
-                    width: 26,
-                    height: 26,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: '#fff',
-                  }}>
-                    #{index + 1}
-                  </div>
-                ) : (
-                  <Text style={{ fontSize: 11, color: 'rgba(0,0,0,0.25)' }}>#{index + 1}</Text>
-                )}
-                <Text strong style={{
-                  fontSize: 13,
-                  color: isTop3 ? '#fff' : '#333',
-                  maxWidth: 120,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}>{item.name}</Text>
-              </div>
-
-              {/* Progress mini bar */}
-              <div style={{ marginTop: 8 }}>
-                <div style={{
-                  background: isTop3 ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.06)',
-                  borderRadius: 3,
-                  height: 5,
-                  overflow: 'hidden',
-                }}>
-                  <div style={{
-                    width: `${pct}%`,
-                    height: '100%',
-                    background: isTop3 ? 'rgba(255,255,255,0.8)' : '#5b46f5',
-                    borderRadius: 3,
-                    transition: 'width 0.6s ease',
-                  }} />
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                  <Text style={{ fontSize: 11, color: isTop3 ? 'rgba(255,255,255,0.8)' : '#888' }}>{pct}%</Text>
-                  <Text strong style={{ fontSize: 18, color: isTop3 ? '#fff' : '#333' }}>{item.count}</Text>
-                </div>
-              </div>
-            </div>
-          </Col>
-        )
-      })}
-    </Row>
-  )
-}
-
-function EChartsPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const inst = echarts.init(el)
-    inst.setOption({
-      tooltip: {
-        trigger: 'item',
-        formatter: '{b}: {c} 次 ({d}%)',
-      },
-      legend: {
-        type: 'scroll',
-        orient: 'vertical',
-        right: 10,
-        top: 'center',
-        textStyle: { fontSize: 12 },
-      },
-      series: [{
-        type: 'pie',
-        radius: ['40%', '70%'],
-        center: ['35%', '50%'],
-        avoidLabelOverlap: true,
-        itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-        label: { show: true, formatter: '{b}: {c}' },
-        emphasis: {
-          label: { show: true, fontSize: 14, fontWeight: 'bold' },
-        },
-        data: data.map((item, i) => ({
-          ...item,
-          itemStyle: { color: pieColors[i % pieColors.length] },
-        })),
-      }],
-    }, true)
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-    }
-  }, [data])
-
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-}
-
-function EChartsBarChart({ data }: { data: Array<{ date: string; merged_pr_count: number; code_additions: number }> }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const inst = echarts.init(el)
-    inst.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { bottom: 4, textStyle: { fontSize: 11 } },
-      grid: { left: 50, right: 16, top: 10, bottom: 40 },
-      xAxis: {
-        type: 'category',
-        data: data.map(d => d.date),
-        axisTick: { alignWithLabel: true },
-        axisLabel: { fontSize: 11 },
-      },
-      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-      series: [
-        { name: '合并 PR', type: 'bar', data: data.map(d => d.merged_pr_count), itemStyle: { color: '#5b46f5' } },
-        { name: '代码添加(行)', type: 'bar', data: data.map(d => d.code_additions), itemStyle: { color: '#52c41a' } },
-      ],
-    }, true)
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-    }
-  }, [data])
-
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-}
-
-function EChartsLineChart<T extends object>({
-  data,
-  series,
-}: {
-  data: T[];
-  series: Array<{ name: string; dataKey: string; color: string }>;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const inst = echarts.init(el)
-
-    // 当 series 超过 2 条时，使用双 Y 轴展示
-    const useDualAxis = series.length > 3
-    if (useDualAxis) {
-      // 前几条放左轴，后面放右轴
-      const leftAxisSeries = series.slice(0, Math.ceil(series.length / 2))
-      const rightAxisSeries = series.slice(Math.ceil(series.length / 2))
-
-      inst.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { bottom: 4, textStyle: { fontSize: 11 } },
-        grid: { left: 55, right: 55, top: 10, bottom: 40 },
-        xAxis: {
-          type: 'category',
-          data: (data as any).map((d: any) => d.date),
-          axisTick: { alignWithLabel: true },
-          axisLabel: { fontSize: 11 },
-        },
-        yAxis: [
-          { type: 'value', position: 'left', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } }, name: '主要指标' },
-          { type: 'value', position: 'right', splitLine: { show: false }, name: '辅助指标' },
-        ],
-        series: [
-          ...leftAxisSeries.map(s => ({
-            name: s.name,
-            type: 'line',
-            smooth: true,
-            lineStyle: { width: 2 },
-            yAxisIndex: 0,
-            data: (data as any).map((d: any) => d[s.dataKey]),
-            itemStyle: { color: s.color },
-          })),
-          ...rightAxisSeries.map(s => ({
-            name: s.name,
-            type: 'line',
-            smooth: true,
-            lineStyle: { width: 2 },
-            yAxisIndex: 1,
-            data: (data as any).map((d: any) => d[s.dataKey]),
-            itemStyle: { color: s.color },
-          })),
-        ],
-      }, true)
-    } else {
-      inst.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { bottom: 4, textStyle: { fontSize: 11 } },
-        grid: { left: 50, right: 16, top: 10, bottom: 40 },
-        xAxis: {
-          type: 'category',
-          data: (data as any).map((d: any) => d.date),
-          axisTick: { alignWithLabel: true },
-          axisLabel: { fontSize: 11 },
-        },
-        yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-        series: series.map(s => ({
-          name: s.name,
-          type: 'line',
-          smooth: true,
-          lineStyle: { width: 2 },
-          data: (data as any).map((d: any) => d[s.dataKey]),
-          itemStyle: { color: s.color },
-        })),
-      }, true)
-    }
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-    }
-  }, [data, series])
-
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-}
-
-/** 贡献活动热力图（类似 GitHub 贡献格子） */
-function ContributorHeatmapChart({ data }: { data: HeatmapDataPoint[] }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const inst = echarts.init(el)
-
-    // 构建周×日的二维数据
-    const weekDays = ['一', '二', '三', '四', '五', '六', '日']
-    // 按 ISO 周分组
-    const weekMap: Record<string, Record<number, number>> = {}
-    for (const d of data) {
-      const dt = new Date(d.date)
-      // ISO week: Monday as first day
-      const isoWeek = getISOWeek(dt)
-      const key = `${dt.getFullYear()}-W${String(isoWeek).padStart(2, '0')}`
-      if (!weekMap[key]) weekMap[key] = {}
-      weekMap[key][d.weekDay] = d.commit_count
-    }
-    const weeks = Object.keys(weekMap).sort()
-
-    // 构建 heatmap 数据：[weekIndex, weekDay, count]
-    const heatmapData: [number, number, number][] = []
-    weeks.forEach((wk, wi) => {
-      for (let wd = 0; wd < 7; wd++) {
-        heatmapData.push([wi, wd, weekMap[wk][wd] || 0])
-      }
-    })
-
-    inst.setOption({
-      tooltip: {
-        formatter: (params: any) => {
-          const wi = params.data[0]
-          const wd = params.data[1]
-          const cnt = params.data[2]
-          return `${weeks[wi]}<br/>星期${weekDays[wd]}: ${cnt} 次提交`
-        },
-      },
-      grid: { left: 10, right: 30, top: 10, bottom: 30 },
-      xAxis: {
-        type: 'category',
-        data: weeks,
-        splitArea: { show: false },
-        axisLabel: {
-          fontSize: 10,
-          formatter: (val: string) => val.split('-W')[1],
-          rotate: 0,
-        },
-        axisTick: { show: false },
-        axisLine: { show: false },
-      },
-      yAxis: {
-        type: 'category',
-        data: weekDays,
-        splitArea: { show: false },
-        axisTick: { show: false },
-        axisLine: { show: false },
-      },
-      visualMap: {
-        min: 0,
-        max: Math.max(...heatmapData.map(d => d[2]), 1),
-        calculable: false,
-        orient: 'horizontal',
-        left: 'center',
-        bottom: 0,
-        show: true,
-        inRange: {
-          color: ['#f0f0f0', '#d9f7be', '#a0d911', '#62b209', '#216500'],
-        },
-        textStyle: { fontSize: 10 },
-      },
-      series: [{
-        type: 'heatmap',
-        data: heatmapData,
-        label: { show: false },
-        emphasis: {
-          itemStyle: { borderColor: '#5b46f5', borderWidth: 2 },
-        },
-      }],
-    }, true)
-
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-    }
-  }, [data])
-
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-}
-
-/** 提交类型柱状图 */
-function CommitTypeBarChart({ data }: { data: TypeDistributionItem[] }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const inst = echarts.init(el)
-    inst.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 50, right: 16, top: 10, bottom: 40 },
-      xAxis: {
-        type: 'category',
-        data: data.map(d => classificationLabels[d.commit_type] || d.commit_type),
-        axisTick: { alignWithLabel: true },
-        axisLabel: { fontSize: 11, rotate: 30 },
-      },
-      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-      series: [{
-        type: 'bar',
-        data: data.map((d, i) => ({
-          value: d.count,
-          itemStyle: { color: chartColors[i % chartColors.length] },
-        })),
-        barMaxWidth: 50,
-        label: {
-          show: true,
-          position: 'top',
-          fontSize: 11,
-          formatter: (params: any) => params.value,
-        },
-      }],
-    }, true)
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-    }
-  }, [data])
-
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-}
-
-// ISO 周工具函数
-function getISOWeek(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
-  const dayNum = d.getUTCDay() || 7
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum)
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
-  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
-}
-
-function ClassificationTab({ selectedRepo }: { selectedRepo?: string }) {
-  const [data, setData] = useState<ClassificationSummary | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      setLoading(true)
-      try {
-        const result = await getClassificationSummary({ repo_name: selectedRepo || null })
-        if (!cancelled) {
-          await new Promise(r => setTimeout(r, 400))
-          setData(result)
-        }
-      } catch (error: unknown) {
-        if (!cancelled) {
-          const err = error as { response?: { data?: { detail?: string } }; message?: string }
-          message.error('加载分类统计失败：' + (err.response?.data?.detail || err.message || '未知错误'))
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load().then()
-    return () => { cancelled = true }
-  }, [selectedRepo])
-
-  const pieData = data?.type_distribution
-    ? Object.entries(data.type_distribution).map(([name, value]) => ({ name, value }))
-    : []
-
-  const hotspotModules = data
-    ? Object.entries(data.module_hotspot)
-        .sort((a, b) => b[1] - a[1])
-        .map(([name, count]) => ({ name, count }))
-    : []
-  const hotspotMax = hotspotModules.length > 0 ? hotspotModules[0].count : 1
-
-  return (
-    <Spin spinning={loading}>
-      <Row gutter={[16, 16]}>
-        <Col span={6}>
-          <Card>
-            <Statistic title="总提交数" value={data?.total_commits ?? 0} valueStyle={{ color: '#5b46f5' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="BugFix 占比" value={data ? Math.round(data.type_percentage.BugFix ?? 0) : 0} suffix="%" valueStyle={{ color: '#ff4d4f' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="Feature 占比" value={data ? Math.round(data.type_percentage.Feature ?? 0) : 0} suffix="%" valueStyle={{ color: '#52c41a' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="芯片特定提交" value={data?.chip_specific_count ?? 0} valueStyle={{ color: '#1890ff' }} />
-          </Card>
-        </Col>
-
-        <Col span={12}>
-          <Card title="提交类型分布">
-            <div style={{ height: 400 }}>
-              {pieData.length > 0 ? (
-                <EChartsPieChart data={pieData} />
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                  <Text type="secondary">暂无数据</Text>
-                </div>
-              )}
-            </div>
-          </Card>
-        </Col>
-
-        <Col span={12}>
-          <Card title="模块热点">
-            <ModuleHotspotGrid modules={hotspotModules} maxCount={hotspotMax} />
-          </Card>
-        </Col>
-      </Row>
-    </Spin>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/*                            构建 Tab 内容                            */
-/* ------------------------------------------------------------------ */
-
-function BuildsTab({ selectedRepo }: { selectedRepo?: string }) {
-  const [buildStats, setBuildStats] = useState<BuildOptimizationStats | null>(null)
-  const [statsLoading, setStatsLoading] = useState(false)
-
-  const [plans, setPlans] = useState<BuildPlan[]>([])
-  const [plansTotal, setPlansTotal] = useState(0)
-  const [plansLoading, setPlansLoading] = useState(false)
-
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
-  const [filterCommitType, setFilterCommitType] = useState<string | undefined>(undefined)
-  const [filterBuildType, setFilterBuildType] = useState<string | undefined>(undefined)
-  const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
-  const [filterOptions, setFilterOptions] = useState<{ commitTypes: string[]; buildTypes: string[] }>({ commitTypes: [], buildTypes: [] })
-  const [fileModal, setFileModal] = useState<{ open: boolean; files: string[] | null; prNumber: number }>({ open: false, files: null, prNumber: 0 })
-  const [refreshTrigger, setRefreshTrigger] = useState(0)
-
-  // 加载统计数据
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      setStatsLoading(true)
-      try {
-        const [statsData, optionsData] = await Promise.all([
-          getBuildOptimizationStats({ repo_name: selectedRepo || null }),
-          getBuildFilterOptions({ repo_name: selectedRepo || null }),
-        ])
-        if (!cancelled) {
-          await new Promise(r => setTimeout(r, 400))
-          setBuildStats(statsData)
-          setFilterOptions({
-            commitTypes: optionsData.commit_types || [],
-            buildTypes: optionsData.build_types || [],
-          })
-        }
-      } catch { /* ignore */ } finally {
-        if (!cancelled) setStatsLoading(false)
-      }
-    }
-    load().then()
-    return () => { cancelled = true }
-  }, [selectedRepo])
-
-  // 加载构建计划列表
-  const fetchPlans = useCallback(async (page: number, size: number) => {
-    setPlansLoading(true)
-    try {
-      const data = await getBuildPlans({
-        repo_name: selectedRepo || null,
-        commit_type: filterCommitType || null,
-        build_type: filterBuildType || null,
-        created_after: filterDateRange?.[0]?.format('YYYY-MM-DD') || null,
-        created_before: filterDateRange?.[1]?.format('YYYY-MM-DD') || null,
-        limit: size,
-        offset: (page - 1) * size,
-      })
-      await new Promise(r => setTimeout(r, 300))
-      setPlans(data.plans)
-      setPlansTotal(data.total)
-    } catch { /* ignore */ } finally {
-      setPlansLoading(false)
-    }
-  }, [selectedRepo, filterCommitType, filterBuildType, filterDateRange, refreshTrigger])
-
-  useEffect(() => {
-    fetchPlans(pagination.current, pagination.pageSize).then()
-  }, [fetchPlans, pagination.current, pagination.pageSize])
-
-  const handleExportCSV = () => {
-    const headers = ['PR 号', 'Commit SHA', 'Commit Type', 'Build Type', '节省比例', '推理说明', '创建时间']
-    const rows = plans.map(p => [
-      `#${p.pr_number}`, p.commit_sha.slice(0, 8), p.commit_type,
-      buildTypeLabels[p.build_type] || p.build_type, `${Math.round(p.estimated_saving_percent)}%`,
-      p.reasoning || '-', p.created_at ? formatTimezone(p.created_at, 'YYYY-MM-DD HH:mm') : '-',
-    ])
-    const csvContent = ['\uFEFF', headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n')
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `构建计划_${dayjs().format('YYYYMMDD')}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  const handleClearFilters = () => {
-    setFilterCommitType(undefined)
-    setFilterBuildType(undefined)
-    setFilterDateRange(null)
-    setPagination(p => ({ ...p, current: 1 }))
-  }
-
-  const hasActiveFilter = filterCommitType || filterBuildType || filterDateRange
-
-  const buildPlanColumns = [
-    {
-      title: 'PR 号',
-      dataIndex: 'pr_number',
-      key: 'pr_number',
-      width: 80,
-      render: (prNumber: number) => (
-        <a href={`https://github.com/vllm-project/vllm-ascend/pull/${prNumber}`} target="_blank" rel="noopener noreferrer">
-          #{prNumber}
-        </a>
-      ),
-    },
-    {
-      title: 'Commit SHA',
-      dataIndex: 'commit_sha',
-      key: 'commit_sha',
-      width: 120,
-      render: (sha: string) => <Text code>{sha.slice(0, 8)}</Text>,
-    },
-    {
-      title: 'Commit Type',
-      dataIndex: 'commit_type',
-      key: 'commit_type',
-      width: 120,
-      render: (type: string) => <Tag color={typeColors[type] || 'default'}>{type}</Tag>,
-    },
-    {
-      title: 'Build Type',
-      dataIndex: 'build_type',
-      key: 'build_type',
-      width: 120,
-      render: (type: string) => (
-        <Tag color={buildTypeColors[type] || 'default'}>
-          {buildTypeLabels[type] || type}
-        </Tag>
-      ),
-    },
-    {
-      title: '节省比例',
-      dataIndex: 'estimated_saving_percent',
-      key: 'estimated_saving_percent',
-      width: 100,
-      render: (pct: number) => (
-        <Tag color={pct > 50 ? 'green' : pct > 20 ? 'blue' : 'default'}>
-          {Math.round(pct)}%
-        </Tag>
-      ),
-    },
-    {
-      title: '推理说明',
-      dataIndex: 'reasoning',
-      key: 'reasoning',
-      width: 400,
-      render: (text: string | null, record: BuildPlan) => {
-        const files = record.files_changed || []
-        const fileCount = files.length
-
-        const fileChangeColors: Record<string, string> = {
-          'vllm_ascend/': '#1a7f37',
-          'csrc/': '#1a7f37',
-          'test': '#6e42a0',
-          'docs/': '#57606a',
-          '.github/': '#57606a',
-        }
-
-        const getFileColor = (f: string) => {
-          for (const [pattern, color] of Object.entries(fileChangeColors)) {
-            if (f.includes(pattern)) return color
-          }
-          return '#1a7f37'
-        }
-
-        return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span style={{ flex: 1 }}>
-              {text ? (text.length > 50 ? text.slice(0, 50) + '...' : text) : '-'}
-            </span>
-            {fileCount > 0 && (
-              <Tooltip title="点击查看变更文件列表">
-                <Tag
-                  color="success"
-                  style={{ cursor: 'pointer', fontWeight: 600, margin: 0 }}
-                  onClick={() => setFileModal({ open: true, files: files, prNumber: record.pr_number })}
-                >
-                  {fileCount} 文件
-                </Tag>
-              </Tooltip>
-            )}
-          </div>
-        )
-      },
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 180,
-      render: (date: string | null) => formatTimezone(date, 'YYYY-MM-DD HH:mm'),
-    },
-  ]
-
-  return (
-    <Spin spinning={statsLoading}>
-      <Row gutter={[16, 16]}>
-        <Col span={6}>
-          <Card>
-            <Statistic title="总评估数" value={buildStats?.total_evaluations ?? 0} valueStyle={{ color: '#5b46f5' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="已跳过构建" value={buildStats?.skipped_builds ?? 0} suffix="次" valueStyle={{ color: '#52c41a' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="减少构建" value={buildStats?.reduced_builds ?? 0} suffix="次" valueStyle={{ color: '#1890ff' }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="平均节省" value={buildStats ? Math.round(buildStats.avg_saving_percent) : 0} suffix="%" valueStyle={{ color: '#fa8c16' }} />
-          </Card>
-        </Col>
-
-        <Col span={24}>
-          <Card
-            title={
-              <Space>
-                <span>构建计划记录</span>
-                <Button size="middle" icon={<ReloadOutlined />} loading={plansLoading} onClick={() => setRefreshTrigger(t => t + 1)}>刷新数据</Button>
-              </Space>
-            }
-            extra={
-              <Space size="small">
-                <Select
-                  allowClear
-                  placeholder="Commit Type"
-                  value={filterCommitType}
-                  onChange={(v) => { setFilterCommitType(v); setPagination(p => ({ ...p, current: 1 })) }}
-                  style={{ width: 150 }}
-                  options={filterOptions.commitTypes.map(t => ({ label: t, value: t }))}
-                />
-                <Select
-                  allowClear
-                  placeholder="Build Type"
-                  value={filterBuildType}
-                  onChange={(v) => { setFilterBuildType(v); setPagination(p => ({ ...p, current: 1 })) }}
-                  style={{ width: 160 }}
-                  options={filterOptions.buildTypes.map(t => ({ label: buildTypeLabels[t] || t, value: t }))}
-                />
-                <DatePicker.RangePicker
-                  value={filterDateRange}
-                  onChange={(dates) => { setFilterDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null); setPagination(p => ({ ...p, current: 1 })) }}
-                  placeholder={['开始日期', '结束日期']}
-                />
-                {hasActiveFilter && (
-                  <Button size="small" icon={<FilterOutlined />} onClick={handleClearFilters}>清除筛选</Button>
-                )}
-                <Button size="small" icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>
-              </Space>
-            }
-          >
-            <Table
-              columns={buildPlanColumns}
-              dataSource={plans}
-              loading={plansLoading}
-              rowKey={(record: BuildPlan) => `${record.pr_number}-${record.commit_sha}`}
-              pagination={{
-                current: pagination.current,
-                pageSize: pagination.pageSize,
-                total: plansTotal,
-                pageSizeOptions: [10, 20, 50],
-                showSizeChanger: true,
-                showTotal: (total) => `共 ${total} 条`,
-                showQuickJumper: true,
-                onChange: (page, size) => {
-                  setPagination({ current: page, pageSize: size })
-                },
-              }}
-              scroll={{ x: 1200 }}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      <Modal
-        title={
-          <span>
-            <GithubOutlined style={{ marginRight: 6, color: '#6e42a0' }} />
-            PR #{fileModal.prNumber} 变更文件
-          </span>
-        }
-        open={fileModal.open}
-        onCancel={() => setFileModal({ open: false, files: null, prNumber: 0 })}
-        footer={null}
-        width={720}
-      >
-        {fileModal.files && fileModal.files.length > 0 && (
-          <div style={{ maxHeight: 480, overflow: 'auto' }}>
-            <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>
-              共 {fileModal.files.length} 个文件
-            </Text>
-            {fileModal.files.map((f: string) => {
-              const parts = f.split('/')
-              const fileName = parts[parts.length - 1]
-              const dir = parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : ''
-              return (
-                <div key={f} style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '5px 8px',
-                  gap: 8,
-                  borderRadius: 4,
-                  borderBottom: '1px solid #f0f0f0',
-                }}>
-                  <span style={{
-                    display: 'inline-block',
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: ((): string => {
-                      const fileChangeColors: Record<string, string> = { 'vllm_ascend/': '#1a7f37', 'csrc/': '#1a7f37', 'test': '#6e42a0', 'docs/': '#57606a', '.github/': '#57606a' }
-                      for (const [pattern, color] of Object.entries(fileChangeColors)) {
-                        if (f.includes(pattern)) return color
-                      }
-                      return '#1a7f37'
-                    })(),
-                    flexShrink: 0,
-                  }} />
-                  <span style={{ color: '#656d76', fontSize: 12, flexShrink: 0 }}>{dir}</span>
-                  <Text strong style={{ fontSize: 13 }}>{fileName}</Text>
-                </div>
-              )
-            })}
-          </div>
-        )}
-        {(!fileModal.files || fileModal.files.length === 0) && (
-          <Empty description="暂无变更文件数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        )}
-      </Modal>
-    </Spin>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1667,7 +784,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
   const [rankingTotal, setRankingTotal] = useState(0)
    const [quadrantFilter, setQuadrantFilter] = useState<string>('')
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
-  const [moduleHotspot, setModuleHotspot] = useState<ModuleHotspotResponse | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
   const [rankingYAxis, setRankingYAxis] = useState('error_score')
   const [settingsLoaded, setSettingsLoaded] = useState(false)
@@ -1719,16 +835,12 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     let cancelled = false
     const loadStats = async () => {
       try {
-        const [_roleStats, _moduleHotspot, _settings] = await Promise.all([
+        const [_roleStats, _settings] = await Promise.all([
           getRoleStats({ repo_name: selectedRepo || undefined }),
-          getModuleHotspot({
-            repo_name: selectedRepo || null,
-          }),
           getContributorBoardSettings().catch(() => null),
         ])
         if (!cancelled) {
           setRoleStats(_roleStats)
-          setModuleHotspot(_moduleHotspot)
           if (_settings?.quadrant_config) {
             setRankingYAxis(_settings.quadrant_config.y_axis_type || 'error_score')
           }
@@ -1832,15 +944,28 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
       title: '用户名',
       dataIndex: 'login',
       key: 'login',
-      width: 160,
+      width: 200,
       render: (login: string, record: RankingItem) => (
-        <Space>
-          <Avatar src={record.avatar_url} size="small" icon={<GithubOutlined />} />
-          <a onClick={() => navigateToDetail(navigate, login, 'ranking', selectedRepo)} style={{ cursor: 'pointer' }}>
-            {login}
-          </a>
+        <Space direction="vertical" size={0}>
+          <Space size={4}>
+            <Avatar src={record.avatar_url} size="small" icon={<GithubOutlined />} />
+            <a onClick={() => navigateToDetail(navigate, login, 'ranking', selectedRepo)} style={{ cursor: 'pointer' }}>
+              {login}
+            </a>
+            {record.is_bot && <Tag color="purple" style={{ marginLeft: 4, fontSize: 11 }}>Bot</Tag>}
+          </Space>
+          {record.primary_email && (
+            <span style={{ fontSize: 11, color: '#999', paddingLeft: 28 }}>{record.primary_email}</span>
+          )}
         </Space>
       ),
+    },
+    {
+      title: '公司',
+      dataIndex: 'company',
+      key: 'company',
+      width: 80,
+      render: (company: string | null) => company ? <Tag color="blue">{company}</Tag> : <span style={{ color: '#ccc' }}>—</span>,
     },
     {
       title: '工号',
@@ -1919,11 +1044,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     },
   ]
 
-  const hotspotModules = moduleHotspot?.modules
-    ? moduleHotspot.modules.map(m => ({ name: m.module, count: m.count }))
-    : []
-  const hotspotMax = hotspotModules.length > 0 ? hotspotModules[0].count : 1
-
   const sortRuleLabels = sortRules.map(r =>
     `${sortableColumns.find(c => c.key === r.field)?.label ?? r.field} ${r.order === 'asc' ? '↑' : '↓'}`
   ).join(' → ')
@@ -1978,12 +1098,6 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
         <Col span={6}>
           <Card size="small">
             <Statistic title="总 PR 数" value={roleStats?.total_pr ?? 0} valueStyle={{ color: '#52c41a' }} />
-          </Card>
-        </Col>
-
-        <Col span={12}>
-          <Card title="模块热度 Top 10" size="small" bodyStyle={{ padding: '12px 16px' }}>
-            <ModuleHotspotGrid modules={hotspotModules.slice(0, 10)} maxCount={hotspotMax} />
           </Card>
         </Col>
 
@@ -3558,21 +2672,21 @@ function ContributorDetailPage() {
         <Col span={22}>
           <Button onClick={() => {
             const params = new URLSearchParams()
-            if (referrerTab && referrerTab !== 'classification') params.set('tab', referrerTab)
+            if (referrerTab && referrerTab !== 'quadrant') params.set('tab', referrerTab)
             if (referrerRepo) params.set('repo', referrerRepo)
             navigate(`/contributor-board${params.toString() ? '?' + params.toString() : ''}`)
           }} style={{ marginBottom: 8 }}>← 返回看板</Button>
         </Col>
       </Row>
 
-      <Card title={<Space><Avatar src={detail.avatar_url} size="large" icon={<GithubOutlined />} /> {detail.login}</Space>}>
+      <Card title={<Space><Avatar src={detail.avatar_url} size="large" icon={<GithubOutlined />} /> {detail.login} {detail.is_bot && <Tag color="purple">Bot</Tag>} {detail.company && <Tag color="blue">{detail.company}</Tag>}</Space>}>
         <Descriptions bordered column={2}>
           <Descriptions.Item label="姓名">{detail.name || '-'}</Descriptions.Item>
-          <Descriptions.Item label="公司">{detail.company || '-'}</Descriptions.Item>
+          <Descriptions.Item label="邮箱">{detail.emails?.[0] || detail.email || '-'}</Descriptions.Item>
           <Descriptions.Item label="首次贡献">{formatTimezone(detail.first_contribution_at, 'YYYY-MM-DD')}</Descriptions.Item>
           <Descriptions.Item label="最近贡献">{formatTimezone(detail.last_contribution_at, 'YYYY-MM-DD')}</Descriptions.Item>
           <Descriptions.Item label="工号">{detail.employee_id ? <Tag color="cyan">{detail.employee_id}</Tag> : '-'}</Descriptions.Item>
-          <Descriptions.Item label="类型">{detail.is_community ? <Tag color="blue">社区贡献者</Tag> : <Tag color="green">内部开发者</Tag>}</Descriptions.Item>
+          <Descriptions.Item label="类型">{detail.is_community ? <Tag color="blue">社区贡献者</Tag> : <Tag color="green">内部开发者</Tag>}{detail.is_bot && <Tag color="purple" style={{ marginLeft: 8 }}>机器人</Tag>}</Descriptions.Item>
           <Descriptions.Item label="角色标签">
             {detail.role_types && detail.role_types.length > 0 ? (
               <Space>
@@ -3622,6 +2736,33 @@ function ContributorDetailPage() {
           </Card>
         </Col>
       </Row>
+
+      {(detail.ci_failure_count || detail.first_review_hours_avg != null || detail.merge_hours_avg != null || detail.ci_duration_hours_avg != null) && (
+        <Card size="small" title={<><ClockCircleOutlined style={{ marginRight: 6, color: '#1890ff' }} />PR 效率（来自 PR 流水线）</>} style={{ marginTop: 16, borderRadius: 12 }} bodyStyle={{ padding: '16px 20px' }}>
+          <Row gutter={[16, 16]}>
+            {detail.ci_failure_count != null && (
+              <Col span={6}>
+                <Statistic title="CI 失败" value={detail.ci_failure_count} suffix="次" valueStyle={{ color: detail.ci_failure_count > 0 ? '#ff4d4f' : '#52c41a' }} />
+              </Col>
+            )}
+            {detail.first_review_hours_avg != null && (
+              <Col span={6}>
+                <Statistic title="首次 Review 响应" value={detail.first_review_hours_avg} suffix="h" precision={1} valueStyle={{ color: '#1890ff' }} />
+              </Col>
+            )}
+            {detail.merge_hours_avg != null && (
+              <Col span={6}>
+                <Statistic title="平均合并时长" value={detail.merge_hours_avg} suffix="h" precision={1} valueStyle={{ color: '#722ed1' }} />
+              </Col>
+            )}
+            {detail.ci_duration_hours_avg != null && (
+              <Col span={6}>
+                <Statistic title="CI 执行时长" value={detail.ci_duration_hours_avg} suffix="h" precision={2} valueStyle={{ color: '#fa8c16' }} />
+              </Col>
+            )}
+          </Row>
+        </Card>
+      )}
 
       {policy && policy.policies.length > 0 && (
         <>
@@ -4801,8 +3942,8 @@ let _pollTimer: ReturnType<typeof setInterval> | null = null
 function ContributorBoard() {
    const navigate = useNavigate()
    const searchParams = new URLSearchParams(window.location.search)
-    const [activeTab, setActiveTab] = useState<'classification' | 'builds' | 'quadrant' | 'ranking' | 'sync' | 'settings'>(
-     (searchParams.get('tab') as any) || 'classification'
+    const [activeTab, setActiveTab] = useState<'quadrant' | 'ranking' | 'sync' | 'settings'>(
+     (searchParams.get('tab') as any) || 'quadrant'
     )
    const [selectedRepo, setSelectedRepo] = useState<string | undefined>(
      searchParams.get('repo') || undefined
@@ -4833,29 +3974,19 @@ function ContributorBoard() {
     loadRepos()
    }, [])
 
-   const updateUrlState = (tab: string, repo: string | undefined) => {
-    const params = new URLSearchParams()
-    if (tab && tab !== 'classification') params.set('tab', tab)
-    if (repo) params.set('repo', repo)
-    const query = params.toString()
-    navigate(`/contributor-board${query ? '?' + query : ''}`, { replace: true })
-   }
+    const updateUrlState = (tab: string, repo: string | undefined) => {
+     const params = new URLSearchParams()
+     if (tab && tab !== 'quadrant') params.set('tab', tab)
+     if (repo) params.set('repo', repo)
+     const query = params.toString()
+     navigate(`/contributor-board${query ? '?' + query : ''}`, { replace: true })
+    }
 
    useEffect(() => {
     updateUrlState(activeTab, selectedRepo)
    }, [selectedRepo])
 
-   const tabItems = [
-    {
-      key: 'classification',
-      label: <><CodeOutlined /> 提交分类统计</>,
-      children: <ClassificationTab selectedRepo={selectedRepo} />,
-    },
-    {
-      key: 'builds',
-      label: <><RocketOutlined /> 构建优化统计</>,
-      children: <BuildsTab selectedRepo={selectedRepo} />,
-    },
+    const tabItems = [
     {
       key: 'quadrant',
       label: <><GithubOutlined /> 四象限看板</>,
@@ -4886,7 +4017,7 @@ function ContributorBoard() {
             贡献者与提交分析
           </Title>
           <Text className="stripe-page-description">
-            vLLM Ascend 提交分类、构建优化与贡献者分析
+            贡献者与提交分析
           </Text>
         </div>
 
@@ -4923,8 +4054,162 @@ function ContributorBoard() {
           updateUrlState(key, selectedRepo)
         }}
        />
-     </div>
-   )
+      </div>
+    )
+}
+
+/* ------------------------------------------------------------------ */
+/*                  贡献者详情页 — 图表组件                              */
+/* ------------------------------------------------------------------ */
+
+function EChartsBarChart({ data }: { data: Array<{ date: string; merged_pr_count: number; code_additions: number; code_deletions: number }> }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chartRef.current = echarts.init(ref.current)
+    const dates = data.map(d => d.date)
+    const values = data.map(d => d.merged_pr_count)
+    chartRef.current.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 40, right: 20, top: 30, bottom: 30 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 11 } },
+      yAxis: { type: 'value' },
+      series: [{ type: 'bar', data: values, itemStyle: { color: '#1890ff' } }],
+    })
+    const onResize = () => chartRef.current?.resize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chartRef.current?.dispose(); chartRef.current = null }
+  }, [data])
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />
+}
+
+function EChartsLineChart<T extends { date: string }>({ data, series }: {
+  data: T[]
+  series: Array<{ name: string; dataKey: string; color: string }>
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chartRef.current = echarts.init(ref.current)
+    const dates = data.map(d => d.date)
+    chartRef.current.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { data: series.map(s => s.name), top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 40, right: 20, top: 35, bottom: 30 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 11 } },
+      yAxis: { type: 'value' },
+      series: series.map(s => ({
+        name: s.name,
+        type: 'line' as const,
+        data: data.map(d => Number((d as Record<string, unknown>)[s.dataKey] ?? 0)),
+        smooth: true,
+        lineStyle: { color: s.color },
+        itemStyle: { color: s.color },
+      })),
+    })
+    const onResize = () => chartRef.current?.resize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chartRef.current?.dispose(); chartRef.current = null }
+  }, [data, series])
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />
+}
+
+function EChartsPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chartRef.current = echarts.init(ref.current)
+    chartRef.current.setOption({
+      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+      legend: { orient: 'vertical', right: 10, top: 'center', textStyle: { fontSize: 11 } },
+      series: [{
+        type: 'pie' as const,
+        radius: ['35%', '65%'],
+        center: ['40%', '50%'],
+        data,
+        label: { fontSize: 11 },
+      }],
+    })
+    const onResize = () => chartRef.current?.resize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chartRef.current?.dispose(); chartRef.current = null }
+  }, [data])
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />
+}
+
+function CommitTypeBarChart({ data }: { data: Array<{ commit_type: string; count: number }> }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chartRef.current = echarts.init(ref.current)
+    const sorted = [...data].sort((a, b) => b.count - a.count)
+    chartRef.current.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 80, right: 20, top: 20, bottom: 30 },
+      xAxis: { type: 'value' },
+      yAxis: { type: 'category', data: sorted.map(d => d.commit_type), axisLabel: { fontSize: 11 } },
+      series: [{
+        type: 'bar' as const,
+        data: sorted.map(d => d.count),
+        itemStyle: { color: '#722ed1' },
+        label: { show: true, position: 'right' as const, fontSize: 11 },
+      }],
+    })
+    const onResize = () => chartRef.current?.resize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chartRef.current?.dispose(); chartRef.current = null }
+  }, [data])
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />
+}
+
+function ContributorHeatmapChart({ data }: { data: Array<{ date: string; commit_count: number; weekDay: number }> }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chartRef.current = echarts.init(ref.current)
+    const heatData = data.map(d => [d.weekDay, new Date(d.date).getMonth(), d.commit_count] as [number, number, number])
+    const maxVal = Math.max(...heatData.map(d => d[2]), 1)
+    chartRef.current.setOption({
+      tooltip: {
+        formatter: (params: { value: [number, number, number] }) => {
+          const [wd, m, cnt] = params.value
+          return `${wd} 周 / ${m + 1} 月<br/>贡献 ${cnt} 次`
+        },
+      },
+      grid: { left: 40, right: 20, top: 20, bottom: 30 },
+      xAxis: { type: 'category', data: Array.from({ length: 53 }, (_, i) => `W${i + 1}`), axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: 'category' as const,
+        data: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
+        axisLabel: { fontSize: 10 },
+      },
+      visualMap: { min: 0, max: maxVal, calculable: true, orient: 'horizontal' as const, left: 'center', bottom: 0, textStyle: { fontSize: 10 } },
+      series: [{
+        type: 'heatmap' as const,
+        data: heatData,
+        label: { show: false },
+      }],
+    })
+    const onResize = () => chartRef.current?.resize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chartRef.current?.dispose(); chartRef.current = null }
+  }, [data])
+
+  return <div ref={ref} style={{ width: '100%', height: '100%' }} />
 }
 
 export { ContributorDetailPage }

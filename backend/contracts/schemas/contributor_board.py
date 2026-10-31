@@ -42,6 +42,12 @@ class ContributorDetailResponse(ContributorResponse):
     contribution_score: float = 0.0
     error_score: float = 0.0
     quadrant: str | None = None
+    emails: list[str] = Field(default_factory=list, description="关联邮箱列表")
+    is_bot: bool = Field(default=False, description="是否为机器人账号")
+    ci_failure_count: int = Field(default=0, description="CI 失败次数")
+    first_review_hours_avg: float | None = Field(None, description="首次 Review 响应时长（小时均值）")
+    merge_hours_avg: float | None = Field(None, description="从创建到合并时长（小时均值）")
+    ci_duration_hours_avg: float | None = Field(None, description="CI 执行时长（小时均值）")
 
 
 # ============ Contributor List Request ============
@@ -77,9 +83,12 @@ class QuadrantPoint(BaseModel):
     y_value: float = Field(default=0, description="当前Y轴指标值")
     y_axis_type: str = Field(default="error_score", description="当前Y轴类型")
     quadrant: str = Field(description="象限: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE")
-    role_label: str = Field(default="", description="角色标签: star/active/observer/at_risk")
+    role_label: str | None = Field(None, description="角色标签: star/active/observer/at_risk")
     merged_pr_count: int = Field(default=0, description="合并 PR 数")
     is_community: bool = Field(default=True, description="是否社区贡献者")
+    company: str | None = Field(None, description="公司（来自邮箱域名）")
+    primary_email: str | None = Field(None, description="主要邮箱")
+    is_bot: bool = Field(default=False, description="是否为机器人账号")
 
     QUADRANT_COLORS: dict[str, str] = {
         "INCENTIVE": "#52c41a",
@@ -199,6 +208,9 @@ class ContributorRankingItem(BaseModel):
     dynamic_quadrant: str | None = Field(None, description="动态四象限: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE")
     role_label: str | None = Field(None, description="角色标签: star/active/observer/at_risk")
     employee_id: str | None = Field(None, description="工号")
+    company: str | None = Field(None, description="公司（来自邮箱域名）")
+    primary_email: str | None = Field(None, description="主要邮箱")
+    is_bot: bool = Field(default=False, description="是否为机器人账号")
 
 
 class ContributorRankingResponse(BaseModel):

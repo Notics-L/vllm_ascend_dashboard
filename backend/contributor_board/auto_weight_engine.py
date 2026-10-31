@@ -26,17 +26,23 @@ DIMENSIONS = list(DimensionRegistry.keys())
 
 
 async def compute_weights_from_db(db: Any, repo_name: str | None = None) -> tuple[dict[str, float], float, dict[str, Any]]:
-    """从数据库查询 ContributorMetrics 并计算权重（封装完整流程）"""
-    from infrastructure.persistence.models import ContributorMetrics
+    """从 pull_requests 表聚合贡献者指标并计算权重"""
+    from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
 
-    stmt = sa_select(ContributorMetrics)
-    if repo_name:
-        stmt = stmt.where(ContributorMetrics.repo_name == repo_name)
+    pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
 
-    result = await db.execute(stmt)
-    metrics_list = result.scalars().all()
-
-    metrics_data = [m.to_weight_dict() for m in metrics_list]
+    metrics_data: list[dict[str, Any]] = []
+    for m in pr_metrics:
+        metrics_data.append({
+            "merged_pr_count": m.get("merged_pr_count", 0),
+            "code_additions": m.get("code_additions", 0),
+            "review_count": m.get("review_count", 0),
+            "approval_count": m.get("approval_count", 0),
+            "core_module_count": 0,
+            "files_changed_count": 0,
+            "commit_count": m.get("commit_count", 0),
+            "error_score": m.get("error_score", 0),
+        })
     return compute_weights(metrics_data)
 
 

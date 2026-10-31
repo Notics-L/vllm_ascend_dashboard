@@ -166,7 +166,7 @@ async def refresh_all_roles(db) -> int:
 
 async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
     """
-    获取角色维度统计
+    获取角色维度统计（从 pull_requests 表实时聚合，与排行榜数据源一致）
 
     Args:
         db: 数据库会话
@@ -175,11 +175,9 @@ async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
     Returns:
         角色统计信息
     """
-    all_metrics_stmt = select(ContributorMetrics)
-    if repo_name:
-        all_metrics_stmt = all_metrics_stmt.where(ContributorMetrics.repo_name == repo_name)
-    result = await db.execute(all_metrics_stmt)
-    all_metrics = result.scalars().all()
+    from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+
+    all_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
 
     role_data: dict[str, dict[str, int | float]] = {
         "developer": {"count": 0, "total_pr": 0, "total_code": 0, "total_score": 0},
@@ -187,41 +185,31 @@ async def get_role_stats(db, repo_name: str | None = None) -> RoleStats:
         "maintainer": {"count": 0, "total_merge": 0, "total_score": 0},
     }
 
-    contributor_roles: dict[str, list[str]] = {}
     for m in all_metrics:
-        login = m.contributor_login
-        if login not in contributor_roles:
-            roles = detect_roles(
-                merged_pr_count=m.merged_pr_count or 0,
-                review_count=m.review_count or 0,
-                approval_count=m.approval_count or 0,
-                merge_count=m.merge_count or 0,
-                code_additions=m.code_additions or 0,
-            )
-            contributor_roles[login] = roles
-
-    for login, roles in contributor_roles.items():
-        metrics_list = [m for m in all_metrics if m.contributor_login == login]
-        best = max(metrics_list, key=lambda x: x.contribution_score or 0, default=None)
-        if not best:
-            continue
+        roles = detect_roles(
+            merged_pr_count=m.get("merged_pr_count", 0),
+            review_count=m.get("review_count", 0),
+            approval_count=m.get("approval_count", 0),
+            merge_count=0,
+            code_additions=m.get("code_additions", 0),
+        )
 
         if "developer" in roles:
             role_data["developer"]["count"] += 1
-            role_data["developer"]["total_pr"] += best.merged_pr_count or 0
-            role_data["developer"]["total_code"] += best.code_additions or 0
-            role_data["developer"]["total_score"] += best.contribution_score or 0
+            role_data["developer"]["total_pr"] += m.get("merged_pr_count", 0)
+            role_data["developer"]["total_code"] += m.get("code_additions", 0)
+            role_data["developer"]["total_score"] += m.get("contribution_score", 0)
 
         if "reviewer" in roles:
             role_data["reviewer"]["count"] += 1
-            role_data["reviewer"]["total_review"] += best.review_count or 0
-            role_data["reviewer"]["total_approval"] += best.approval_count or 0
-            role_data["reviewer"]["total_score"] += best.contribution_score or 0
+            role_data["reviewer"]["total_review"] += m.get("review_count", 0)
+            role_data["reviewer"]["total_approval"] += m.get("approval_count", 0)
+            role_data["reviewer"]["total_score"] += m.get("contribution_score", 0)
 
         if "maintainer" in roles:
             role_data["maintainer"]["count"] += 1
-            role_data["maintainer"]["total_merge"] += best.merge_count or 0
-            role_data["maintainer"]["total_score"] += best.contribution_score or 0
+            role_data["maintainer"]["total_merge"] += m.get("merged_pr_count", 0)
+            role_data["maintainer"]["total_score"] += m.get("contribution_score", 0)
 
     return RoleStats(
         developer_count=int(role_data["developer"]["count"]),

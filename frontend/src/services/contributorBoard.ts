@@ -158,6 +158,9 @@ export interface QuadrantPoint {
   merged_pr_count: number
   is_community: boolean
   color: string
+  company?: string | null
+  primary_email?: string | null
+  is_bot?: boolean
 }
 
 export interface QuadrantData {
@@ -194,6 +197,12 @@ export interface ContributorDetail {
   contribution_score: number
   error_score: number
   quadrant: string | null
+  emails?: string[]
+  is_bot?: boolean
+  ci_failure_count?: number
+  first_review_hours_avg?: number | null
+  merge_hours_avg?: number | null
+  ci_duration_hours_avg?: number | null
 }
 
 export interface RankingItem {
@@ -213,6 +222,9 @@ export interface RankingItem {
   dynamic_quadrant: string | null
   role_label: string | null
   employee_id: string | null
+  company?: string | null
+  primary_email?: string | null
+  is_bot?: boolean
 }
 
 export interface ContributorRanking {

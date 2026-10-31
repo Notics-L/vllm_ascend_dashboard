@@ -386,39 +386,52 @@ class ScoringVersionService:
         repo_name: str | None,
         created_by: str | None,
     ) -> int | None:
-        from contributor_board.scoring_engine import recalculate_all_scores
+        from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+        from contributor_board.scoring_engine import (
+            calculate_contribution_score,
+            get_default_weights,
+        )
+        from contributor_board.quadrant_engine import calculate_quadrants
 
-        weights = version.weights
-        # Always recalculate across all repos for a complete snapshot
-        count = await recalculate_all_scores(db, weights, None)
+        # 1) Recalculate all scores from PR data
+        pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None)
 
-        # Read ALL metrics (across all repos) after recalculation
-        stmt = select(ContributorMetrics)
-        result = await db.execute(stmt)
-        metrics_list = result.scalars().all()
+        # Apply new weights from the version
+        weights: dict[str, float] = dict(get_default_weights())
+        if version.weights and isinstance(version.weights, dict):
+            weights.update(version.weights)
 
-        # Aggregate scores by contributor_login across all repos
-        aggregated: dict[str, dict[str, Any]] = {}
-        for m in metrics_list:
-            login = m.contributor_login
-            if login not in aggregated:
-                aggregated[login] = {
-                    "login": login,
-                    "score": 0.0,
-                    "error_score": 0,
-                    "quadrant": m.quadrant or "unknown",
-                }
-                continue
-            aggregated[login]["score"] += m.contribution_score or 0
-            aggregated[login]["error_score"] += m.error_score or 0
-            # Keep the highest quadrant (INCENTIVE > IMPROVE > ENCOURAGE > REPLACE)
-            q = m.quadrant or "unknown"
-            q_rank = QUADRANT_RANK.get(q, 0)
-            cur_rank = QUADRANT_RANK.get(aggregated[login]["quadrant"], 0)
-            if q_rank > cur_rank:
-                aggregated[login]["quadrant"] = q
+        for m in pr_metrics:
+            error_score = float(m.get("error_score", 0))
+            metrics = {
+                "merged_pr_count": m.get("merged_pr_count", 0),
+                "code_additions": m.get("code_additions", 0),
+                "code_deletions": m.get("code_deletions", 0),
+                "review_count": m.get("review_count", 0),
+                "approval_count": m.get("approval_count", 0),
+                "commit_count": m.get("commit_count", 0),
+            }
+            m["contribution_score"] = calculate_contribution_score(metrics, weights, commit_type_counts={})
+            m["error_score"] = round(error_score, 2)
 
-        scores = list(aggregated.values())
+        # 2) Compute quadrants
+        y_axis_type = "review_count"
+        points, _, _ = calculate_quadrants(pr_metrics, y_axis_type=y_axis_type)
+        quad_map = {p.login: p.quadrant for p in points}
+        for m in pr_metrics:
+            m["quadrant"] = quad_map.get(m["login"], "unknown")
+
+        # 3) Build score list for snapshot
+        scores = []
+        for m in pr_metrics:
+            scores.append({
+                "login": m["login"],
+                "score": m.get("contribution_score", 0),
+                "error_score": m.get("error_score", 0),
+                "quadrant": m.get("quadrant", "unknown"),
+            })
+
+        # 4) Aggregate statistics
         quadrant_dist = {}
         total_score = 0.0
         for s in scores:
@@ -445,7 +458,7 @@ class ScoringVersionService:
             statistics=statistics,
             scores=scores,
             created_by=created_by,
-            description=f"重算完成，更新 {len(scores)} 位贡献者分数",
+            description=f"基于 PR 流水线数据重算，{len(scores)} 位贡献者",
         )
         db.add(snapshot)
         await db.flush()
