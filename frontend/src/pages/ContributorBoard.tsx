@@ -1066,7 +1066,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             ))}
             <Divider type="vertical" />
             <Tag color="default" style={{ margin: 0 }}>
-              X=贡献分数 · Y=质量信号(error_score)
+              X=贡献分数 · Y=低产出/低活动
             </Tag>
             <Divider type="vertical" />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchRanking(pagination.current, pagination.pageSize) }}>刷新数据</Button>

@@ -670,17 +670,32 @@ async def _build_contributor_score_map(
         weights.update(settings_row.setting_value)
     weights = normalize_weights(weights)
 
-    # 2) 构建用于四象限的 metrics（与四象限看板 _build_aggregated_metrics 字段对齐）
+    # 2) 构建用于四象限的 metrics
+    #    Y 轴 = low_activity_score（低产出/低活动，越低越好），
+    #    综合衡量所有类型贡献者的"质量/健康度"，比 CI 失败更客观。
+    from contributor_board.quadrant_engine import compute_low_activity_score
+    from datetime import UTC, datetime
+    now = datetime.now(UTC)
     metrics: list[dict[str, Any]] = []
     for it in items:
         extra = extra_map.get(it.username, {})
         ci_failure = int(extra.get("ci_failure_count", 0))
         error_score = float(ci_failure) * 0.1
+        pending = int(extra.get("pending_pr_count", 0))
+        # 最近活跃时间：取 PR 流水线的 avg_first_response_hours 反推
+        # 若没有该字段，退化为"现在-窗口起点"（即窗口内没活动的）
+        last_hours = None
+        if it.avg_first_response_hours is not None:
+            # avg_first_response 反映响应速度，越快越健康；
+            # 这里取 min(24, 48 - resp) 作为"最近活动距今多少小时"的近似
+            last_hours = max(0, min(24, 48 - float(it.avg_first_response_hours)))
+        las = compute_low_activity_score(pending_pr=pending, last_activity_hours=last_hours)
         metrics.append({
             "login": it.username,
             "avatar_url": it.avatar_url,
             "contribution_score": 0,  # 占位
             "error_score": error_score,
+            "low_activity_score": las,
             "merged_pr_count": it.merged_count or 0,
             "code_additions": it.lines_added or 0,
             "code_deletions": it.lines_removed or 0,
@@ -707,13 +722,14 @@ async def _build_contributor_score_map(
         m["contribution_score"] = score
 
     # 4) 四象限
-    # 排行榜是"综合性"质量视图：Y 轴固定为 error_score（质量信号，越低越好）。
+    # 排行榜是"综合性"质量视图：Y 轴固定为 low_activity_score（低产出/低活动，越低越好）。
     # 这是用户明确的：四象限看板的 4 维 Y 轴保留手动选择，但排行榜是单一综合视图，
-    # 不应让用户切换 Y 轴。error_score 对作者/评审者都有意义（作者=CI失败，评审者=质量），
-    # 不会像 review_count 对作者恒为 0 那样造成结构性失衡。
+    # 不应让用户切换 Y 轴。low_activity_score 综合衡量"积压 PR + 不活跃"，
+    # 对所有类型贡献者（主笔开发者/纯 reviewer/混合/社区）都公平客观，
+    # 不会像 CI 失败或 review_count 那样对某些角色结构性失衡。
     active_metrics = [m for m in metrics if m["contribution_score"] > 0]
     if active_metrics:
-        points, _, _ = calculate_quadrants(active_metrics, y_axis_type="error_score")
+        points, _, _ = calculate_quadrants(active_metrics, y_axis_type="low_activity_score")
         quadrant_map = {p.login: p.quadrant for p in points}
     else:
         quadrant_map = {}
@@ -728,6 +744,7 @@ async def _build_contributor_score_map(
         result[it.username] = {
             "contribution_score": m["contribution_score"],
             "error_score": m["error_score"],
+            "low_activity_score": round(m.get("low_activity_score", 0), 2),
             "merged_pr_count": it.merged_count or 0,
             "pending_pr_count": int(extra.get("pending_pr_count", 0)),
             "code_additions": it.lines_added or 0,
@@ -917,20 +934,20 @@ async def get_pr_score_map(
 async def _compute_quadrants_for_logins(
     all_metrics: list[dict[str, Any]], db: AsyncSession
 ) -> dict[str, str]:
-    """基于固定 Y 轴 error_score 计算四象限，返回 login → quadrant。
+    """基于固定 Y 轴 low_activity_score 计算四象限，返回 login → quadrant。
 
     排行榜象限是"综合性质量视图"，与四象限看板（维度选择）语义分离：
     X=contribution_score（综合贡献，越高越好）
-    Y=error_score（质量信号 CI 失败次数×0.1，越低越好）
-    - INCENTIVE 激励区: 高贡献 + 高质量
-    - IMPROVE  改进区: 高贡献 + 低质量
-    - ENCOURAGE 鼓励区: 低贡献 + 高质量
-    - REPLACE  置换区: 低贡献 + 低质量
+    Y=low_activity_score（低产出/低活动，越低越好，综合积压 PR + 不活跃）
+    - INCENTIVE 激励区: 高贡献 + 高活跃（健康）
+    - IMPROVE  改进区: 高贡献 + 低活跃（贡献高但积压/不活跃，需改进）
+    - ENCOURAGE 鼓励区: 低贡献 + 高活跃（潜力新人/纯 reviewer）
+    - REPLACE  置换区: 低贡献 + 低活跃（需要关注）
     """
     from contributor_board.quadrant_engine import calculate_quadrants
 
     active = [m for m in all_metrics if m.get("contribution_score", 0) > 0]
     if active:
-        points, _, _ = calculate_quadrants(active, y_axis_type="error_score")
+        points, _, _ = calculate_quadrants(active, y_axis_type="low_activity_score")
         return {p.login: p.quadrant for p in points}
     return {}

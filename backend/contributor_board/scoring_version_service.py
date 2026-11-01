@@ -419,7 +419,7 @@ class ScoringVersionService:
             calculate_contribution_score,
             get_default_weights,
         )
-        from contributor_board.quadrant_engine import calculate_quadrants
+        from contributor_board.quadrant_engine import calculate_quadrants, compute_low_activity_score
 
         # 1) Recalculate all scores from PR data
         pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None)
@@ -443,12 +443,16 @@ class ScoringVersionService:
             }
             m["contribution_score"] = calculate_contribution_score(metrics, weights, commit_type_counts={})
             m["error_score"] = round(error_score, 2)
+            # Y 轴信号：低产出/低活动（积压 PR × 2 + 不活跃小时数）
+            m["low_activity_score"] = compute_low_activity_score(
+                pending_pr=int(m.get("pending_pr_count", 0)),
+                last_activity_hours=None,  # 快照中无 last-activity 字段
+            )
 
-        # 2) Compute quadrants — 只对有贡献的活跃贡献者算象限，零分者不参与阈值计算
-        y_axis_type = "review_count"
+        # 2) Compute quadrants — 只对有贡献的活跃贡献者算象限，Y=low_activity_score
         active = [m for m in pr_metrics if m.get("contribution_score", 0) > 0]
         if active:
-            points, _, _ = calculate_quadrants(active, y_axis_type=y_axis_type)
+            points, _, _ = calculate_quadrants(active, y_axis_type="low_activity_score")
             quad_map = {p.login: p.quadrant for p in points}
         else:
             quad_map = {}

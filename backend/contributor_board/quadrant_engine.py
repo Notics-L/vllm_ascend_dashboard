@@ -42,7 +42,36 @@ AXIS_TYPES = {
         "label": "代码行数",
         "direction": "higher_better",
     },
+    "low_activity_score": {
+        "label": "低产出/低活动（越低越好）",
+        "direction": "lower_better",
+    },
 }
+
+
+def compute_low_activity_score(*, pending_pr: int, last_activity_hours: float | None) -> float:
+    """综合"低产出/低活动"质量信号（越低越好），用于排行榜象限。
+
+    设计意图：
+    - 不能用 CI 失败当质量——它只是"作者写了代码且出问题了"的单维信号，
+      对只提交文档/纯 reviewer/混合贡献者都不客观。
+    - 真正衡量"贡献质量"的应该是：是否长期积压未处理 PR + 是否长期不活跃。
+      这两个信号对所有类型的贡献者（主笔开发者/纯 reviewer/混合/社区贡献者）
+      都公平且可解释。
+
+    公式：
+        score = pending_pr_count * 2 + (24 - min(last_activity_hours, 24))
+    - pending_pr_count × 2: 有积压 PR 说明贡献在拖（每积压 1 个 +2 分）
+    - 最近活跃时间距今的小时数：越久不活跃 → 分数越高（24h 内活跃记 0）
+    """
+    score = (pending_pr or 0) * 2
+    if last_activity_hours is None:
+        # 完全没有任何活动 → 视为最高低活动（24h 满分）
+        score += 24
+    else:
+        hours = min(max(float(last_activity_hours), 0), 24)
+        score += (24 - hours)
+    return float(score)
 
 
 @dataclass
