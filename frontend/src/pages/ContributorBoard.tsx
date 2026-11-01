@@ -784,9 +784,9 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
    const [quadrantFilter, setQuadrantFilter] = useState<string>('')
   const [roleStats, setRoleStats] = useState<RoleStats | null>(null)
   const [pagination, setPagination] = useState({ current: 1, pageSize: 20 })
-  const [rankingYAxis, setRankingYAxis] = useState('error_score')
   const [rankingDays, setRankingDays] = useState(30)
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+  // 排行榜象限 Y 轴已固定为 error_score，无需手动切换（四象限看板的维度选择保留）
 
   const [searchText, setSearchText] = useState('')
   const [sortModalOpen, setSortModalOpen] = useState(false)
@@ -805,7 +805,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
         sort_order: sortDir,
         offset: (page - 1) * size,
         quadrant: quadrantFilter || undefined,
-        y_axis_type: rankingYAxis,
+        // y_axis_type 不再传：排行榜象限 Y 轴已固定为 error_score
         days: rankingDays,
       })
       setRankings(data.rankings)
@@ -814,7 +814,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
     } finally {
       setRankingLoading(false)
     }
-  }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingYAxis, rankingDays])
+  }, [roleType, selectedRepo, sortRules, quadrantFilter, rankingDays])
 
   // 立即加载排行榜数据（不等待 settings/stats）
   useEffect(() => {
@@ -832,9 +832,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
         ])
         if (!cancelled) {
           setRoleStats(_roleStats)
-          if (_settings?.quadrant_config) {
-            setRankingYAxis(_settings.quadrant_config.y_axis_type || 'error_score')
-          }
+          // settings 加载仅用于显示权重/配置面板，排行榜 Y 轴已固定为 error_score
         }
       } catch { /* ignore */ }
     }
@@ -1067,13 +1065,9 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
               </Button>
             ))}
             <Divider type="vertical" />
-            <span style={{ fontSize: 13, color: '#8c8c8c' }}>四象限 Y 轴:</span>
-            <Select
-              value={rankingYAxis}
-              onChange={(v) => { setRankingYAxis(v); setPagination(p => ({ ...p, current: 1 })) }}
-              style={{ width: 140 }}
-              options={Object.entries(axisLabels).map(([key, label]) => ({ value: key, label }))}
-            />
+            <Tag color="default" style={{ margin: 0 }}>
+              X=贡献分数 · Y=质量信号(error_score)
+            </Tag>
             <Divider type="vertical" />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchRanking(pagination.current, pagination.pageSize) }}>刷新数据</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportCSV}>导出CSV</Button>

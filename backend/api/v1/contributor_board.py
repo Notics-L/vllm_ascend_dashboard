@@ -230,7 +230,7 @@ async def get_ranking(
     offset: int = Query(0, ge=0, description="分页偏移"),
     limit: int = Query(20, ge=1, le=200, description="分页大小"),
     quadrant: str | None = Query(None, description="四象限过滤: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE"),
-    y_axis_type: str | None = Query(None, description="四象限Y轴类型: error_score/review_count/merged_pr_count/code_additions"),
+    y_axis_type: str | None = Query(None, description="[deprecated] 排行榜象限 Y 轴已固定为 error_score"),
     days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 天与 PR 流水线一致"),
 ):
     """获取排行榜（完全复用 PR 流水线贡献者数据，管理员可见）"""

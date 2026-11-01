@@ -707,17 +707,13 @@ async def _build_contributor_score_map(
         m["contribution_score"] = score
 
     # 4) 四象限
-    y_axis_type = await _get_quadrant_y_axis_from_settings(db)
-    axis_map = {
-        "error_score": "error_score",
-        "review_count": "review_count",
-        "merged_pr_count": "merged_pr_count",
-        "code_additions": "code_additions",
-    }
-    y_key = axis_map.get(y_axis_type, "review_count")
+    # 排行榜是"综合性"质量视图：Y 轴固定为 error_score（质量信号，越低越好）。
+    # 这是用户明确的：四象限看板的 4 维 Y 轴保留手动选择，但排行榜是单一综合视图，
+    # 不应让用户切换 Y 轴。error_score 对作者/评审者都有意义（作者=CI失败，评审者=质量），
+    # 不会像 review_count 对作者恒为 0 那样造成结构性失衡。
     active_metrics = [m for m in metrics if m["contribution_score"] > 0]
     if active_metrics:
-        points, _, _ = calculate_quadrants(active_metrics, y_axis_type=y_key)
+        points, _, _ = calculate_quadrants(active_metrics, y_axis_type="error_score")
         quadrant_map = {p.login: p.quadrant for p in points}
     else:
         quadrant_map = {}
@@ -921,31 +917,20 @@ async def get_pr_score_map(
 async def _compute_quadrants_for_logins(
     all_metrics: list[dict[str, Any]], db: AsyncSession
 ) -> dict[str, str]:
-    """基于全局设置的 Y 轴类型计算四象限，返回 login → quadrant。"""
+    """基于固定 Y 轴 error_score 计算四象限，返回 login → quadrant。
+
+    排行榜象限是"综合性质量视图"，与四象限看板（维度选择）语义分离：
+    X=contribution_score（综合贡献，越高越好）
+    Y=error_score（质量信号 CI 失败次数×0.1，越低越好）
+    - INCENTIVE 激励区: 高贡献 + 高质量
+    - IMPROVE  改进区: 高贡献 + 低质量
+    - ENCOURAGE 鼓励区: 低贡献 + 高质量
+    - REPLACE  置换区: 低贡献 + 低质量
+    """
     from contributor_board.quadrant_engine import calculate_quadrants
 
-    from infrastructure.persistence.models import ContributorBoardSettings
-
-    from sqlalchemy import select as sa_select
-
-    y_axis_type = "review_count"
-    row = (await db.execute(
-        sa_select(ContributorBoardSettings.setting_value).where(
-            ContributorBoardSettings.setting_key == "quadrant_y_axis"
-        )
-    )).scalar_one_or_none()
-    if row and isinstance(row, dict):
-        y_axis_type = row.get("y_axis_type", "review_count")
-
-    axis_map = {
-        "error_score": "error_score",
-        "review_count": "review_count",
-        "merged_pr_count": "merged_pr_count",
-        "code_additions": "code_additions",
-    }
-    y_key = axis_map.get(y_axis_type, "review_count")
     active = [m for m in all_metrics if m.get("contribution_score", 0) > 0]
     if active:
-        points, _, _ = calculate_quadrants(active, y_axis_type=y_key)
+        points, _, _ = calculate_quadrants(active, y_axis_type="error_score")
         return {p.login: p.quadrant for p in points}
     return {}

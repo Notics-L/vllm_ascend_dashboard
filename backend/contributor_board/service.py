@@ -656,7 +656,7 @@ class ContributorBoardService:
         offset: int = 0,
         limit: int = 20,
         quadrant: str | None = None,
-        y_axis_type: str | None = None,
+        y_axis_type: str | None = None,  # deprecated: 排行榜象限 Y 轴已固定为 error_score
         days: int = 365,
     ) -> ContributorRankingResponse:
         """排行榜：完全复用 PR 流水线 get_contributors 聚合逻辑。
