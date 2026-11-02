@@ -79,11 +79,8 @@ from infrastructure.persistence.models import (
     UserLoginLog,
     WorkflowConfig,
     Contributor,
-    ContributorMetrics,
-    CommitClassification,
-    ErrorRecord,
+    ContributorProfile,
     ImageBuildPlan,
-    QuadrantSnapshot,
 )
 from infrastructure.storage.failure_analysis_file_store import FailureAnalysisFileStore
 
@@ -194,43 +191,47 @@ def _cb_generate_sha():
     return uuid.uuid4().hex[:40]
 
 
-def _cb_monthly_metrics(quadrant):
+def _cb_aggregated_profile(quadrant):
+    """Generate 6-month aggregated metrics for a single ContributorProfile row."""
     profiles = {
-        "INCENTIVE": {"pr": (5, 15), "code": (500, 3000), "review": (10, 40), "approval": (5, 20), "merge": (3, 15), "error": (0, 1), "core": (2, 8)},
-        "IMPROVE": {"pr": (5, 12), "code": (400, 2000), "review": (5, 20), "approval": (2, 10), "merge": (1, 5), "error": (3, 8), "core": (1, 5)},
-        "ENCOURAGE": {"pr": (0, 3), "code": (0, 200), "review": (0, 5), "approval": (0, 2), "merge": (0, 1), "error": (0, 1), "core": (0, 2)},
-        "REPLACE": {"pr": (0, 3), "code": (0, 200), "review": (0, 3), "approval": (0, 1), "merge": (0, 1), "error": (4, 10), "core": (0, 1)},
+        "INCENTIVE": {"pr": (8, 20), "code": (50, 150), "review": (10, 40), "approval": (5, 20), "commit": (30, 80), "active_days": (30, 60)},
+        "IMPROVE": {"pr": (3, 10), "code": (20, 80), "review": (5, 20), "approval": (2, 10), "commit": (10, 40), "active_days": (15, 40)},
+        "ENCOURAGE": {"pr": (1, 4), "code": (5, 30), "review": (0, 5), "approval": (0, 2), "commit": (3, 15), "active_days": (2, 15)},
+        "REPLACE": {"pr": (0, 2), "code": (0, 10), "review": (0, 3), "approval": (0, 1), "commit": (0, 5), "active_days": (0, 5)},
     }
     p = profiles[quadrant]
+    pr = random.randint(*p["pr"])
+    code = random.randint(*p["code"])
+    review = random.randint(*p["review"])
+    approval = random.randint(*p["approval"])
+    commit = random.randint(*p["commit"])
+    active_days = random.randint(*p["active_days"])
+    pr_open = random.randint(0, max(1, pr // 3))
+    pr_closed = random.randint(0, max(1, pr // 4))
+    doc_files = random.randint(0, max(1, code // 10))
+    span_days = random.randint(30, 180)
+    review_ratio = round(review / max(1, review + pr + pr_open + pr_closed), 4)
+    score = round(pr * 10.0 + code * 0.5 + review * 3.0 + approval * 5.0 + commit * 1.5, 2)
     today = date.today()
-    metrics = []
-    for i in range(6, 0, -1):
-        end = min(today, today.replace(day=1) - timedelta(days=(i - 1) * 30))
-        start = end - timedelta(days=29)
-        pr = random.randint(*p["pr"])
-        code = random.randint(*p["code"])
-        review = random.randint(*p["review"])
-        approval = random.randint(*p["approval"])
-        merge = random.randint(*p["merge"])
-        error = round(random.uniform(*p["error"]), 2)
-        core = random.randint(*p["core"])
-        score = round(pr * 10.0 + code * 0.5 + review * 3.0 + approval * 5.0 + core * 8.0, 2)
-        metrics.append({
-            "period_start": start,
-            "period_end": end,
-            "merged_pr_count": pr,
-            "code_additions": code,
-            "code_deletions": random.randint(0, code // 2),
-            "review_count": review,
-            "approval_count": approval,
-            "merge_count": merge,
-            "core_module_count": core,
-            "closed_pr_count": random.randint(0, 2),
-            "contribution_score": score,
-            "error_score": error,
-            "quadrant": quadrant,
-        })
-    return metrics
+    return {
+        "repo_name": "vllm-project/vllm-ascend",
+        "commit_count": commit,
+        "code_files": code,
+        "doc_files": doc_files,
+        "pr_merged": pr,
+        "pr_open": pr_open,
+        "pr_closed": pr_closed,
+        "active_days_90": active_days,
+        "span_days": span_days,
+        "review_count": review,
+        "approval_count": approval,
+        "review_ratio": review_ratio,
+        "total_score": score,
+        "tier": quadrant,
+        "role": "reviewer" if review >= 5 and pr < review else "developer",
+        "first_seen": today - timedelta(days=span_days),
+        "last_seen": today - timedelta(days=random.randint(0, 14)),
+    }
 
 
 async def seed_contributor_board(db: Any, now: datetime) -> None:
@@ -266,77 +267,35 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
     await db.flush()
     logger.info("  contributor_board: %d contributors", len(contributor_map))
 
-    # 2) Metrics + CommitClassifications
-    metrics_count = 0
-    commits_count = 0
+    # 2) ContributorProfiles (one row per contributor, 6-month aggregated)
+    profile_count = 0
     for c_info in _CB_CONTRIBUTORS:
         login = c_info["login"]
         contrib = contributor_map[login]
-        for m in _cb_monthly_metrics(c_info["quadrant"]):
-            existing = await db.execute(
-                select(ContributorMetrics).where(
-                    ContributorMetrics.contributor_login == login,
-                    ContributorMetrics.period_start == m["period_start"],
-                    ContributorMetrics.period_end == m["period_end"],
-                )
+        existing = await db.execute(
+            select(ContributorProfile).where(
+                ContributorProfile.repo_name == "vllm-project/vllm-ascend",
+                ContributorProfile.login == login,
             )
-            if existing.scalar_one_or_none():
-                continue
-            db.add(ContributorMetrics(
-                contributor_id=contrib.id,
-                contributor_login=login,
-                **m,
-            ))
-            metrics_count += 1
-
-            # Generate commit classifications
-            for _ in range(max(1, m["merged_pr_count"])):
-                ctype = random.choices(_CB_COMMIT_TYPES, weights=_CB_COMMIT_TYPE_WEIGHTS, k=1)[0]
-                is_chip = random.random() < 0.15
-                db.add(CommitClassification(
-                    commit_sha=_cb_generate_sha(),
-                    commit_message=random.choice(_CB_COMMIT_MESSAGES.get(ctype, ["misc"])),
-                    commit_type=ctype,
-                    confidence=round(random.uniform(0.8, 1.0), 2),
-                    modules_touched=random.sample(_CB_MODULES, k=random.randint(1, 3)),
-                    files_changed_count=random.randint(1, 20),
-                    is_chip_specific=is_chip,
-                    chip_target=random.choice(["910B", "910C", "310P", "A5"]) if is_chip else None,
-                    contributor_login=login,
-                    pr_number=random.randint(1, 500),
-                    repo_name='vllm-project/vllm-ascend',
-                    created_at=datetime.combine(
-                        m["period_start"] + timedelta(days=random.randint(0, 28)),
-                        datetime.min.time(),
-                        tzinfo=UTC,
-                    ),
-                ))
-                commits_count += 1
-
-    await db.flush()
-    logger.info("  contributor_board: %d metrics, %d classifications", metrics_count, commits_count)
-
-    # 3) ErrorRecords
-    error_count = 0
-    for c_info in _CB_CONTRIBUTORS:
-        if c_info["quadrant"] not in ("IMPROVE", "REPLACE"):
+        )
+        if existing.scalar_one_or_none():
             continue
-        for _ in range(random.randint(2, 6 if c_info["quadrant"] == "IMPROVE" else 8)):
-            db.add(ErrorRecord(
-                contributor_login=c_info["login"],
-                error_type="revert",
-                related_pr_number=random.randint(1, 500),
-                related_commit_sha=_cb_generate_sha(),
-                revert_count=1,
-                ci_failure_count=random.randint(0, 2),
-                nightly_failure_count=random.randint(0, 1),
-                weight_score=5.0,
-                description=f'Revert "{random.choice(_CB_COMMIT_MESSAGES["Feature"])}"',
-            ))
-            error_count += 1
-    logger.info("  contributor_board: %d error records", error_count)
+        agg = _cb_aggregated_profile(c_info["quadrant"])
+        roles = _cb_detect_roles(
+            agg["pr_merged"], agg["review_count"], agg["approval_count"],
+            agg["pr_merged"], agg["code_files"],
+        )
+        contrib.role_types = roles
+        db.add(ContributorProfile(
+            contributor_id=contrib.id,
+            login=login,
+            **agg,
+        ))
+        profile_count += 1
+    await db.flush()
+    logger.info("  contributor_board: %d profiles, role_types updated for %d", profile_count, len(_CB_CONTRIBUTORS))
 
-    # 4) BuildPlans
+    # 3) BuildPlans
     bp_count = 0
     for c_info in _CB_CONTRIBUTORS:
         for _ in range(random.randint(3, 8)):
@@ -355,27 +314,6 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
             ))
             bp_count += 1
     logger.info("  contributor_board: %d build plans", bp_count)
-
-    # 5) Update role_types
-    for c_info in _CB_CONTRIBUTORS:
-        login = c_info["login"]
-        contrib = contributor_map[login]
-        result = await db.execute(
-            select(
-                func.sum(ContributorMetrics.merged_pr_count),
-                func.sum(ContributorMetrics.review_count),
-                func.sum(ContributorMetrics.approval_count),
-                func.sum(ContributorMetrics.merge_count),
-                func.sum(ContributorMetrics.code_additions),
-            ).where(ContributorMetrics.contributor_login == login)
-        )
-        row = result.one()
-        contrib.role_types = _cb_detect_roles(
-            int(row[0] or 0), int(row[1] or 0), int(row[2] or 0),
-            int(row[3] or 0), int(row[4] or 0),
-        )
-
-    logger.info("  contributor_board: role_types updated for %d contributors", len(_CB_CONTRIBUTORS))
 
 
 def json_text(value: Any) -> str:

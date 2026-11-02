@@ -14,13 +14,11 @@ from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import Integer, and_, desc, func, select
+from sqlalchemy import desc, select
 
 from infrastructure.persistence.models import (
-    CommitClassification,
     Contributor,
-    ContributorMetrics,
-    ImageBuildPlan,
+    ContributorProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -317,40 +315,38 @@ def evaluate_policy(
 async def evaluate_policy_from_db(
     db,
     login: str,
+    repo_name: str | None = None,
 ) -> PolicyResult | None:
     """
-    从数据库中获取贡献者最新指标并评估策略
+    从 ContributorProfile 宽表获取贡献者最新指标并评估策略。
 
     Args:
         db: 数据库会话
         login: 用户名
+        repo_name: 仓库名过滤（可选）
 
     Returns:
         PolicyResult 或 None (贡献者不存在)
+
+    Note:
+        新模型不再保存 error_score（已删），策略引擎中 error 相关规则以 0 触发，
+        实际策略选择主要依赖 tier(INCENTIVE/IMPROVE/ENCOURAGE/REPLACE) + score + review_count。
     """
-    stmt = (
-        select(Contributor, ContributorMetrics)
-        .outerjoin(
-            ContributorMetrics,
-            Contributor.id == ContributorMetrics.contributor_id,
-        )
-        .where(Contributor.login == login)
-        .order_by(desc(ContributorMetrics.updated_at))
-        .limit(1)
-    )
+    stmt = select(ContributorProfile).where(ContributorProfile.login == login)
+    if repo_name:
+        stmt = stmt.where(ContributorProfile.repo_name == repo_name)
+    stmt = stmt.order_by(desc(ContributorProfile.updated_at)).limit(1)
 
     result = await db.execute(stmt)
-    row = result.one_or_none()
+    profile = result.scalar_one_or_none()
 
-    if not row:
+    if not profile:
         return None
 
-    contributor, metrics = row
-
-    score = float(metrics.contribution_score or 0) if metrics else 0
-    error = float(metrics.error_score or 0) if metrics else 0
-    reviews = int(metrics.review_count or 0) if metrics else 0
-    quadrant = metrics.quadrant if metrics else "ENCOURAGE"
+    score = float(profile.total_score or 0)
+    error = 0.0
+    reviews = int(profile.review_count or 0)
+    quadrant = profile.tier or "ENCOURAGE"
 
     return evaluate_policy(
         login=login,

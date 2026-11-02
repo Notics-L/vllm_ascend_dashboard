@@ -1,77 +1,34 @@
 """
-贡献者四象限计算引擎
+贡献者四象限计算引擎（重构版）。
 
-根据贡献者的多维度指标将其划分到四个象限，支持：
-- X轴: contribution_score（贡献分数）
-- Y轴: error_score（出错分数）, review_count（检视次数，标准化）, merged_pr_count（合并次数，标准化）
+X 轴: total_score (7 维综合分 0-100, 越高越好)
+Y 轴: review_ratio  (检视参与度 = review / (review+pr_total), 越高越好)
+      —— 区分「写代码的人」与「做检视/方案的人」。
 
-象限含义：
-- INCENTIVE (激励):  高 X 低 Y -> 高质量贡献
-- IMPROVE  (改进):  高 X 高 Y -> 需改进
-- ENCOURAGE(鼓励):  低 X 低 Y -> 潜力新人
-- REPLACE  (置换):  低 X 高 Y -> 需关注
+象限含义:
+- INCENTIVE (激励区): 高 score 高 review_ratio   -> 高质量 + 强检视/协作
+- IMPROVE   (改进区): 高 score 低 review_ratio   -> 高产出但偏单兵, 缺检视协作
+- ENCOURAGE (鼓励区): 低 score 高 review_ratio   -> 检视/方案贡献者(Reviewer), 代码少
+- REPLACE   (置换区): 低 score 低 review_ratio   -> 低产出且低协作, 需关注
 
-当 Y 轴区分度不足时（所有值相同或集中），自动使用标准差/百分位切分。
+阈值用中位数自适应切分, 保证四象限分布均衡。
 """
 from __future__ import annotations
 
 import logging
-import math
-import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-# Y轴指标类型定义
-AXIS_TYPES = {
-    "error_score": {
-        "label": "出错评分",
-        "direction": "lower_better",  # 越低越好
-    },
-    "review_count": {
-        "label": "检视次数",
-        "direction": "higher_better",
-    },
-    "merged_pr_count": {
-        "label": "PR合并数",
-        "direction": "higher_better",
-    },
-    "code_additions": {
-        "label": "代码行数",
-        "direction": "higher_better",
-    },
-    "low_activity_score": {
-        "label": "低产出/低活动（越低越好）",
-        "direction": "lower_better",
-    },
-}
-
-
-def compute_low_activity_score(*, pending_pr: int, last_activity_hours: float | None) -> float:
-    """综合"低产出/低活动"质量信号（越低越好），用于排行榜象限。
-
-    设计意图：
-    - 不能用 CI 失败当质量——它只是"作者写了代码且出问题了"的单维信号，
-      对只提交文档/纯 reviewer/混合贡献者都不客观。
-    - 真正衡量"贡献质量"的应该是：是否长期积压未处理 PR + 是否长期不活跃。
-      这两个信号对所有类型的贡献者（主笔开发者/纯 reviewer/混合/社区贡献者）
-      都公平且可解释。
-
-    公式：
-        score = pending_pr_count * 2 + (24 - min(last_activity_hours, 24))
-    - pending_pr_count × 2: 有积压 PR 说明贡献在拖（每积压 1 个 +2 分）
-    - 最近活跃时间距今的小时数：越久不活跃 → 分数越高（24h 内活跃记 0）
-    """
-    score = (pending_pr or 0) * 2
-    if last_activity_hours is None:
-        # 完全没有任何活动 → 视为最高低活动（24h 满分）
-        score += 24
-    else:
-        hours = min(max(float(last_activity_hours), 0), 24)
-        score += (24 - hours)
-    return float(score)
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 == 1 else (s[mid - 1] + s[mid]) / 2.0
 
 
 @dataclass
@@ -83,67 +40,25 @@ class QuadrantPoint:
     quadrant: str
     merged_pr_count: int
     is_community: bool
+    review_ratio: float = 0.0
 
 
-def _clip_outliers(values: list[float]) -> list[float]:
-    """用 IQR 方法裁剪极端异常值，保留 1.5*IQR 范围内的数据。
-
-    如果裁剪后数据不足，退化为直接裁剪到 min/max。
-    """
-    sorted_vals = sorted(values)
-    n = len(sorted_vals)
-    if n < 4:
-        return values
-
-    q1 = sorted_vals[n // 4]
-    q3 = sorted_vals[(3 * n) // 4]
-    iqr = q3 - q1
-    if iqr <= 0:
-        return values
-
-    lower = q1 - 1.5 * iqr
-    upper = q3 + 1.5 * iqr
-    clipped = [v for v in values if lower <= v <= upper]
-    # 如果裁剪掉太多（<50%），放弃裁剪
-    if len(clipped) < n * 0.5:
-        return values
-    return clipped
-
-
-def _pct_rank(value: float, sorted_vals: list[float]) -> float:
-    """返回 value 在 sorted_vals 中的百分位（0~1）。"""
-    if not sorted_vals:
-        return 0.5
-    lo, hi = 0, len(sorted_vals)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if sorted_vals[mid] < value:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo / len(sorted_vals)
-
-
-def _compute_threshold(
-    values: list[float],
+def compute_low_activity_score(
+    pending_pr: int = 0,
+    last_activity_hours: float | None = None,
 ) -> float:
+    """旧接口兼容：计算低活跃度分 (0-100, 越低越活跃)。
+
+    重构后四象限固定使用 review_ratio 作为 Y 轴, 此函数仅用于兼容
+    pr_enrich.get_pr_efficiency_metrics 等旧调用点。
     """
-    计算分割线阈值。确保恰好 50% 数据落在高侧、50% 落在低侧。
-
-    实现：取原始排序数组第 P50 百分位（中点）。这样无论数据多长尾、
-    多偏斜，高/低两侧人数严格各半，X 轴和 Y 轴独立 50/50 切分后
-    四象限天然接近均衡分布。
-    """
-    n = len(values)
-    if n == 0:
-        return 0.0
-
-    unique = set(values)
-    if len(unique) <= 1:
-        return 0.0
-
-    sorted_vals = sorted(values)
-    return sorted_vals[n // 2]
+    score = 0.0
+    # 积压 PR: 每个 +5 分, 上限 30
+    score += min(30.0, (pending_pr or 0) * 5.0)
+    # 距上次活动小时: 每 24h +5 分, 上限 50
+    if last_activity_hours is not None:
+        score += min(50.0, max(0.0, last_activity_hours) * (5.0 / 24.0))
+    return round(min(100.0, max(0.0, score)), 2)
 
 
 def determine_quadrant(
@@ -151,29 +66,26 @@ def determine_quadrant(
     y_value: float,
     threshold_x: float,
     threshold_y: float,
-    y_direction: str = "lower_better",
+    y_direction: str = "higher_better",
+    **_kwargs: Any,
 ) -> str:
     """
-    根据分数和自适应阈值判定象限。
-
-    Y 轴 direction:
-    - lower_better: Y 值低为正面（如 error_score）
-    - higher_better: Y 值高为正面（如 review_count）
+    判定象限。y_direction 默认 higher_better(review_ratio 越高越好)。
+    保持旧签名兼容(支持 threshold_x/threshold_y 位置参数与 y_direction)。
     """
     high_x = x_value >= threshold_x
-
     if y_direction == "lower_better":
-        low_y = y_value < threshold_y
         high_y = y_value >= threshold_y
+        low_y = y_value < threshold_y
     else:
         high_y = y_value >= threshold_y
         low_y = y_value < threshold_y
 
-    if high_x and low_y:
+    if high_x and high_y:
         return "INCENTIVE"
-    elif high_x and high_y:
+    elif high_x and low_y:
         return "IMPROVE"
-    elif not high_x and low_y:
+    elif not high_x and high_y:
         return "ENCOURAGE"
     else:
         return "REPLACE"
@@ -181,110 +93,57 @@ def determine_quadrant(
 
 def calculate_quadrants(
     contributors_metrics: list[dict[str, Any]],
-    y_axis_type: str = "error_score",
+    y_axis_type: str | None = None,
 ) -> tuple[list[QuadrantPoint], float, float]:
     """
     计算所有贡献者的四象限位置。
 
     Args:
-        contributors_metrics: 贡献者指标列表，每项包含:
-            - login, avatar_url, contribution_score, error_score,
-              review_count, merged_pr_count, code_additions, is_community
-        y_axis_type: Y轴指标类型 (error_score/review_count/merged_pr_count/code_additions)
+        contributors_metrics: 每项至少含:
+            login, total_score(或 contribution_score), review_ratio(可选),
+            avatar_url, merged_pr_count, is_community
+        y_axis_type: 兼容性保留, 重构后固定使用 review_ratio
 
     Returns:
         (quadrant_points, threshold_x, threshold_y)
     """
     count = len(contributors_metrics)
-    logger.info("开始计算 %d 位贡献者的四象限位置 (Y轴=%s)", count, y_axis_type)
-
     if count == 0:
-        logger.warning("贡献者列表为空，返回空结果")
         return [], 0.0, 0.0
 
-    config = AXIS_TYPES.get(y_axis_type, AXIS_TYPES["error_score"])
-    y_direction = config["direction"]
+    logger.info("计算 %d 位贡献者的四象限 (X=total_score, Y=review_ratio)", count)
 
-    x_values = [m.get("contribution_score", 0) for m in contributors_metrics]
-    y_key = y_axis_type
-    y_values = [m.get(y_key, 0) for m in contributors_metrics]
+    x_values = [
+        (m.get("total_score", m.get("contribution_score", 0)) or 0) for m in contributors_metrics
+    ]
+    y_values = [
+        (m.get("review_ratio", 0) or 0) for m in contributors_metrics
+    ]
 
-    threshold_x = _compute_threshold(x_values)
-    threshold_y = _compute_threshold(y_values)
+    threshold_x = _median(x_values)
+    threshold_y = _median(y_values)
+    logger.info("阈值 X(综合分)=%.2f Y(review_ratio)=%.4f", threshold_x, threshold_y)
 
-    logger.info(
-        "分割阈值 - X轴(贡献): %.2f, Y轴(%s): %.2f, direction=%s",
-        threshold_x, y_axis_type, threshold_y, y_direction,
-    )
-
-    if count == 1:
-        m = contributors_metrics[0]
-        point = QuadrantPoint(
-            login=m["login"],
-            avatar_url=m.get("avatar_url"),
-            x_value=m.get("contribution_score", 0),
-            y_value=m.get(y_key, 0),
-            quadrant="ENCOURAGE",
-            merged_pr_count=m.get("merged_pr_count", 0),
-            is_community=m.get("is_community", False),
-        )
-        logger.info("仅1位贡献者 %s，归入 ENCOURAGE 象限", point.login)
-        return [point], threshold_x, threshold_y
-
+    quadrant_counts: dict[str, int] = {"INCENTIVE": 0, "IMPROVE": 0, "ENCOURAGE": 0, "REPLACE": 0}
     quadrant_points: list[QuadrantPoint] = []
-    quadrant_counts: dict[str, int] = {
-        "INCENTIVE": 0,
-        "IMPROVE": 0,
-        "ENCOURAGE": 0,
-        "REPLACE": 0,
-    }
 
     for m in contributors_metrics:
-        login = m["login"]
-        xv = m.get("contribution_score", 0)
-        yv = m.get(y_key, 0)
-
-        quadrant = determine_quadrant(xv, yv, threshold_x, threshold_y, y_direction)
-
-        point = QuadrantPoint(
-            login=login,
+        xv = m.get("total_score", m.get("contribution_score", 0)) or 0
+        yv = m.get("review_ratio", 0) or 0
+        quadrant = determine_quadrant(xv, yv, threshold_x, threshold_y, y_direction="higher_better")
+        quadrant_points.append(QuadrantPoint(
+            login=m["login"],
             avatar_url=m.get("avatar_url"),
             x_value=xv,
             y_value=yv,
             quadrant=quadrant,
-            merged_pr_count=m.get("merged_pr_count", 0),
+            merged_pr_count=m.get("merged_pr_count", m.get("pr_merged", 0)) or 0,
             is_community=m.get("is_community", False),
-        )
-        quadrant_points.append(point)
+            review_ratio=yv,
+        ))
         quadrant_counts[quadrant] += 1
 
-    for name, q_count in quadrant_counts.items():
-        logger.info("象限 %s: %d 位贡献者", name, q_count)
-
-    # 最小人数约束：当某个象限为 0 人时，从相邻象限借入最近的点
-    empty_quads = [q for q, c in quadrant_counts.items() if c == 0]
-    if empty_quads:
-        for eq in empty_quads:
-            candidates = [(i, p) for i, p in enumerate(quadrant_points) if p.quadrant != eq and quadrant_counts[p.quadrant] > 1]
-            if not candidates:
-                continue
-            if eq == "INCENTIVE":
-                candidates.sort(key=lambda c: (-c[1].x_value, c[1].y_value if y_direction == "lower_better" else -c[1].y_value))
-            elif eq == "IMPROVE":
-                candidates.sort(key=lambda c: (-c[1].x_value, -c[1].y_value if y_direction == "lower_better" else c[1].y_value))
-            elif eq == "ENCOURAGE":
-                candidates.sort(key=lambda c: (c[1].x_value, c[1].y_value if y_direction == "lower_better" else -c[1].y_value))
-            else:
-                candidates.sort(key=lambda c: (c[1].x_value, -c[1].y_value if y_direction == "lower_better" else c[1].y_value))
-            _, moved = candidates[0]
-            quadrant_counts[moved.quadrant] -= 1
-            quadrant_counts[eq] += 1
-            idx = next(i for i, p in enumerate(quadrant_points) if p is moved)
-            quadrant_points[idx].quadrant = eq
-
-        for name, q_count in quadrant_counts.items():
-            logger.info("调整后象限 %s: %d 位贡献者", name, q_count)
-
-    logger.info("四象限计算完成，共 %d 位贡献者", len(quadrant_points))
+    for name, c in quadrant_counts.items():
+        logger.info("象限 %s: %d 人", name, c)
 
     return quadrant_points, threshold_x, threshold_y

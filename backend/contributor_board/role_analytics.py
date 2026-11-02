@@ -1,19 +1,18 @@
 """
 贡献者角色分析模块
 
-根据贡献者的行为特征自动识别角色：
-- developer: 有提交 PR 和代码的贡献者
-- reviewer: 有 review 行为的贡献者
-- maintainer: 有 merge 权限（内部成员）
+基于 ContributorProfile 宽表，根据 7 维原始指标推断角色：
+- developer: 有合并 PR 或代码文件变更
+- reviewer: 有 review/approval 行为
+- maintainer: 合并 PR 数较多（内部成员）
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
 
-from sqlalchemy import Integer, and_, desc, func, or_, select
+from sqlalchemy import desc, select
 
 from contracts.schemas.contributor_board import (
     ContributorRankingItem,
@@ -23,10 +22,8 @@ from contracts.schemas.contributor_board import (
     RoleStats,
 )
 from infrastructure.persistence.models import (
-    CommitClassification,
     Contributor,
-    ContributorMetrics,
-    ErrorRecord,
+    ContributorProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,9 +31,6 @@ logger = logging.getLogger(__name__)
 # 角色判定阈值
 REVIEWER_THRESHOLD = 3
 MAINTAINER_MIN_MERGE = 5
-
-# 内部贡献者标志
-_COMMUNITY_COMPANY_KEYWORDS: list[str] = []
 
 
 @dataclass
@@ -78,7 +72,7 @@ def detect_roles(
     code_additions: int,
 ) -> list[str]:
     """
-    根据行为数据推断贡献者角色
+    根据行为数据推断贡献者角色（保留旧签名，collector 引用）
 
     Args:
         merged_pr_count: 合并 PR 数
@@ -92,20 +86,16 @@ def detect_roles(
     """
     roles: list[str] = []
 
-    # 开发者判定：有合并 PR 或代码贡献
     if merged_pr_count > 0 or code_additions > 0:
         roles.append("developer")
 
-    # 检视者判定：有一定数量的 review
     if review_count >= REVIEWER_THRESHOLD:
         roles.append("reviewer")
 
-    # Maintainer 判定：有 merge 权限
     if merge_count >= MAINTAINER_MIN_MERGE:
         if "maintainer" not in roles:
             roles.append("maintainer")
 
-    # 如果没有匹配到任何角色，默认给 developer
     if not roles:
         roles.append("developer")
 
@@ -114,244 +104,168 @@ def detect_roles(
 
 async def refresh_all_roles(db) -> int:
     """
-    遍历所有贡献者，根据 ContributorMetrics 重新计算角色
+    遍历 ContributorProfile，根据 7 维指标重新计算角色并写回 profile.role
+    与 contributors.role_types。
 
     Returns:
-        更新的贡献者数量
+        更新行数
     """
-    stmt = (
-        select(
-            Contributor,
-            ContributorMetrics,
-        )
-        .outerjoin(
-            ContributorMetrics,
-            Contributor.id == ContributorMetrics.contributor_id,
-        )
-        .order_by(desc(ContributorMetrics.updated_at))
-    )
-
+    stmt = select(ContributorProfile).order_by(desc(ContributorProfile.last_seen))
     result = await db.execute(stmt)
-    rows = result.all()
+    profiles = result.scalars().all()
 
-    # 按 login 分组取最新的 metrics
-    contributor_map: dict[str, tuple[Contributor, ContributorMetrics | None]] = {}
-    for contributor, metrics in rows:
-        login = contributor.login
-        if login not in contributor_map:
-            contributor_map[login] = (contributor, metrics)
+    if not profiles:
+        return 0
+
+    logins = {p.login for p in profiles}
+    contributor_stmt = select(Contributor).where(Contributor.login.in_(logins))
+    c_result = await db.execute(contributor_stmt)
+    contributor_map: dict[str, Contributor] = {c.login: c for c in c_result.scalars().all()}
 
     updated = 0
-    for login, (contributor, metrics) in contributor_map.items():
-        if metrics:
-            roles = detect_roles(
-                merged_pr_count=metrics.merged_pr_count or 0,
-                review_count=metrics.review_count or 0,
-                approval_count=metrics.approval_count or 0,
-                merge_count=metrics.merge_count or 0,
-                code_additions=metrics.code_additions or 0,
-            )
-        else:
-            roles = ["developer"]
+    for p in profiles:
+        roles = detect_roles(
+            merged_pr_count=p.pr_merged or 0,
+            review_count=p.review_count or 0,
+            approval_count=p.approval_count or 0,
+            merge_count=p.pr_merged or 0,
+            code_additions=p.code_files or 0,
+        )
+        role_list = sorted(set(roles))
 
-        old_roles = contributor.role_types or []
-        if old_roles != roles:
-            contributor.role_types = roles
+        old = p.role
+        if old != role_list[0]:
+            p.role = role_list[0]
             updated += 1
-            logger.debug("Updated roles for %s: %s -> %s", login, old_roles, roles)
 
-    logger.info("Refreshed roles for %d contributors", updated)
+        c = contributor_map.get(p.login)
+        if c:
+            old_roles = c.role_types or []
+            if old_roles != role_list:
+                c.role_types = role_list
+                updated += 1
+
+    logger.info("Refreshed roles for %d contributor profiles", updated)
     return updated
 
 
-async def get_role_stats(db, repo_name: str | None = None, days: int = 30) -> RoleStats:
+async def get_role_stats(
+    db,
+    repo_name: str | None = None,
+    days: int = 30,
+) -> RoleStats:
     """
-    获取角色维度统计（与 PR 流水线贡献者 Tab 一致，只分贡献者/评审人）。
+    从 ContributorProfile 宽表按角色聚合统计。
 
-    优先复用 PR 流水线 get_contributors 聚合逻辑；
-    若 PR 流水线内部遇到异常（如 reviewers JSON 含非 dict 元素导致 .get() 报错），
-    降级到 pull_requests 表直接聚合（同样基于 PR 流水线数据源，结果一致）。
-
-    Args:
-        db: 数据库会话
-        repo_name: 仓库名过滤
-
-    Returns:
-        角色统计信息
+    developer_count = role 含 developer 的人数
+    reviewer_count  = role 含 reviewer 的人数
+    total_pr        = sum(pr_merged + pr_open + pr_closed)
+    total_code_lines = sum(code_files + doc_files)
+    total_reviews   = sum(review_count)
+    total_approvals = sum(approval_count)
     """
-    from pr_pipeline.pr_pipeline_service import PRPipelineService
-    from contributor_board.pr_enrich import parse_repo_name
+    stmt = select(ContributorProfile)
+    if repo_name:
+        stmt = stmt.where(ContributorProfile.repo_name == repo_name)
+    if days and days > 0:
+        # 仅取近 N 天内活跃的（last_seen 在 N 天内）
+        from datetime import UTC, datetime
+        since = datetime.now(UTC).date() - timedelta(days=days)
+        stmt = stmt.where(ContributorProfile.last_seen >= since)
 
-    owner, repo = parse_repo_name(repo_name)
-    FETCH_CAP = 100000  # 拉够 items 用于计算 total_pr / total_code_lines / total_reviews
+    result = await db.execute(stmt)
+    profiles = result.scalars().all()
 
-    try:
-        svc = PRPipelineService()
-        # 注意：get_contributors 返回的 total 字段才是真实人数（GROUP BY 子查询 count），
-        # items 只是分页后的结果——之前用 len(items) 导致排行榜只有 40/20 人。
-        author_data = await svc.get_contributors(
-            db, owner, repo, days, "author", 0, FETCH_CAP,
-        )
-        reviewer_data = await svc.get_contributors(
-            db, owner, repo, days, "reviewer", 0, FETCH_CAP,
-        )
-
-        author_items = list(author_data.items)
-        reviewer_items = list(reviewer_data.items)
-
-        # 真实人数：用 PR 流水线的 total 字段（不受 items 分页影响）
-        developer_count = int(author_data.total)
-        reviewer_count = int(reviewer_data.total)
-
-        # PR 总行数：用 items 里的 lines_added 累加（items 已拉够，不受分页影响）
-        total_pr = sum(getattr(it, "pr_count", 0) or 0 for it in author_items)
-        total_code_lines = sum(getattr(it, "lines_added", 0) or 0 for it in author_items)
-        total_reviews = sum(getattr(it, "review_count", 0) or 0 for it in reviewer_items)
-
-        return RoleStats(
-            developer_count=developer_count,
-            reviewer_count=reviewer_count,
-            maintainer_count=0,
-            total_pr=total_pr,
-            total_code_lines=total_code_lines,
-            total_reviews=total_reviews,
-            total_approvals=0,
-        )
-    except Exception as e:
-        logger.warning("get_role_stats via PRPipelineService failed (%s), falling back to direct aggregation", e)
-        return await _get_role_stats_direct(db, repo_name, days=days)
-
-
-async def _get_role_stats_direct(db, repo_name: str | None = None, days: int = 30) -> RoleStats:
-    """
-    降级实现：直接用 pull_requests 表聚合（与 PR 流水线数据源一致）。
-    """
-    from datetime import UTC, datetime
-    from sqlalchemy import select
-    from infrastructure.persistence.models import PullRequest
-    from contributor_board.pr_enrich import parse_repo_name
-
-    owner, repo = parse_repo_name(repo_name)
-    since = datetime.now(UTC) - timedelta(days=days)
-
-    # 贡献者（作者）：distinct author
-    author_stmt = (
-        select(PullRequest.author,
-               PullRequest.additions)
-        .where(PullRequest.owner == owner, PullRequest.repo == repo)
-        .where(PullRequest.created_at >= since)
-        .where(PullRequest.author.isnot(None))
-    )
-    author_result = await db.execute(author_stmt)
-    author_rows = author_result.all()
-    author_logins = {r[0] for r in author_rows if r[0]}
-    total_code_lines = sum(r[1] or 0 for r in author_rows if r[1])
-
-    # 总 PR 数
-    total_pr = len(author_rows) if author_rows else 0
-
-    # 评审人：遍历 reviewers JSON
-    reviewer_stmt = (
-        select(PullRequest.reviewers)
-        .where(PullRequest.owner == owner, PullRequest.repo == repo)
-        .where(PullRequest.created_at >= since)
-        .where(PullRequest.reviewers.isnot(None))
-    )
-    reviewer_result = await db.execute(reviewer_stmt)
-    reviewer_set: set[str] = set()
+    developer_count = 0
+    reviewer_count = 0
+    maintainer_count = 0
+    total_pr = 0
+    total_code_lines = 0
     total_reviews = 0
-    for (r,) in reviewer_result.all():
-        if not r or not isinstance(r, list):
-            continue
-        for rv in r:
-            if isinstance(rv, str) and rv:
-                reviewer_set.add(rv)
-                total_reviews += 1
-            elif isinstance(rv, dict):
-                login = rv.get("login") or ""
-                if login:
-                    reviewer_set.add(login)
-                    total_reviews += 1
+    total_approvals = 0
+
+    for p in profiles:
+        roles = [p.role] if p.role else []
+        dev = (p.pr_merged or 0) > 0 or (p.code_files or 0) > 0
+        rev = (p.review_count or 0) >= REVIEWER_THRESHOLD
+        main = (p.pr_merged or 0) >= MAINTAINER_MIN_MERGE
+        if dev:
+            developer_count += 1
+        if rev:
+            reviewer_count += 1
+        if main:
+            maintainer_count += 1
+        total_pr += (p.pr_merged or 0) + (p.pr_open or 0) + (p.pr_closed or 0)
+        total_code_lines += (p.code_files or 0) + (p.doc_files or 0)
+        total_reviews += p.review_count or 0
+        total_approvals += p.approval_count or 0
 
     return RoleStats(
-        developer_count=len(author_logins),
-        reviewer_count=len(reviewer_set),
-        maintainer_count=0,
+        developer_count=developer_count,
+        reviewer_count=reviewer_count,
+        maintainer_count=maintainer_count,
         total_pr=total_pr,
         total_code_lines=total_code_lines,
         total_reviews=total_reviews,
-        total_approvals=0,
+        total_approvals=total_approvals,
     )
 
 
-async def get_module_hotspot(db, repo_name: str | None = None, period_start: date | None = None, period_end: date | None = None) -> ModuleHotspotResponse:
+async def get_module_hotspot(
+    db,
+    repo_name: str | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> ModuleHotspotResponse:
     """
-    获取模块热点统计
+    获取模块热点统计。
 
-    Args:
-        db: 数据库会话
-        repo_name: 仓库名过滤
-        period_start: 时间范围起始
-        period_end: 时间范围结束
-
-    Returns:
-        模块热点列表，包含百分比和贡献者数
+    新宽表不再保存 modules_touched 明细（依赖已删除的 commit_classifications 表）。
+    当前实现基于 ContributorProfile 聚合每个贡献者的 code_files 贡献量，
+    按 "code" 单一维度返回，仅作为过渡降级方案。
+    后续若需按模块拆分，应从 pull_requests / files JSON 实时聚合。
     """
-    from infrastructure.persistence.models import ContributorMetrics as Metrics
-
-    base_stmt = select(CommitClassification.modules_touched, CommitClassification.contributor_login)
-    conditions = []
-
+    stmt = select(ContributorProfile)
     if repo_name:
-        # 通过关联 contributor_metrics 获取 repo 过滤
-        base_stmt = base_stmt.outerjoin(
-            Metrics,
-            and_(
-                CommitClassification.contributor_login == Metrics.contributor_login,
-                Metrics.repo_name == repo_name,
-            )
-        )
-        conditions.append(Metrics.repo_name == repo_name)
-
+        stmt = stmt.where(ContributorProfile.repo_name == repo_name)
     if period_start:
-        conditions.append(CommitClassification.created_at >= period_start)
+        stmt = stmt.where(ContributorProfile.last_seen >= period_start)
     if period_end:
-        conditions.append(CommitClassification.created_at <= period_end)
+        stmt = stmt.where(ContributorProfile.first_seen <= period_end)
 
-    base_stmt = base_stmt.where(
-        and_(
-            CommitClassification.modules_touched.isnot(None),
-            *conditions
+    result = await db.execute(stmt)
+    profiles = result.scalars().all()
+
+    if not profiles:
+        return ModuleHotspotResponse(
+            modules=[],
+            total_changes=0,
+            repo_name=repo_name,
+            period_start=period_start,
+            period_end=period_end,
         )
-    )
 
-    hotspot_result = await db.execute(base_stmt)
-    module_counts: dict[str, int] = {}
-    module_contributors: dict[str, set[str]] = {}
+    total_changes = sum((p.code_files or 0) + (p.doc_files or 0) for p in profiles)
+    code_total = sum(p.code_files or 0 for p in profiles)
+    doc_total = sum(p.doc_files or 0 for p in profiles)
+    code_contributors = len({p.login for p in profiles if (p.code_files or 0) > 0})
+    doc_contributors = len({p.login for p in profiles if (p.doc_files or 0) > 0})
 
-    for modules, login in hotspot_result.all():
-        if isinstance(modules, list):
-            for mod in modules:
-                module_counts[mod] = module_counts.get(mod, 0) + 1
-                if mod not in module_contributors:
-                    module_contributors[mod] = set()
-                if login:
-                    module_contributors[mod].add(login)
-
-    total_changes = sum(module_counts.values())
-
-    # 按热度排序
-    sorted_modules = sorted(module_counts.items(), key=lambda x: x[1], reverse=True)
-
-    items: list[ModuleHotspotItem] = [
-        ModuleHotspotItem(
-            module=mod,
-            count=count,
-            percentage=round(count / total_changes * 100, 2) if total_changes > 0 else 0,
-            contributors=len(module_contributors.get(mod, set())),
-        )
-        for mod, count in sorted_modules
-    ]
+    items: list[ModuleHotspotItem] = []
+    if code_total > 0:
+        items.append(ModuleHotspotItem(
+            module="code",
+            count=code_total,
+            percentage=round(code_total / total_changes * 100, 2) if total_changes > 0 else 0,
+            contributors=code_contributors,
+        ))
+    if doc_total > 0:
+        items.append(ModuleHotspotItem(
+            module="docs",
+            count=doc_total,
+            percentage=round(doc_total / total_changes * 100, 2) if total_changes > 0 else 0,
+            contributors=doc_contributors,
+        ))
 
     return ModuleHotspotResponse(
         modules=items,
@@ -371,78 +285,74 @@ async def get_role_ranking(
     """
     获取指定角色的排行榜
 
-    Args:
-        db: 数据库会话
-        role_type: 角色类型 (developer/reviewer/maintainer)
-        repo_name: 仓库名过滤
-        limit: 返回数量上限
-
-    Returns:
-        排行榜响应
+    - developer: 按 total_score 排序
+    - reviewer: 按 review_count 排序
+    - maintainer: 按 pr_merged 排序
     """
-    # 筛选具有该角色的贡献者
-    contributors_stmt = select(Contributor).where(
-        Contributor.role_types.contains([role_type])
-    )
-    contributors_result = await db.execute(contributors_stmt)
-    contributors = contributors_result.scalars().all()
-
-    if not contributors:
-        return ContributorRankingResponse(role_type=role_type, rankings=[], repo_name=repo_name)
-
-    logins = [c.login for c in contributors]
-    contributor_map = {c.login: c for c in contributors}
-
-    # 获取这些贡献者的 metrics
-    metrics_stmt = (
-        select(ContributorMetrics)
-        .where(ContributorMetrics.contributor_login.in_(logins))
-    )
+    stmt = select(ContributorProfile)
     if repo_name:
-        metrics_stmt = metrics_stmt.where(ContributorMetrics.repo_name == repo_name)
-    metrics_result = await db.execute(metrics_stmt)
-    all_metrics = metrics_result.scalars().all()
+        stmt = stmt.where(ContributorProfile.repo_name == repo_name)
 
-    # 按 login 取最新的 metrics
-    best_metrics: dict[str, ContributorMetrics] = {}
-    for m in all_metrics:
-        login = m.contributor_login
-        if login not in best_metrics or (m.updated_at or m.period_start) > (
-            best_metrics[login].updated_at or best_metrics[login].period_start
-        ):
-            best_metrics[login] = m
+    # 角色过滤：developer/reviewer/maintainer 基于原始指标判定
+    profiles = (await db.execute(stmt)).scalars().all()
 
-    # 根据角色类型选择排序分数
-    role_items: list[tuple[str, ContributorMetrics]] = []
-    for login, m in best_metrics.items():
-        role_items.append((login, m))
+    def _role_match(p: ContributorProfile) -> bool:
+        if role_type == "developer":
+            return (p.pr_merged or 0) > 0 or (p.code_files or 0) > 0
+        if role_type == "reviewer":
+            return (p.review_count or 0) >= REVIEWER_THRESHOLD
+        if role_type == "maintainer":
+            return (p.pr_merged or 0) >= MAINTAINER_MIN_MERGE
+        return True
+
+    matched = [p for p in profiles if _role_match(p)]
 
     if role_type == "reviewer":
-        role_items.sort(key=lambda x: x[1].review_count or 0, reverse=True)
+        matched.sort(key=lambda p: p.review_count or 0, reverse=True)
     elif role_type == "maintainer":
-        role_items.sort(key=lambda x: x[1].merge_count or 0, reverse=True)
+        matched.sort(key=lambda p: p.pr_merged or 0, reverse=True)
     else:
-        role_items.sort(key=lambda x: x[1].contribution_score or 0, reverse=True)
+        matched.sort(key=lambda p: p.total_score or 0, reverse=True)
+
+    if not matched:
+        return ContributorRankingResponse(role_type=role_type, rankings=[], repo_name=repo_name)
+
+    # 批量取 Contributor 信息（头像/工号/邮箱等）
+    logins = {p.login for p in matched}
+    c_stmt = select(Contributor).where(Contributor.login.in_(logins))
+    c_result = await db.execute(c_stmt)
+    contributor_map: dict[str, Contributor] = {c.login: c for c in c_result.scalars().all()}
 
     rankings: list[ContributorRankingItem] = []
-    for i, (login, m) in enumerate(role_items[:limit]):
-        c = contributor_map.get(login)
+    for i, p in enumerate(matched[:limit]):
+        c = contributor_map.get(p.login)
+        pr_total = (p.pr_merged or 0) + (p.pr_open or 0) + (p.pr_closed or 0)
         rankings.append(
             ContributorRankingItem(
-                login=login,
+                login=p.login,
                 avatar_url=c.avatar_url if c else None,
                 employee_id=c.employee_id if c else None,
-                score=float(m.contribution_score or 0),
+                company=c.company if c else None,
+                is_bot=False,
+                score=float(p.total_score or 0),
                 rank=i + 1,
-                merged_pr_count=int(m.merged_pr_count or 0),
-                pending_pr_count=int(m.pending_pr_count or 0),
-                code_additions=int(m.code_additions or 0),
-                code_deletions=int(m.code_deletions or 0),
-                review_count=int(m.review_count or 0),
-                approval_count=int(m.approval_count or 0),
-                contribution_score=float(m.contribution_score or 0),
-                quadrant=m.quadrant,
+                merged_pr_count=int(p.pr_merged or 0),
+                pending_pr_count=int(p.pr_open or 0),
+                code_additions=int(p.code_files or 0),
+                code_deletions=int(0),
+                review_count=int(p.review_count or 0),
+                approval_count=int(p.approval_count or 0),
+                contribution_score=float(p.total_score or 0),
+                commit_count=int(p.commit_count or 0),
+                dynamic_quadrant=p.tier,
+                role_label=p.role,
+                contributor_type="reviewer" if p.role == "reviewer" else "author",
             )
         )
 
-    return ContributorRankingResponse(role_type=role_type, rankings=rankings, repo_name=repo_name)
+    return ContributorRankingResponse(
+        role_type=role_type,
+        rankings=rankings,
+        total=len(matched),
+        repo_name=repo_name,
+    )
