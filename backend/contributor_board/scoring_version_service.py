@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import select, func
 
-from contributor_board.scoring_engine import calculate_contribution_score
+from contributor_board.scoring_engine import calculate_score
 from contributor_board.quadrant_engine import determine_quadrant
 from contributor_board.scoring_version_schemas import (
     ScoreSnapshotResponse,
@@ -19,9 +19,7 @@ from contributor_board.scoring_version_schemas import (
 )
 from contributor_board.constants import QUADRANT_RANK
 from infrastructure.persistence.models import (
-    Contributor,
-    CommitClassification,
-    ContributorMetrics,
+    ContributorProfile,
     ContributorScoringVersion,
     ContributorScoreSnapshot,
     ContributorScoreUpdateAudit,
@@ -232,31 +230,40 @@ class ScoringVersionService:
         weight_diff = ScoringVersionService._compute_weight_diff(va.weights, vb.weights)
 
         score_impact = None
-        result = await db.execute(select(ContributorMetrics).where(
-            ContributorMetrics.repo_name == va.repo_name
+        result = await db.execute(select(ContributorProfile).where(
+            ContributorProfile.repo_name == va.repo_name
         ))
-        metrics_list = result.scalars().all()
-        if metrics_list:
+        profiles = result.scalars().all()
+        if profiles:
+            def _metrics(p):
+                return {
+                    "commit_count": p.commit_count or 0,
+                    "code_files": p.code_files or 0,
+                    "doc_files": p.doc_files or 0,
+                    "pr_merged": p.pr_merged or 0,
+                    "pr_open": p.pr_open or 0,
+                    "pr_closed": p.pr_closed or 0,
+                    "active_days_90": p.active_days_90 or 0,
+                    "span_days": p.span_days or 0,
+                }
+            from contributor_board.scoring_engine import assign_tier
             quadrant_changes = []
-            for m in metrics_list:
-                old_score = calculate_contribution_score(
-                    {k: getattr(m, k, 0) for k in va.weights}, va.weights
-                )
-                new_score = calculate_contribution_score(
-                    {k: getattr(m, k, 0) for k in vb.weights}, vb.weights
-                )
-                old_q = determine_quadrant(old_score, m.error_score or 0, 30, 2)
-                new_q = determine_quadrant(new_score, m.error_score or 0, 30, 2)
+            for p in profiles:
+                m = _metrics(p)
+                old_score = calculate_score(m, va.weights if isinstance(va.weights, dict) else None)
+                new_score = calculate_score(m, vb.weights if isinstance(vb.weights, dict) else None)
+                old_q = assign_tier(old_score, p.active_days_90 or 0)
+                new_q = assign_tier(new_score, p.active_days_90 or 0)
                 if old_q != new_q:
                     quadrant_changes.append({
-                        "login": m.contributor_login,
+                        "login": p.login,
                         "from": old_q,
                         "to": new_q,
                         "old_score": old_score,
                         "new_score": new_score,
                     })
             score_impact = {
-                "contributor_count": len(metrics_list),
+                "contributor_count": len(profiles),
                 "quadrant_changes": quadrant_changes,
             }
 
@@ -390,8 +397,9 @@ class ScoringVersionService:
         from sqlalchemy import select
         from infrastructure.persistence.models import ContributorBoardSettings
 
-        from contributor_board.pr_enrich import normalize_weights
-        weights = normalize_weights(weights)
+        from contributor_board.scoring_engine import DEFAULT_WEIGHTS
+        # 规范化：只保留 7 维 key 并对齐默认权重
+        weights = {k: float(weights.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
 
         row = (await db.execute(
             select(ContributorBoardSettings).where(
@@ -401,7 +409,7 @@ class ScoringVersionService:
         if row:
             cur = row.setting_value if isinstance(row.setting_value, dict) else {}
             cur.update(weights)
-            row.setting_value = normalize_weights(cur)
+            row.setting_value = {k: float(cur.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
         else:
             db.add(ContributorBoardSettings(setting_key="scoring_weights", setting_value=dict(weights)))
 
@@ -414,59 +422,60 @@ class ScoringVersionService:
         repo_name: str | None,
         created_by: str | None,
     ) -> int | None:
-        from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
         from contributor_board.scoring_engine import (
-            calculate_contribution_score,
+            assign_tier,
+            calculate_score,
             get_default_weights,
+            infer_role,
         )
-        from contributor_board.quadrant_engine import calculate_quadrants, compute_low_activity_score
 
-        # 1) Recalculate all scores from PR data
-        pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=None)
+        # 1) 从宽表聚合各贡献者 7 维原始指标
+        stmt = select(ContributorProfile)
+        if repo_name:
+            stmt = stmt.where(ContributorProfile.repo_name == repo_name)
+        profiles = (await db.execute(stmt)).scalars().all()
 
-        # Apply new weights from the version
+        # 应用版本权重
         weights: dict[str, float] = dict(get_default_weights())
         if version.weights and isinstance(version.weights, dict):
             weights.update(version.weights)
-        from contributor_board.pr_enrich import normalize_weights
-        weights = normalize_weights(weights)
 
-        for m in pr_metrics:
-            error_score = float(m.get("error_score", 0))
-            metrics = {
-                "merged_pr_count": m.get("merged_pr_count", 0),
-                "code_additions": m.get("code_additions", 0),
-                "code_deletions": m.get("code_deletions", 0),
-                "review_count": m.get("review_count", 0),
-                "approval_count": m.get("approval_count", 0),
-                "commit_count": m.get("commit_count", 0),
+        metrics_by_login: dict[str, dict[str, float]] = {}
+        # 同时建立 login -> profile 映射，用于回写宽表
+        profile_by_login: dict[str, Any] = {}
+        for p in profiles:
+            profile_by_login[p.login] = p
+            metrics_by_login[p.login] = {
+                "commit_count": p.commit_count or 0,
+                "code_files": p.code_files or 0,
+                "doc_files": p.doc_files or 0,
+                "pr_merged": p.pr_merged or 0,
+                "pr_open": p.pr_open or 0,
+                "pr_closed": p.pr_closed or 0,
+                "active_days_90": p.active_days_90 or 0,
+                "span_days": p.span_days or 0,
+                "review_count": p.review_count or 0,
+                "approval_count": p.approval_count or 0,
             }
-            m["contribution_score"] = calculate_contribution_score(metrics, weights, commit_type_counts={})
-            m["error_score"] = round(error_score, 2)
-            # Y 轴信号：低产出/低活动（积压 PR × 2 + 不活跃小时数）
-            m["low_activity_score"] = compute_low_activity_score(
-                pending_pr=int(m.get("pending_pr_count", 0)),
-                last_activity_hours=None,  # 快照中无 last-activity 字段
-            )
 
-        # 2) Compute quadrants — 只对有贡献的活跃贡献者算象限，Y=low_activity_score
-        active = [m for m in pr_metrics if m.get("contribution_score", 0) > 0]
-        if active:
-            points, _, _ = calculate_quadrants(active, y_axis_type="low_activity_score")
-            quad_map = {p.login: p.quadrant for p in points}
-        else:
-            quad_map = {}
-        for m in pr_metrics:
-            m["quadrant"] = quad_map.get(m["login"], "unknown")
-
-        # 3) Build score list for snapshot
+        # 2) 计算分数与分层 —— 同时回写宽表 total_score/tier/role，
+        #    让排行榜（读宽表 total_score）与四象限图、AI 报告都能读到最新分数
         scores = []
-        for m in pr_metrics:
+        for login, m in metrics_by_login.items():
+            score = calculate_score(m, weights)
+            active_days = m.get("active_days_90", 0)
+            tier = assign_tier(score, active_days)
+            role = infer_role(m)
+            profile = profile_by_login.get(login)
+            if profile is not None:
+                profile.total_score = score
+                profile.tier = tier
+                profile.role = role
             scores.append({
-                "login": m["login"],
-                "score": m.get("contribution_score", 0),
-                "error_score": m.get("error_score", 0),
-                "quadrant": m.get("quadrant", "unknown"),
+                "login": login,
+                "score": score,
+                "error_score": 0,
+                "quadrant": tier,
             })
 
         # 4) Aggregate statistics

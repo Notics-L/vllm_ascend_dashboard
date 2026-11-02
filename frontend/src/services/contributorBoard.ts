@@ -579,16 +579,16 @@ export interface WeightDimensionConfig {
   step: number
 }
 
+// 7 维权重维度配置 — 键名严格对齐后端 scoring_engine.DEFAULT_WEIGHTS（合计 100）
+// 量纲：绝对分值（0-100 分制），默认值与 DEFAULT_WEIGHTS 一致；max 统一 50 便于调节
 export const WEIGHT_DIMENSIONS: WeightDimensionConfig[] = [
-  { key: 'merged_pr_weight', label: 'PR 合并', min: 0, max: 20, step: 0.5 },
-  { key: 'code_line_weight', label: '代码行(每千行)', min: 0, max: 0.1, step: 0.001 },
-  { key: 'review_weight', label: 'Review', min: 0, max: 10, step: 0.5 },
-  { key: 'approval_weight', label: 'Approval', min: 0, max: 10, step: 0.5 },
-  { key: 'core_module_weight', label: '核心模块', min: 0, max: 10, step: 0.5 },
-  { key: 'files_changed_weight', label: '变更文件', min: 0, max: 1, step: 0.01 },
-  { key: 'bugfix_weight', label: 'Bug 修复', min: 0, max: 5, step: 0.5 },
-  { key: 'feature_weight', label: '新功能', min: 0, max: 5, step: 0.5 },
-  { key: 'active_duration_weight', label: '活跃时长', min: 0, max: 0.1, step: 0.001 },
+  { key: 'commit_count', label: '提交数', min: 0, max: 50, step: 1 },
+  { key: 'code_files', label: '代码文件', min: 0, max: 50, step: 1 },
+  { key: 'doc_files', label: '文档文件', min: 0, max: 50, step: 1 },
+  { key: 'pr_merged_rate', label: 'PR 合并率', min: 0, max: 50, step: 1 },
+  { key: 'pr_total', label: 'PR 总量', min: 0, max: 50, step: 1 },
+  { key: 'active_days_90', label: '活跃天数(90d)', min: 0, max: 50, step: 1 },
+  { key: 'span_days', label: '贡献持续期', min: 0, max: 50, step: 1 },
 ]
 
 export const WEIGHT_LABELS: Record<WeightKey, string> = Object.fromEntries(
@@ -624,16 +624,15 @@ export function normalizeWeights(weights: Record<string, number>): Record<string
   return result
 }
 
+/** 贡献者 7 维权重配置，键名对齐后端 scoring_engine.DEFAULT_WEIGHTS，合计应≈100 */
 export interface ScoringWeightsConfig {
-  merged_pr_weight: number
-  code_line_weight: number
-  review_weight: number
-  approval_weight: number
-  core_module_weight: number
-  files_changed_weight: number
-  bugfix_weight: number
-  feature_weight: number
-  active_duration_weight: number
+  commit_count: number
+  code_files: number
+  doc_files: number
+  pr_merged_rate: number
+  pr_total: number
+  active_days_90: number
+  span_days: number
 }
 
 export interface RoleThresholdsConfig {
@@ -1012,6 +1011,22 @@ export interface AIReportListResponse {
   total: number
 }
 
+/** 结构化分析维度：量化指标 + markdown/纯文本正文 */
+export interface AIAnalysisDimension {
+  metrics: Record<string, any>
+  content: string
+}
+
+/** Top 贡献者逐条量化明细 + AI 客观评价 */
+export interface AITopContributor {
+  login: string
+  score: number
+  quadrant: string
+  pr_merged?: number | null
+  commit_count?: number | null
+  evaluation?: string
+}
+
 export interface AIReportDetail {
   id: number
   report_name: string
@@ -1024,9 +1039,17 @@ export interface AIReportDetail {
   weight_version_id: number | null
   llm_model: string | null
   executive_summary: string | null
+  // ===== 结构化 5 维（新） =====
+  team_health?: AIAnalysisDimension | null
+  core_contributors?: AIAnalysisDimension | null
+  new_contributors?: AIAnalysisDimension | null
+  improvement_areas?: AIAnalysisDimension | null
+  top_contributors?: AITopContributor[] | null
+  risk_level?: 'low' | 'medium' | 'high' | string | null
+  // ===== 兼容字段（旧前端） =====
   quadrant_analysis?: Record<string, any> | null
   individual_evaluations?: Array<Record<string, any>> | null
-  recommendations?: Array<Record<string, any>> | null
+  recommendations?: Array<Record<string, any> | string> | null
   confidence_overall?: number | null
   report_content?: string | null
   report_file_url?: string | null
@@ -1060,5 +1083,28 @@ export const listAIReports = async (params?: {
 
 export const getAIReportDetail = async (reportId: number) => {
   const response = await api.get<AIReportDetail>(`/contributor-board/settings/reports/ai/${reportId}`)
+  return response.data
+}
+
+export interface ComprehensivePdfParams {
+  repo_name?: string | null
+  period_start?: string | null
+  period_end?: string | null
+  top_n?: number
+  quadrant_filter?: string | null
+}
+
+/** 导出综合 PDF 分析报告（含 AI 逐人评价 + 决策建议） */
+export const exportComprehensivePdf = async (params: ComprehensivePdfParams) => {
+  const queryParams: Record<string, unknown> = {}
+  if (params.repo_name) queryParams.repo_name = params.repo_name
+  if (params.period_start) queryParams.period_start = params.period_start
+  if (params.period_end) queryParams.period_end = params.period_end
+  if (params.top_n) queryParams.top_n = params.top_n
+  if (params.quadrant_filter) queryParams.quadrant_filter = params.quadrant_filter
+  const response = await api.post('/contributor-board/settings/reports/comprehensive-pdf', null, {
+    params: queryParams,
+    responseType: 'blob',
+  })
   return response.data
 }

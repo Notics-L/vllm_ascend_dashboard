@@ -113,6 +113,13 @@ class AIReportResponse(BaseModel):
 
 
 class AIReportDetailResponse(BaseModel):
+    """AI 综合分析报告详情 — 结构化 5 维 + markdown 双轨。
+
+    结构化字段（卡片渲染）：team_health / core_contributors / new_contributors /
+    improvement_areas，每个为 dict: {"metrics": {量化指标}, "content": "markdown 正文"}。
+    recommendations: list；top_contributors: list（Top N 量化明细）；risk_level: low/medium/high。
+    兼容字段：quadrant_analysis / individual_evaluations / report_content。
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -126,9 +133,17 @@ class AIReportDetailResponse(BaseModel):
     weight_version_id: int | None = None
     llm_model: str | None = None
     executive_summary: str | None = None
+    # ===== 结构化 5 维（新） =====
+    team_health: dict | None = None
+    core_contributors: dict | None = None
+    new_contributors: dict | None = None
+    improvement_areas: dict | None = None
+    recommendations: list[dict | str] | None = None
+    top_contributors: list[dict] | None = None
+    risk_level: str | None = None
+    # ===== 兼容字段（旧前端） =====
     quadrant_analysis: dict | None = None
     individual_evaluations: list[dict] | None = None
-    recommendations: list[dict | str] | None = None
     confidence_overall: float | None = None
     report_content: str | None = None
     report_file_url: str | None = None

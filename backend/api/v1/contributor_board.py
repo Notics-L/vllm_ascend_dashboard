@@ -905,3 +905,42 @@ async def generate_ai_report(
     """生成 AI 综合分析报告"""
     svc = _get_ai_report_service()
     return await svc.generate_report(db, request, created_by=_access.username)
+
+
+@router.post("/settings/reports/comprehensive-pdf")
+async def export_comprehensive_report_pdf(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+    repo_name: str | None = Query(None, description="仓库名"),
+    period_start: str | None = Query(None, description="时间范围开始，格式 YYYY-MM-DD"),
+    period_end: str | None = Query(None, description="时间范围结束，格式 YYYY-MM-DD"),
+    top_n: int = Query(10, ge=1, le=50, description="Top N"),
+    quadrant_filter: str | None = Query(
+        None,
+        description="象限过滤，逗号分隔，如 INCENTIVE,ENCOURAGE；不传则全部",
+    ),
+):
+    """导出综合 PDF 分析报告 — 含封面/统计卡/四象限分布/Top N 明细/AI 逐人评价/整体建议"""
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+
+    from contributor_board.ai_report_service import export_comprehensive_pdf as svc_export
+
+    quadrants = [q.strip().upper() for q in quadrant_filter.split(",") if q.strip()] if quadrant_filter else None
+
+    pdf_bytes, filename = await svc_export(
+        db,
+        repo_name=repo_name,
+        period_start=period_start,
+        period_end=period_end,
+        top_n=top_n,
+        quadrant_filter=quadrants,
+    )
+    if not pdf_bytes:
+        raise HTTPException(status_code=404, detail="No contributor data found")
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

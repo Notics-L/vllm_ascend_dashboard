@@ -236,15 +236,14 @@ class QuadrantConfig(BaseModel):
 
 
 class ScoringWeightsConfig(BaseModel):
-    merged_pr_weight: float = Field(default=10.0, ge=0, description="PR合并权重")
-    code_line_weight: float = Field(default=0.5, ge=0, description="代码行权重")
-    review_weight: float = Field(default=3.0, ge=0, description="Review权重")
-    approval_weight: float = Field(default=5.0, ge=0, description="Approval权重")
-    core_module_weight: float = Field(default=8.0, ge=0, description="核心模块权重")
-    files_changed_weight: float = Field(default=0.3, ge=0, description="文件变更数权重")
-    bugfix_weight: float = Field(default=6.0, ge=0, description="BugFix 贡献权重")
-    feature_weight: float = Field(default=4.0, ge=0, description="Feature 贡献权重")
-    active_duration_weight: float = Field(default=0.01, ge=0, description="活跃持续时间权重（按天）")
+    """贡献者 7 维权重配置，与 scoring_engine.DEFAULT_WEIGHTS 对齐，合计 100。"""
+    commit_count: float = Field(default=25.0, ge=0, description="提交数权重")
+    code_files: float = Field(default=15.0, ge=0, description="代码文件变更数权重")
+    doc_files: float = Field(default=10.0, ge=0, description="文档文件变更数权重")
+    pr_merged_rate: float = Field(default=15.0, ge=0, description="PR 合并率权重")
+    pr_total: float = Field(default=10.0, ge=0, description="PR 总量权重")
+    active_days_90: float = Field(default=15.0, ge=0, description="近90天活跃天数权重")
+    span_days: float = Field(default=10.0, ge=0, description="贡献持续期(天)权重")
 
 
 class RoleThresholdsConfig(BaseModel):
@@ -265,15 +264,14 @@ class UpdateQuadrantConfigRequest(BaseModel):
 
 
 class UpdateScoringWeightsRequest(BaseModel):
-    merged_pr_weight: float = Field(ge=0)
-    code_line_weight: float = Field(ge=0)
-    review_weight: float = Field(ge=0)
-    approval_weight: float = Field(ge=0)
-    core_module_weight: float = Field(ge=0)
-    files_changed_weight: float = Field(ge=0, default=0.3)
-    bugfix_weight: float = Field(ge=0, default=6.0)
-    feature_weight: float = Field(ge=0, default=4.0)
-    active_duration_weight: float = Field(ge=0, default=0.01)
+    """更新 7 维权重。提交值会被原样存入 settings.scoring_weights（合计应≈100）。"""
+    commit_count: float = Field(ge=0, description="提交数权重")
+    code_files: float = Field(ge=0, description="代码文件变更数权重")
+    doc_files: float = Field(ge=0, description="文档文件变更数权重")
+    pr_merged_rate: float = Field(ge=0, description="PR 合并率权重")
+    pr_total: float = Field(ge=0, description="PR 总量权重")
+    active_days_90: float = Field(ge=0, description="近90天活跃天数权重")
+    span_days: float = Field(ge=0, description="贡献持续期(天)权重")
     repo_name: str | None = Field(None, description="仓库名（用于区分不同仓库的设置）")
 
 

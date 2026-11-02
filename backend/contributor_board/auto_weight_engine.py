@@ -6,42 +6,49 @@ from typing import Any
 
 from sqlalchemy import select as sa_select
 
+from contributor_board.scoring_engine import DEFAULT_WEIGHTS
+
 logger = logging.getLogger(__name__)
 
-# 权重维度注册表 — 维度键名到指标字段名的映射
+# 权重维度注册表 — 维度键名直接对齐 scoring_engine.DEFAULT_WEIGHTS（7 维）
+# 维度键名 -> metrics_data 中字段名（本文件中 metrics_data 字段已与 DimensionRegistry 键名一致）
 DimensionRegistry = {
-    "merged_pr_weight": "merged_pr_count",
-    "code_line_weight": "code_additions",
-    "review_weight": "review_count",
-    "approval_weight": "approval_count",
-    "core_module_weight": "core_module_count",
-    "files_changed_weight": "files_changed_count",
-    "bugfix_weight": "commit_count",
-    "feature_weight": "commit_count",
-    "active_duration_weight": "commit_count",
-    "revert_rate_weight": "error_score",
+    "commit_count": "commit_count",
+    "code_files": "code_files",
+    "doc_files": "doc_files",
+    "pr_merged_rate": "pr_merged_rate",
+    "pr_total": "pr_total",
+    "active_days_90": "active_days_90",
+    "span_days": "span_days",
 }
 
 DIMENSIONS = list(DimensionRegistry.keys())
 
 
 async def compute_weights_from_db(db: Any, repo_name: str | None = None) -> tuple[dict[str, float], float, dict[str, Any]]:
-    """从 pull_requests 表聚合贡献者指标并计算权重"""
-    from contributor_board.pr_enrich import get_full_contributor_metrics_from_prs
+    """从 contributor_profiles 宽表聚合 7 维指标并计算权重（熵权法）。"""
+    from infrastructure.persistence.models import ContributorProfile
 
-    pr_metrics = await get_full_contributor_metrics_from_prs(db, repo_name=repo_name)
+    stmt = sa_select(ContributorProfile)
+    if repo_name:
+        stmt = stmt.where(ContributorProfile.repo_name == repo_name)
+    profiles = (await db.execute(stmt)).scalars().all()
 
     metrics_data: list[dict[str, Any]] = []
-    for m in pr_metrics:
+    for p in profiles:
+        pr_merged = p.pr_merged or 0
+        pr_open = p.pr_open or 0
+        pr_closed = p.pr_closed or 0
+        pr_total = pr_merged + pr_open + pr_closed
+        merge_rate = (pr_merged / pr_total) if pr_total > 0 else 0.0
         metrics_data.append({
-            "merged_pr_count": m.get("merged_pr_count", 0),
-            "code_additions": m.get("code_additions", 0),
-            "review_count": m.get("review_count", 0),
-            "approval_count": m.get("approval_count", 0),
-            "core_module_count": 0,
-            "files_changed_count": 0,
-            "commit_count": m.get("commit_count", 0),
-            "error_score": m.get("error_score", 0),
+            "commit_count": p.commit_count or 0,
+            "code_files": p.code_files or 0,
+            "doc_files": p.doc_files or 0,
+            "pr_merged_rate": merge_rate,
+            "pr_total": pr_total,
+            "active_days_90": p.active_days_90 or 0,
+            "span_days": p.span_days or 0,
         })
     return compute_weights(metrics_data)
 
@@ -66,7 +73,7 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
     """
     n = len(metrics_data)
     if n == 0:
-        return {d: 1.0 / len(DIMENSIONS) for d in DIMENSIONS}, 0.0, {"contributor_count": 0}
+        return {d: round(DEFAULT_WEIGHTS.get(d, 0.0), 2) for d in DIMENSIONS}, 0.0, {"contributor_count": 0}
 
     values: dict[str, list[float]] = {}
     for d in DIMENSIONS:
@@ -83,11 +90,11 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
     total = sum(redundancy.values())
 
     if total < 1e-10:
-        weights = {d: 1.0 / len(DIMENSIONS) for d in DIMENSIONS}
+        # 数据无区分度时回退到默认权重（合计 100，与 calculate_score 兼容）
+        weights = {d: float(DEFAULT_WEIGHTS.get(d, 0.0)) for d in DIMENSIONS}
     else:
-        weights = {d: redundancy[d] / total for d in DIMENSIONS}
-
-    weights = {d: round(w, 4) for d, w in weights.items()}
+        # 归一化到合计 100（calculate_score 期望权重合计 100，0-100 分制）
+        weights = {d: round(redundancy[d] / total * 100.0, 2) for d in DIMENSIONS}
 
     cv_weights = _compute_cv_weights(values, DIMENSIONS)
     
@@ -203,8 +210,9 @@ def _compute_cv_weights(
         cv[d] = std_v / mean_v
     total = sum(cv.values())
     if total < 1e-10:
-        return {d: 1.0 / len(dims) for d in dims}
-    return {d: cv[d] / total for d in dims}
+        return {d: DEFAULT_WEIGHTS.get(d, 0.0) for d in dims}
+    # 归一化到合计 100（与主权重口径一致，便于 Pearson 相关性比较）
+    return {d: round(cv[d] / total * 100.0, 2) for d in dims}
 
 
 def _entropy_distribution_confidence(weights: dict[str, float]) -> float:
@@ -215,11 +223,12 @@ def _entropy_distribution_confidence(weights: dict[str, float]) -> float:
     n = len(vals)
     if n < 2:
         return 0.5
-    # 计算与均匀分布的距离（KL 散度的近似）
-    uniform = 1.0 / n
+    # 计算与均匀分布的距离（权重现在合计 100，均匀值 = 100/n）
+    uniform = 100.0 / n
     distance = sum(abs(w - uniform) for w in vals)
-    # 最大可能的距离是当某个权重为 1 其他为 0 时 = 2*(n-1)/n
-    max_distance = 2.0 * (n - 1) / n
+    # 最大可能的距离：某权重 100 其他 0 → 100 + (n-1)*100/n = 100*(n-1)/n... 实际 = 100
+    # 取经验上界：100
+    max_distance = 100.0
     return min(1.0, distance / max_distance) if max_distance > 0 else 0.5
 
 

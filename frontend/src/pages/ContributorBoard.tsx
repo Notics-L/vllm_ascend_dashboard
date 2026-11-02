@@ -51,7 +51,10 @@ import {
   CloseCircleOutlined,
   ColumnHeightOutlined,
   DeleteOutlined,
+  HeartOutlined,
+  TeamOutlined,
   EyeOutlined,
+  FilePdfOutlined,
   ExperimentOutlined,
   DownloadOutlined,
   FlagOutlined,
@@ -66,6 +69,7 @@ import {
   StopOutlined,
   ToolOutlined,
   TrophyOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { formatTimezone, fromTimezoneNow } from '@/utils/timezone'
@@ -95,6 +99,7 @@ import {
   type RoleStats,
   getContributorBoardSettings,
   type ContributorBoardSettings as SettingsType,
+  type ScoringWeightsConfig,
   updateQuadrantConfig,
   updateScoringWeights,
   updateRoleThresholds,
@@ -113,9 +118,12 @@ import {
   generateAIReport,
   listAIReports,
   getAIReportDetail,
+  exportComprehensivePdf,
   generateScoreSnapshot,
   type AIReportListItem,
   type AIReportDetail as AIReportDetailType,
+  type AIAnalysisDimension,
+  type AITopContributor,
   type ScoringVersion,
   type VersionCompareResult,
   type ScoreSnapshot,
@@ -1452,15 +1460,9 @@ function SettingsTab() {
         if (!cancelled) {
           setSettings(settingsData)
           form.setFieldValue('y_axis_type', settingsData.quadrant_config.y_axis_type)
-          form.setFieldValue('merged_pr_weight', settingsData.scoring_weights.merged_pr_weight)
-          form.setFieldValue('code_line_weight', settingsData.scoring_weights.code_line_weight)
-          form.setFieldValue('review_weight', settingsData.scoring_weights.review_weight)
-          form.setFieldValue('approval_weight', settingsData.scoring_weights.approval_weight)
-          form.setFieldValue('core_module_weight', settingsData.scoring_weights.core_module_weight)
-          form.setFieldValue('files_changed_weight', settingsData.scoring_weights.files_changed_weight)
-          form.setFieldValue('bugfix_weight', settingsData.scoring_weights.bugfix_weight)
-          form.setFieldValue('feature_weight', settingsData.scoring_weights.feature_weight)
-          form.setFieldValue('active_duration_weight', settingsData.scoring_weights.active_duration_weight)
+          for (const dw of WEIGHT_DIMENSIONS) {
+            form.setFieldValue(dw.key, (settingsData.scoring_weights as unknown as Record<string, number>)[dw.key] ?? 0)
+          }
           form.setFieldValue('star_threshold', settingsData.role_thresholds.star_threshold)
           form.setFieldValue('active_threshold', settingsData.role_thresholds.active_threshold)
           form.setFieldValue('max_error_score', settingsData.role_thresholds.max_error_score)
@@ -1475,21 +1477,15 @@ function SettingsTab() {
 
   const handleSave = async () => {
     try {
-      const values = await form.validateFields()
-      setSaving(true)
-      await Promise.all([
-        updateQuadrantConfig(values.y_axis_type),
-        updateScoringWeights({
-          merged_pr_weight: values.merged_pr_weight,
-          code_line_weight: values.code_line_weight,
-          review_weight: values.review_weight,
-          approval_weight: values.approval_weight,
-          core_module_weight: values.core_module_weight,
-          files_changed_weight: values.files_changed_weight,
-          bugfix_weight: values.bugfix_weight,
-          feature_weight: values.feature_weight,
-          active_duration_weight: values.active_duration_weight,
-        }),
+        const values = await form.validateFields()
+        setSaving(true)
+        const weightsPayload: Record<string, number> = {}
+        for (const dw of WEIGHT_DIMENSIONS) {
+          weightsPayload[dw.key] = values[dw.key] ?? 0
+        }
+        await Promise.all([
+          updateQuadrantConfig(values.y_axis_type),
+          updateScoringWeights(weightsPayload as unknown as ScoringWeightsConfig),
         updateRoleThresholds({
           star_threshold: values.star_threshold,
           active_threshold: values.active_threshold,
@@ -1528,7 +1524,7 @@ function SettingsTab() {
   }
 
   const sliderFormItemStyle = {
-    marginBottom: '14px',
+    marginBottom: '8px',
   }
 
   return (
@@ -1559,10 +1555,10 @@ function SettingsTab() {
         </Space>
       </div>
 
-      {/* 卡片布局：第一排 Y轴+基础权重+阈值，第二排 新增维度 */}
-      <Row gutter={[20, 0]}>
-        {/* 卡片 1: Y 轴配置 */}
-        <Col xs={24} md={8}>
+      {/* 卡片布局 */}
+      <Row gutter={[20, 20]}>
+        {/* 第一排：Y轴 + 阈值 */}
+        <Col xs={24} md={12}>
           <Card title={<><FlagOutlined style={{ marginRight: 6, color: '#1890ff' }} />Y 轴指标</>}
             size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
             <Form form={form}>
@@ -1577,72 +1573,7 @@ function SettingsTab() {
             </Form>
           </Card>
         </Col>
-
-        {/* 卡片 2: 权重配置 */}
-        <Col xs={24} md={8}>
-          <Card title={<><TrophyOutlined style={{ marginRight: 6, color: '#fa8c16' }} />贡献分数权重</>}
-            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
-            <Form form={form}>
-              <Form.Item label="PR 合并权重" name="merged_pr_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={20} step={1}
-                  marks={{ 0: '0', 10: '10', 20: '20' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
-              </Form.Item>
-              <Form.Item label="代码行权重" name="code_line_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={5} step={0.1}
-                  marks={{ 0: '0', 2.5: '2.5', 5: '5' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
-              </Form.Item>
-              <Form.Item label="Review 权重" name="review_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={10} step={0.5}
-                  marks={{ 0: '0', 5: '5', 10: '10' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
-              </Form.Item>
-              <Form.Item label="Approval 权重" name="approval_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={10} step={0.5}
-                  marks={{ 0: '0', 5: '5', 10: '10' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
-              </Form.Item>
-              <Form.Item label="核心模块权重" name="core_module_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={15} step={1}
-                  marks={{ 0: '0', 8: '8', 15: '15' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
-              </Form.Item>
-            </Form>
-          </Card>
-        </Col>
-
-        {/* 卡片 2.5: 新增权重维度 */}
-        <Col xs={24} md={8}>
-          <Card title={<><ExperimentOutlined style={{ marginRight: 6, color: '#722ed1' }} />新增评分维度</>}
-            size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
-            <Form form={form}>
-              <Form.Item label="文件变更数权重" name="files_changed_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={2} step={0.1}
-                  marks={{ 0: '0', 1: '1', 2: '2' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
-              </Form.Item>
-              <Form.Item label="BugFix 贡献权重" name="bugfix_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={15} step={1}
-                  marks={{ 0: '0', 8: '8', 15: '15' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
-              </Form.Item>
-              <Form.Item label="Feature 贡献权重" name="feature_weight" style={sliderFormItemStyle}>
-                <Slider min={0} max={10} step={1}
-                  marks={{ 0: '0', 5: '5', 10: '10' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
-              </Form.Item>
-              <Form.Item label="活跃持续时间权重" name="active_duration_weight" style={{ marginBottom: 0 }}>
-                <Slider min={0} max={0.05} step={0.005}
-                  marks={{ 0: '0', 0.025: '0.025', 0.05: '0.05' }}
-                  tooltip={{ formatter: (v) => (v ?? 0).toFixed(3) }} />
-              </Form.Item>
-            </Form>
-          </Card>
-        </Col>
-
-        {/* 卡片 3: 阈值配置 */}
-        <Col xs={24} md={8}>
+        <Col xs={24} md={12}>
           <Card title={<><StarOutlined style={{ marginRight: 6, color: '#faad14' }} />角色标签阈值</>}
             size="small" style={cardStyle} bodyStyle={{ padding: '20px 24px 24px' }}>
             <Form form={form}>
@@ -1661,6 +1592,22 @@ function SettingsTab() {
                   marks={{ 0: '0', 5: '5', 10: '10' }}
                   tooltip={{ formatter: (v) => (v ?? 0).toFixed(1) }} />
               </Form.Item>
+            </Form>
+          </Card>
+        </Col>
+
+        {/* 第二排：7维权重（全宽，标签有足够空间） */}
+        <Col xs={24}>
+          <Card title={<><TrophyOutlined style={{ marginRight: 6, color: '#fa8c16' }} />贡献分数权重（7维，合计建议 ≈ 100）</>}
+            size="small" style={cardStyle} bodyStyle={{ padding: '16px 24px 16px' }}>
+            <Form form={form} layout="inline">
+              {WEIGHT_DIMENSIONS.map((dw, idx) => (
+                <Form.Item key={dw.key} label={dw.label} name={dw.key}
+                  style={{ marginBottom: 6, display: 'flex', width: '100%', alignItems: 'center' }}>
+                  <Slider style={{ flex: 1, margin: '0 8px' }} min={dw.min} max={dw.max} step={dw.step}
+                    tooltip={{ formatter: (v) => (v ?? 0).toFixed(0) }} />
+                </Form.Item>
+              ))}
             </Form>
           </Card>
         </Col>
@@ -1705,6 +1652,11 @@ function ContributorBoardSettingsPage() {
   const [modelSelectOpen, setModelSelectOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<'ai-weights' | 'ai-report' | null>(null)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  const [comprehensivePdfOpen, setComprehensivePdfOpen] = useState(false)
+  const [comprehensivePdfExporting, setComprehensivePdfExporting] = useState(false)
+  const [pdfPeriodRange, setPdfPeriodRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
+  const [pdfTopN, setPdfTopN] = useState(10)
+  const [pdfQuadrantFilter, setPdfQuadrantFilter] = useState<string>('')
 
   useEffect(() => {
     loadAll().then()
@@ -1875,6 +1827,31 @@ function ContributorBoardSettingsPage() {
       message.error('导出失败')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleExportComprehensivePdf = async () => {
+    try {
+      setComprehensivePdfExporting(true)
+      const blob = await exportComprehensivePdf({
+        period_start: pdfPeriodRange?.[0]?.format('YYYY-MM-DD') || null,
+        period_end: pdfPeriodRange?.[1]?.format('YYYY-MM-DD') || null,
+        top_n: pdfTopN,
+        quadrant_filter: pdfQuadrantFilter || null,
+      })
+      const filename = `comprehensive_report_${new Date().toISOString().slice(0, 10)}.pdf`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success('综合 PDF 报告导出成功')
+      setComprehensivePdfOpen(false)
+    } catch {
+      message.error('导出综合 PDF 失败')
+    } finally {
+      setComprehensivePdfExporting(false)
     }
   }
 
@@ -2052,7 +2029,7 @@ function ContributorBoardSettingsPage() {
           </Row>
 
             {settings && (
-             <Card title="手动调整权重" extra={<Text type="secondary" style={{ fontSize: 12 }}>* 量纲：倍数量纲，保存后系统自动归一化</Text>} size="small" style={{ marginTop: 16 }}>
+              <Card title="手动调整权重" extra={<Text type="secondary" style={{ fontSize: 12 }}>* 量纲：绝对分值（0-100 分制），所有维度建议合计≈100</Text>} size="small" style={{ marginTop: 16 }}>
                <Row gutter={[16, 16]}>
                  {WEIGHT_DIMENSIONS.map(dw => (
                    <Col span={12} key={dw.key}>
@@ -2395,10 +2372,15 @@ function ContributorBoardSettingsPage() {
                   基于多周期四象限数据，调用大模型生成团队健康度分析和决策建议
                 </div>
               </div>
-              <Button type="primary" onClick={handleGenerateAIReportClick} loading={aiReporting}
-                style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
-                生成新报告
-              </Button>
+              <Space>
+                <Button icon={<FilePdfOutlined style={{ color: '#722ed1' }} />} onClick={() => setComprehensivePdfOpen(true)}>
+                  导出综合 PDF
+                </Button>
+                <Button type="primary" onClick={handleGenerateAIReportClick} loading={aiReporting}
+                  style={{ background: 'linear-gradient(135deg, #722ed1 0%, #b745d3 100%)', border: 'none' }}>
+                  生成新报告
+                </Button>
+              </Space>
             </div>
           </Card>
 
@@ -2432,6 +2414,22 @@ function ContributorBoardSettingsPage() {
                   </Descriptions.Item>
                 </Descriptions>
 
+                {/* 风险管理 + Executive Summary */}
+                <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+                  {selectedReport.risk_level && (
+                    <Tag color={selectedReport.risk_level === 'low' ? 'green' : selectedReport.risk_level === 'medium' ? 'orange' : 'red'}
+                      style={{ fontSize: 14, padding: '4px 12px' }}>
+                      风险等级: {selectedReport.risk_level === 'low' ? '低' : selectedReport.risk_level === 'medium' ? '中' : '高'}
+                    </Tag>
+                  )}
+                  {selectedReport.confidence_overall != null && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Text type="secondary" style={{ fontSize: 13 }}>置信度</Text>
+                      <Progress percent={Math.round(selectedReport.confidence_overall * 100)} size="small" style={{ width: 80 }} />
+                    </div>
+                  )}
+                </div>
+
                 {selectedReport.executive_summary && (
                   <Alert
                     message="Executive Summary"
@@ -2442,12 +2440,71 @@ function ContributorBoardSettingsPage() {
                   />
                 )}
 
-                {selectedReport.report_content && (
-                  <Card title="完整报告内容" size="small" style={{ marginBottom: 16 }}>
-                    <MarkdownRenderer content={selectedReport.report_content} maxHeight={600} />
+                {/* 5 维结构化分析卡片 */}
+                {(() => {
+                  const dimensions: Array<{ key: string; title: string; icon: React.ReactNode; color: string; data?: AIAnalysisDimension | null }> = [
+                    { key: 'team_health', title: '团队健康度', icon: <HeartOutlined />, color: '#1890ff', data: selectedReport.team_health },
+                    { key: 'core_contributors', title: '核心贡献者', icon: <TeamOutlined />, color: '#52c41a', data: selectedReport.core_contributors },
+                    { key: 'new_contributors', title: '新晋贡献者', icon: <RocketOutlined />, color: '#722ed1', data: selectedReport.new_contributors },
+                    { key: 'improvement_areas', title: '改进方向', icon: <WarningOutlined />, color: '#faad14', data: selectedReport.improvement_areas },
+                  ]
+                  const visibleDims = dimensions.filter(d => d.data?.content)
+                  return visibleDims.length > 0 ? (
+                    <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                      {visibleDims.map(dim => (
+                        <Col xs={24} md={12} key={dim.key}>
+                          <Card size="small" style={{ height: '100%', borderTop: `3px solid ${dim.color}` }}
+                            title={<span style={{ color: dim.color }}><Space>{dim.icon}{dim.title}</Space></span>}>
+                            {dim.data!.metrics && Object.keys(dim.data!.metrics).length > 0 && (
+                              <div style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                {Object.entries(dim.data!.metrics).map(([mk, mv]) => (
+                                  <Tag key={mk} color={dim.color === '#faad14' ? 'gold' : 'blue'} style={{ borderRadius: 4 }}>
+                                    {mk}: <Text strong style={{ fontSize: 13 }}>{typeof mv === 'number' ? mv : String(mv)}</Text>
+                                  </Tag>
+                                ))}
+                              </div>
+                            )}
+                            <MarkdownRenderer content={dim.data!.content} maxHeight={200} />
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
+                  ) : null
+                })()}
+
+                {/* Top 贡献者表格 */}
+                {selectedReport.top_contributors && selectedReport.top_contributors.length > 0 && (
+                  <Card title={<span><TrophyOutlined /> Top {selectedReport.top_contributors.length} 贡献者明细</span>} size="small" style={{ marginBottom: 16 }}>
+                    <Table
+                      dataSource={selectedReport.top_contributors}
+                      rowKey="login"
+                      size="small"
+                      pagination={false}
+                      columns={[
+                        {
+                          title: '排名', width: 60,
+                          render: (_: unknown, __: AITopContributor, idx: number) => (
+                            <span style={{ fontWeight: 'bold', color: idx < 3 ? '#fa8c16' : '#999' }}>#{idx + 1}</span>
+                          ),
+                        },
+                        { title: '用户', dataIndex: 'login', width: 150, render: (v: string) => <Text strong>{v}</Text> },
+                        {
+                          title: '分数', dataIndex: 'score', width: 80,
+                          render: (v: number) => <Text strong style={{ color: v >= 70 ? '#52c41a' : v >= 40 ? '#1890ff' : '#faad14' }}>{v}</Text>,
+                        },
+                        {
+                          title: '象限', dataIndex: 'quadrant', width: 100,
+                          render: (q: string) => q ? <Tag color={quadrantColors[q]}>{quadrantLabels[q] || q}</Tag> : '-',
+                        },
+                        { title: 'PR', dataIndex: 'pr_merged', width: 60, render: (v: number | null) => v ?? '-' },
+                        { title: '提交', dataIndex: 'commit_count', width: 60, render: (v: number | null) => v ?? '-' },
+                        { title: 'AI 客观评价', dataIndex: 'evaluation', ellipsis: true },
+                      ]}
+                    />
                   </Card>
                 )}
 
+                {/* 四象限分析（兼容旧数据 / LLM 额外返回） */}
                 {selectedReport.quadrant_analysis && (() => {
                   const qa = selectedReport.quadrant_analysis as Record<string, any>
                   const rows = qa.quadrants ? Object.entries(qa.quadrants).map(([k, v]) => (
@@ -2496,6 +2553,7 @@ function ContributorBoardSettingsPage() {
                   )
                 })()}
 
+                {/* 决策建议 */}
                 {selectedReport.recommendations && selectedReport.recommendations.length > 0 && (
                   <Card title="决策建议" size="small">
                     {selectedReport.recommendations.map((rec: Record<string, any> | string, i: number) => {
@@ -2522,19 +2580,10 @@ function ContributorBoardSettingsPage() {
                   </Card>
                 )}
 
-                {selectedReport.individual_evaluations && selectedReport.individual_evaluations.length > 0 && (
-                  <Card title="个人评价" size="small" style={{ marginTop: 16 }}>
-                    <Table
-                      dataSource={selectedReport.individual_evaluations}
-                      rowKey="login"
-                      size="small"
-                      pagination={{ pageSize: 5 }}
-                      columns={[
-                        { title: '用户', dataIndex: 'login' },
-                        { title: '评分', dataIndex: 'score' },
-                        { title: '评价', dataIndex: 'evaluation', ellipsis: true },
-                      ]}
-                    />
+                {/* Markdown 完整报告正文（放在最后） */}
+                {selectedReport.report_content && (
+                  <Card title="完整报告正文" size="small" style={{ marginTop: 16 }}>
+                    <MarkdownRenderer content={selectedReport.report_content} maxHeight={800} />
                   </Card>
                 )}
               </div>
@@ -2571,6 +2620,52 @@ function ContributorBoardSettingsPage() {
               />
             )}
           </Spin>
+
+          {/* 综合 PDF 导出 Modal */}
+          <Modal
+            title={<span><FilePdfOutlined style={{ color: '#722ed1', marginRight: 6 }} />导出综合 PDF 报告</span>}
+            open={comprehensivePdfOpen}
+            onOk={handleExportComprehensivePdf}
+            confirmLoading={comprehensivePdfExporting}
+            onCancel={() => setComprehensivePdfOpen(false)}
+            okText="导出"
+            cancelText="取消"
+            width={480}
+          >
+            <div style={{ padding: '8px 0' }}>
+              <div style={{ marginBottom: 16 }}>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>时间范围（可选）</Text>
+                <DatePicker.RangePicker
+                  value={pdfPeriodRange}
+                  onChange={(range) => setPdfPeriodRange(range as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+                  style={{ width: '100%' }}
+                  placeholder={['开始日期', '结束日期']}
+                />
+                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>留空表示全量数据</div>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>Top N</Text>
+                <InputNumber
+                  value={pdfTopN}
+                  onChange={(v) => setPdfTopN(v ?? 10)}
+                  min={1}
+                  max={50}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>象限筛选（可选，逗号分隔）</Text>
+                <Input
+                  value={pdfQuadrantFilter}
+                  onChange={(e) => setPdfQuadrantFilter(e.target.value)}
+                  placeholder="如 INCENTIVE,ENCOURAGE；留空表示全部"
+                />
+                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                  可选值: INCENTIVE / ENCOURAGE / IMPROVE / REPLACE
+                </div>
+              </div>
+            </div>
+          </Modal>
         </Tabs.TabPane>
       </Tabs>
     </Spin>

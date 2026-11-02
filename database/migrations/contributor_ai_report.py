@@ -23,6 +23,20 @@ async def _table_exists(db, table: str) -> bool:
     return int(result.scalar_one()) > 0
 
 
+_COL_CHECK_SQL = """
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = :table
+      AND COLUMN_NAME = :col
+"""
+
+
+async def _column_exists(db, table: str, col: str) -> bool:
+    result = await db.execute(text(_COL_CHECK_SQL), {"table": table, "col": col})
+    return int(result.scalar_one()) > 0
+
+
 async def run() -> dict[str, int]:
     created: dict[str, int] = {}
     async with SessionLocal() as db:
@@ -46,6 +60,7 @@ async def run() -> dict[str, int]:
                         recommendations     JSON DEFAULT NULL,
                         confidence_overall  FLOAT DEFAULT NULL,
                         report_content      TEXT DEFAULT NULL,
+                        structured_analysis JSON DEFAULT NULL COMMENT '结构化5维+TopN+risk_level聚合JSON',
                         report_file_url     VARCHAR(500) DEFAULT NULL,
                         schedule_cron       VARCHAR(100) DEFAULT NULL,
                         enabled             TINYINT(1) DEFAULT 1,
@@ -64,7 +79,20 @@ async def run() -> dict[str, int]:
             except Exception as exc:
                 logger.error("Failed to create contributor_ai_reports: %s", exc)
         else:
-            logger.info("contributor_ai_reports already exists, skipping")
+            logger.info("contributor_ai_reports already exists, skipping create")
+            # 幂等加列：structured_analysis（旧库无此列时补上）
+            if not await _column_exists(db, "contributor_ai_reports", "structured_analysis"):
+                try:
+                    await db.execute(text("""
+                        ALTER TABLE contributor_ai_reports
+                        ADD COLUMN structured_analysis JSON DEFAULT NULL
+                        COMMENT '结构化5维+TopN+risk_level聚合JSON'
+                        AFTER report_content
+                    """))
+                    logger.info("Added structured_analysis column to contributor_ai_reports")
+                    created["structured_analysis_column"] = 1
+                except Exception as exc:
+                    logger.error("Failed to add structured_analysis column: %s", exc)
 
         try:
             await db.execute(text("""

@@ -44,7 +44,8 @@ __all__ = [
     "SchedulerHeartbeat",
     "NpuOccupancyRawEnv", "NpuOccupancySyncState",
     "CINpuJobFact", "CINpuQueueSnapshot", "CINpuSyncState",
-    "Contributor", "ContributorMetrics", "CommitClassification", "ErrorRecord", "ImageBuildPlan", "QuadrantSnapshot",
+    "Contributor", "ContributorProfile", "ImageBuildPlan",
+    "ContributorSyncRecord",
     "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
     "ContributorAIReport",
     "ReleaseWorkflow", "ReleaseBuildRun", "ReleaseBuildGroup",
@@ -1052,50 +1053,75 @@ class Contributor(Base):
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
-class ContributorMetrics(Base):
-    """贡献者聚合指标表"""
-    __tablename__ = "contributor_metrics"
+class ContributorProfile(Base):
+    """贡献者画像宽表 — 每贡献者一行，承载 7 维原始指标 + 综合评分 + 四层分区。
+
+    由 collector 聚合 GitHub PR/commit/file/review 数据写入，scoring_engine 计算
+    total_score 与 tier。与 contributors(身份表) 以 login 关联。
+    """
+    __tablename__ = "contributor_profiles"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
-    contributor_login = Column(String(100), nullable=False, index=True)
     repo_name = Column(String(200), nullable=True, index=True)
-    period_start = Column(Date, nullable=False)
-    period_end = Column(Date, nullable=False)
-    merged_pr_count = Column(Integer, default=0)
-    pending_pr_count = Column(Integer, default=0)
-    code_additions = Column(Integer, default=0)
-    code_deletions = Column(Integer, default=0)
+    login = Column(String(100), nullable=False, index=True)
+    contributor_id = Column(Integer, ForeignKey("contributors.id", ondelete="SET NULL"), nullable=True)
+
+    # ── 7 维原始指标 ──
+    commit_count = Column(Integer, default=0)
+    code_files = Column(Integer, default=0)
+    doc_files = Column(Integer, default=0)
+    pr_merged = Column(Integer, default=0)
+    pr_open = Column(Integer, default=0)
+    pr_closed = Column(Integer, default=0)
+    active_days_90 = Column(Integer, default=0)
+    span_days = Column(Integer, default=0)
+
+    # ── Reviewer 角色指标 ──
     review_count = Column(Integer, default=0)
     approval_count = Column(Integer, default=0)
-    merge_count = Column(Integer, default=0)
-    core_module_count = Column(Integer, default=0)
-    closed_pr_count = Column(Integer, default=0)
-    commit_count = Column(Integer, default=0)
-    contribution_score = Column(Float, default=0)
-    error_score = Column(Float, default=0)
-    quadrant = Column(String(20))
-    ci_failure_count = Column(Integer, default=0)
-    first_review_hours_avg = Column(Float, nullable=True)
-    merge_hours_avg = Column(Float, nullable=True)
-    ci_duration_hours_avg = Column(Float, nullable=True)
+    review_ratio = Column(Float, default=0.0)
+
+    # ── 评分与分区 ──
+    total_score = Column(Float, default=0.0)
+    tier = Column(String(20))
+    role = Column(String(20))
+    first_seen = Column(Date)
+    last_seen = Column(Date)
+
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
     __table_args__ = (
-        UniqueConstraint('contributor_login', 'period_start', 'period_end', name='uq_contributor_metrics_period'),
+        UniqueConstraint("login", "repo_name", name="uq_contributor_profile_login_repo"),
+        Index("idx_profile_tier", "tier"),
+        Index("idx_profile_score", "total_score"),
+        Index("idx_profile_last_seen", "last_seen"),
     )
 
-    def to_weight_dict(self) -> dict:
-        """提取自动算权所需的9个维度数据"""
+    def to_profile_dict(self) -> dict:
+        """转为 service/AI 报告使用的扁平 dict"""
         return {
-            "merged_pr_count": self.merged_pr_count or 0,
-            "code_additions": self.code_additions or 0,
+            "login": self.login,
+            "repo_name": self.repo_name,
+            "contributor_id": self.contributor_id,
+            "commit_count": self.commit_count or 0,
+            "code_files": self.code_files or 0,
+            "doc_files": self.doc_files or 0,
+            "pr_merged": self.pr_merged or 0,
+            "pr_open": self.pr_open or 0,
+            "pr_closed": self.pr_closed or 0,
+            "pr_total": (self.pr_merged or 0) + (self.pr_open or 0) + (self.pr_closed or 0),
+            "pr_merge_rate": round((self.pr_merged or 0) / max(1, (self.pr_merged or 0) + (self.pr_open or 0) + (self.pr_closed or 0)), 4),
+            "active_days_90": self.active_days_90 or 0,
+            "span_days": self.span_days or 0,
             "review_count": self.review_count or 0,
             "approval_count": self.approval_count or 0,
-            "core_module_count": self.core_module_count or 0,
-            "files_changed_count": self.files_changed_count if hasattr(self, "files_changed_count") else 0,
-            "commit_count": self.commit_count or 0,
+            "review_ratio": self.review_ratio or 0.0,
+            "total_score": self.total_score or 0.0,
+            "tier": self.tier,
+            "role": self.role,
+            "first_seen": str(self.first_seen) if self.first_seen else None,
+            "last_seen": str(self.last_seen) if self.last_seen else None,
         }
 
 
@@ -1109,43 +1135,6 @@ class ContributorBoardSettings(Base):
     description = Column(String(500), nullable=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
-
-
-class CommitClassification(Base):
-    """提交分类记录表"""
-    __tablename__ = "commit_classifications"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    commit_sha = Column(String(40), nullable=False, unique=True, index=True)
-    commit_message = Column(Text)
-    commit_type = Column(String(20), nullable=False, index=True)
-    confidence = Column(Float, default=1.0)
-    modules_touched = Column(JSON)
-    files_changed_count = Column(Integer, default=0)
-    is_chip_specific = Column(Boolean, default=False)
-    chip_target = Column(String(50))
-    contributor_login = Column(String(100), index=True)
-    pr_number = Column(Integer, index=True)
-    repo_name = Column(String(200), nullable=True, index=True)
-    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
-
-
-class ErrorRecord(Base):
-    """出错记录表"""
-    __tablename__ = "error_records"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    contributor_login = Column(String(100), nullable=False, index=True)
-    error_type = Column(String(50), nullable=False, index=True)
-    related_pr_number = Column(Integer, index=True)
-    related_commit_sha = Column(String(40))
-    revert_count = Column(Integer, default=0)
-    bugfix_linked_count = Column(Integer, default=0)
-    ci_failure_count = Column(Integer, default=0)
-    nightly_failure_count = Column(Integer, default=0)
-    weight_score = Column(Float, default=0)
-    description = Column(Text)
-    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 
 class ImageBuildPlan(Base):
@@ -1166,25 +1155,6 @@ class ImageBuildPlan(Base):
     files_changed = Column(JSON)
     repo_name = Column(String(200), nullable=True, index=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
-
-
-class QuadrantSnapshot(Base):
-    """四象限历史快照表"""
-    __tablename__ = "quadrant_snapshots"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    contributor_id = Column(Integer, ForeignKey("contributors.id"), nullable=False, index=True)
-    contributor_login = Column(String(100), nullable=False, index=True)
-    snapshot_date = Column(Date, nullable=False, index=True)
-    quadrant = Column(String(20), nullable=False)
-    contribution_score = Column(Float, default=0)
-    error_score = Column(Float, default=0)
-    meta = Column(JSON)
-    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
-
-    __table_args__ = (
-        UniqueConstraint('contributor_login', 'snapshot_date', name='uq_quadrant_snapshot_date'),
-    )
 
 
 class ContributorSyncRecord(Base):
@@ -1305,6 +1275,10 @@ class ContributorAIReport(Base):
     recommendations = Column(JSON, nullable=True)
     confidence_overall = Column(Float, nullable=True)
     report_content = Column(Text, nullable=True)
+    # 结构化 5 维 + Top N + risk_level 的聚合 JSON，避免多次加列 migration
+    # 形如 {"team_health": {...}, "core_contributors": {...}, "new_contributors": {...},
+    #       "improvement_areas": {...}, "top_contributors": [...], "risk_level": "..."}
+    structured_analysis = Column(JSON, nullable=True)
     report_file_url = Column(String(500), nullable=True)
     schedule_cron = Column(String(100), nullable=True)
     enabled = Column(Boolean, default=True)

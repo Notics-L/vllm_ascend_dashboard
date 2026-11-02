@@ -1,6 +1,9 @@
 """AI 辅助权重分析引擎
 
 向 LLM 发送贡献指标的数据分布摘要，获取权重建议和推理过程。
+
+权重维度与 scoring_engine.calculate_score 的 7 维严格对齐
+（见 scoring_engine.DEFAULT_WEIGHTS），确保 AI 返回的权重能直接用于算分。
 """
 from __future__ import annotations
 
@@ -8,22 +11,22 @@ import json
 import logging
 from typing import Any
 
-from contributor_board.auto_weight_engine import DIMENSIONS, DimensionRegistry
+from contributor_board.scoring_engine import DEFAULT_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
-# 维度名称到人类可读标签的映射
+# 7 维度键 → 人类可读标签（与 scoring_engine.DEFAULT_WEIGHTS 键一致）
 _DIMENSION_LABELS: dict[str, str] = {
-    "merged_pr_weight": "PR 合并数",
-    "code_line_weight": "代码行数",
-    "review_weight": "Code Review 次数",
-    "approval_weight": "Code Approval 次数",
-    "core_module_weight": "核心模块贡献",
-    "files_changed_weight": "变更文件数",
-    "bugfix_weight": "Bug 修复数",
-    "feature_weight": "新功能开发",
-    "active_duration_weight": "活跃持续时间",
+    "commit_count": "提交数",
+    "code_files": "代码文件变更数",
+    "doc_files": "文档文件变更数",
+    "pr_merged_rate": "PR 合并率",
+    "pr_total": "PR 总量",
+    "active_days_90": "近90天活跃天数",
+    "span_days": "贡献持续期(天)",
 }
+
+DEFAULT_TOTAL = 100.0  # 权重合计基准（calculate_score 期望合计 100）
 
 
 # ── Prompt 构造 ──────────────────────────────────────────────
@@ -35,16 +38,18 @@ def _build_prompt(data_summary: dict[str, Any]) -> str:
 
     输入为 data_summary（来自 auto_weight_engine._build_data_summary），
     包含每个维度的 mean / std / min / max / skewness 统计。
+
+    要求 LLM 返回 7 个固定维度键的权重，合计 100（与 scoring_engine 一致）。
     """
     metrics = data_summary.get("metrics", {})
     contributor_count = data_summary.get("contributor_count", 0)
 
-    # 只输出有数据统计的维度
-    available_dims = [d for d in DIMENSIONS if d in metrics]
+    # 只输出有数据统计的维度（7 个固定 key）
+    available_dims = [k for k in _DIMENSION_LABELS if k in metrics]
 
     lines = [
-        "你是一个开源项目贡献评估专家。你的任务是分析以下贡献指标的数据分布，",
-        "为每个维度分配合适的权重系数，使最终的综合贡献分数能公平反映贡献者的实际价值。",
+        "你是一个开源项目贡献评估专家。你的任务是分析以下 7 个贡献指标的数据分布，",
+        "为每个维度分配权重分数（0~100 之间的整数或一位小数），使最终的综合贡献分数能公平反映贡献者的实际价值。",
         "",
         f"项目共有 {contributor_count} 位贡献者。以下各指标的描述和统计数据：",
         "",
@@ -60,15 +65,16 @@ def _build_prompt(data_summary: dict[str, Any]) -> str:
         lines.append("")
 
     lines.extend([
-        "请根据以下原则进行分析：",
+        "请根据以下原则进行权重分配：",
         "1. 离散程度（标准差 / 均值）高的指标区分度好，应赋予更高权重",
         "2. 偏度大的指标说明少数人贡献极高，需注意合理性",
-        "3. 最大值为 0 的指标无区分度，权重应为 0",
-        "4. 所有权重非负，总和为 1",
+        "3. 最大值为 0 的指标无区分度，权重应设为 0 或极低值",
+        "4. 所有权重非负，且 7 个维度的权重之和必须恰好等于 100",
+        f"当前参考默认权重（供你比较）: {json.dumps({k: float(v) for k, v in DEFAULT_WEIGHTS.items()}, ensure_ascii=False)}",
         "",
-        "请以 JSON 格式回答（不要包含任何其他内容），格式如下：",
-        '{',
-        '  "weights": {"merged_pr_weight": 0.xx, ...},',
+        "请以 JSON 格式回答（不要包含任何其他内容、不要 markdown 代码块），格式如下：",
+        "{",
+        '  "weights": {"commit_count": xx, "code_files": xx, "doc_files": xx, "pr_merged_rate": xx, "pr_total": xx, "active_days_90": xx, "span_days": xx},',
         '  "analysis": "简要分析你的权重分配依据（200 字以内）"',
         "}",
     ])
@@ -143,15 +149,21 @@ def _parse_llm_response(text: str) -> tuple[dict[str, float], str]:
     weights_raw = parsed.get("weights", {})
     analysis = parsed.get("analysis", "")
 
-    # 标准化权重：只保留已注册维度，值转为 float
-    weights = {}
-    for dim in DIMENSIONS:
+    # 标准化：只保留 7 个固定维度键，取值 clamp 到非负
+    weights: dict[str, float] = {}
+    for dim in _DIMENSION_LABELS:
         val = weights_raw.get(dim, 0)
         try:
-            weights[dim] = round(float(val), 4)
+            weights[dim] = max(0.0, float(val))
         except (TypeError, ValueError):
             weights[dim] = 0.0
 
+    # 归一化到合计 100（calculate_score 期望权重合计 100）
+    total = sum(weights.values())
+    if total < 1e-9:
+        logger.warning("AI 返回的权重全为 0，回退到默认权重")
+        return dict(DEFAULT_WEIGHTS), analysis or "LLM 未返回有效权重，使用默认权重"
+    weights = {k: round(v / total * DEFAULT_TOTAL, 2) for k, v in weights.items()}
     return weights, analysis or "LLM 未提供分析说明"
 
 
