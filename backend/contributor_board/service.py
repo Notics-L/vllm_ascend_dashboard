@@ -680,10 +680,38 @@ class ContributorBoardService:
         return {"recalculated": count}
 
     async def get_repo_list(self, db) -> list[str]:
+        """获取仓库列表：合并宽表已有数据 + 同步配置中的仓库，确保空库时也能展示。"""
+        repos: set[str] = set()
+
         rows = (await db.execute(
             select(ContributorProfile.repo_name).where(ContributorProfile.repo_name.isnot(None)).distinct()
         )).scalars().all()
-        return sorted([r for r in rows if r])
+        repos.update(r for r in rows if r)
+
+        for owner, repo in self._configured_repos():
+            repo_key = f"{owner}/{repo}"
+            if repo_key not in repos:
+                repos.add(repo_key)
+
+        return sorted(repos)
+
+    @staticmethod
+    def _configured_repos() -> list[tuple[str, str]]:
+        """从环境配置读取已配置的仓库列表。"""
+        from infrastructure.core.config import settings
+
+        repos_cfg = getattr(settings, "CONTRIBUTOR_REPOS", "").strip()
+        if repos_cfg:
+            parsed: list[tuple[str, str]] = []
+            for entry in repos_cfg.split(","):
+                entry = entry.strip()
+                if "/" not in entry:
+                    continue
+                parts = entry.split("/", 1)
+                parsed.append((parts[0].strip(), parts[1].strip()))
+            if parsed:
+                return parsed
+        return [(settings.GITHUB_OWNER, settings.GITHUB_REPO)]
 
     # ══════════════════════════ 同步定时设置 ══════════════════════════
 
