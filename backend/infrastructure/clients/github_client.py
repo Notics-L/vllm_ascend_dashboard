@@ -52,6 +52,10 @@ class GitHubClient:
     RETRY_DELAY = 1.0  # 秒
     RETRY_BACKOFF = 2.0  # 指数退避因子
 
+    # 速率限制等待配置：等待到 X-RateLimit-Reset 后继续，避免全量同步中途被限流打断
+    RATE_LIMIT_MAX_WAIT_PER_LOOP = 3700  # 单次等待上限（秒），略小于重置窗口 1h，防止异常挂死
+    RATE_LIMIT_WAIT_LOOPS = 2  # 最多续等次数（累计上限 2 个重置窗口）
+
     def __init__(self, token: str, owner: str | None = None, repo: str | None = None):
         """
         初始化 GitHub 客户端
@@ -118,12 +122,13 @@ class GitHubClient:
 
         while retry_count < self.MAX_RETRIES:
             try:
-                # 检查速率限制（在每次请求前）
+                # 检查速率限制（在每次请求前）：未触顶则等待到复位再发
                 if self.rate_limit_remaining < self.RATE_LIMIT_THRESHOLD:
                     if self.rate_limit_reset and datetime.now(UTC) < self.rate_limit_reset:
-                        raise GitHubRateLimitError(
-                            f"GitHub API rate limit exceeded. Resets at {self.rate_limit_reset}"
-                        )
+                        if not await self._wait_for_rate_limit_reset():
+                            raise GitHubRateLimitError(
+                                f"GitHub API rate limit exceeded. Resets at {self.rate_limit_reset}"
+                            )
                     else:
                         # rate_limit_reset 已过期，重置计数器允许请求继续
                         logger.info(f"Rate limit reset time has passed, resetting rate_limit_remaining from {self.rate_limit_remaining} to 5000")
@@ -145,19 +150,20 @@ class GitHubClient:
                     # 检查是否是速率限制
                     remaining = response.headers.get("X-RateLimit-Remaining")
                     if remaining == "0":
-                        reset_timestamp = response.headers.get("X-RateLimit-Reset")
-                        if reset_timestamp:
-                            try:
-                                reset_time = datetime.fromtimestamp(
-                                    int(reset_timestamp), tz=UTC
-                                )
-                                raise GitHubRateLimitError(
-                                    f"GitHub API rate limit exceeded. Resets at {reset_time}"
-                                )
-                            except (ValueError, TypeError):
-                                # 无法解析时间戳，使用默认消息
-                                raise GitHubRateLimitError("GitHub API rate limit exceeded")
-                        raise GitHubRateLimitError("GitHub API rate limit exceeded")
+                        # 触顶：等待到复位后重试本次请求
+                        if response.headers.get("X-RateLimit-Reset"):
+                            self.rate_limit_reset = datetime.fromtimestamp(
+                                int(response.headers["X-RateLimit-Reset"]), tz=UTC
+                            )
+                        if not await self._wait_for_rate_limit_reset():
+                            raise GitHubRateLimitError(
+                                f"GitHub API rate limit exceeded. Resets at {self.rate_limit_reset}"
+                            )
+                        # 403 限流触顶后：等待复位并重新发送本次请求
+                        # 重试计数不计增加，避免占用 MAX_RETRIES 配额
+                        retry_count = max(0, retry_count - 1)
+                        self.rate_wait_loops = 0
+                        continue
 
                 if response.status_code == httpx.codes.UNAUTHORIZED:
                     raise GitHubAuthenticationError(
@@ -203,6 +209,50 @@ class GitHubClient:
         if last_error:
             error_msg += f": {last_error}"
         raise GitHubAPIError(error_msg)
+
+    async def _wait_for_rate_limit_reset(self) -> bool:
+        """
+        遇到 / 预判速率限制时，等待到 X-RateLimit-Reset 再继续。
+
+        等待成功后：重置 rate_limit_remaining 允许后续请求继续，并清零 retry_count
+        （通过外层 while 的 rate_wait_count 控制总等待次数）。
+
+        Returns:
+            True  等待完成、可继续发请求
+            False 已续等超过上限（RATE_LIMIT_WAIT_LOOPS）仍有限制，调用方应抛出
+                  GitHubRateLimitError 让上层优雅停止（保留部分数据，避免反复 sleep）
+        """
+        now = datetime.now(UTC)
+        if self.rate_limit_reset is None or now >= self.rate_limit_reset:
+            # 已无需等待
+            self.rate_limit_remaining = 5000
+            self.rate_limit_reset = None
+            return True
+
+        if self.rate_wait_loops >= self.RATE_LIMIT_WAIT_LOOPS:
+            # 已累计等待过多窗口，放弃以避免长时间挂起
+            logger.warning(
+                "Rate limit wait exceeded %d windows; giving up gracefully",
+                self.RATE_LIMIT_WAIT_LOOPS,
+            )
+            return False
+
+        wait_secs = (self.rate_limit_reset - now).total_seconds()
+        # 单次等待夹在 (0, RATE_LIMIT_MAX_WAIT_PER_LOOP]，避免异常 reset 时间导致死等
+        wait_secs = max(1.0, min(wait_secs, self.RATE_LIMIT_MAX_WAIT_PER_LOOP))
+        logger.info(
+            "GitHub rate limit hit; waiting %.1fs until %s then retrying "
+            "(wait window %d/%d)",
+            wait_secs, self.rate_limit_reset.isoformat(),
+            self.rate_wait_loops + 1, self.RATE_LIMIT_WAIT_LOOPS,
+        )
+        self.rate_wait_loops += 1
+        await asyncio.sleep(wait_secs)
+
+        # 等待结束：重置配额，允许后续请求
+        self.rate_limit_remaining = 5000
+        self.rate_limit_reset = None
+        return True
 
     def _update_rate_limit(self, response: httpx.Response) -> None:
         """更新速率限制信息"""

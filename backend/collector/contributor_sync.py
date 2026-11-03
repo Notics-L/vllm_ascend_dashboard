@@ -130,6 +130,7 @@ class ContributorSyncCollector:
         self,
         since: datetime | None = None,
         until: datetime | None = None,
+        commit_profiles: bool = True,
     ) -> SyncResult:
         start_time = datetime.now(UTC)
         result = SyncResult()
@@ -158,6 +159,7 @@ class ContributorSyncCollector:
                 await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
 
             total = len(prs)
+            interrupted = False
             for idx, pr in enumerate(prs, 1):
                 pr_number = pr.get("number")
                 if pr_number is None:
@@ -169,8 +171,10 @@ class ContributorSyncCollector:
                 try:
                     await self._process_pr(pr, pr_number, profiles, pr_numbers_seen, result)
                 except GitHubRateLimitError as e:
-                    logger.error("Rate limit at PR #%s, stopping: %s", pr_number, e)
+                    # 限流（客户端层已尝试等待复位，仍失败）：标记为中断，保留旧数据
+                    logger.error("Rate limited at PR #%s, aborting rebuild to preserve data: %s", pr_number, e)
                     result.errors.append(f"Rate limit at PR #{pr_number}: {e}")
+                    interrupted = True
                     break
                 except GitHubAPIError as e:
                     logger.error("API error PR #%s: %s", pr_number, e)
@@ -184,8 +188,24 @@ class ContributorSyncCollector:
                         pass
                     continue
 
-            # 全量重建：先清空本仓库画像，再写入最新聚合
-            await self._rebuild_profiles(profiles, result)
+            if interrupted:
+                # 关键修复：中途被限流打断 → 回滚事务，绝不清空/只写一半
+                # 保留上一份完整画像，反复同步时表现为幂等更新而非数据丢失
+                logger.warning("Sync interrupted, rolling back to preserve existing contributor data")
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+                if self.progress_callback:
+                    await self.progress_callback(99, "Rate limited - aborted to preserve existing data, please re-trigger")
+                result.contributors_synced = 0
+                result.errors.append("ABORTED: aborted before writing any data to preserve existing state")
+                # 跳到统一的收尾逻辑（计算 duration + synced_at）
+                pass
+            else:
+                # 全量重建：在同一事务内清空并写入，commit 才一次性生效（原子化）
+                # commit_profiles=False 时，由调用方统一 commit（便于外层原子控制）
+                await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
 
         except Exception as e:
             logger.error("Contributor sync failed: %s", e, exc_info=True)
@@ -473,6 +493,8 @@ class ContributorSyncCollector:
         self,
         profiles: dict[str, dict[str, Any]],
         result: SyncResult,
+        *,
+        commit_on_success: bool = True,
     ) -> None:
         now = datetime.now(UTC)
         active_cutoff = (now - timedelta(days=90)).date()
@@ -563,9 +585,13 @@ class ContributorSyncCollector:
             self.db.add(profile_row)
             created += 1
 
-        await self.db.commit()
+        if commit_on_success:
+            await self.db.commit()
         result.contributors_synced = created
-        logger.info("Rebuilt contributor_profiles: %d rows for %s", created, self.repo_name)
+        logger.info(
+            "Rebuilt contributor_profiles: %d rows for %s (commit=%s)",
+            created, self.repo_name, commit_on_success,
+        )
 
     # ── 私有方法：Build Plan（保留）────────────────────────────────
 
@@ -734,7 +760,17 @@ async def sync_contributors(
                             global_pct = min(95, int(repo_base_pct + (pct / 100) * repo_pct_range))
                             await progress_callback(global_pct, f"[{repo_key}] {msg}")
                     collector = ContributorSyncCollector(github_client, db, progress_callback=repo_progress)
-                    result = await collector.collect(since=since_date, until=until_date)
+                    # collect 不再自己提交，由外层统一 commit，实现 Build Plan + 画像原子化
+                    result = await collector.collect(since=since_date, until=until_date, commit_profiles=False)
+                    if result.errors and not result.contributors_synced:
+                        # 被中断/完全失败：直接回滚，保留上一份数据
+                        logger.warning("Sync aborted for %s (no profiles synced), rolling back repo data", f"{owner}/{repo}")
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                    else:
+                        await db.commit()
         except Exception as e:
             logger.error("Sync failed for repo %s: %s", repo_key, e, exc_info=True)
             result = SyncResult(errors=[f"Repo {repo_key}: {e}"])
