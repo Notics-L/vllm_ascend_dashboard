@@ -295,12 +295,19 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
     await db.flush()
     logger.info("  contributor_board: %d profiles, role_types updated for %d", profile_count, len(_CB_CONTRIBUTORS))
 
-    # 3) BuildPlans
+    # 3) BuildPlans — (pr_number, repo_name) 有唯一约束，先查已有 pr 号避免重复
     bp_count = 0
+    existing_qr = await db.execute(
+        select(ImageBuildPlan.pr_number).where(
+            ImageBuildPlan.repo_name == "vllm-project/vllm-ascend"
+        )
+    )
+    used_pr_numbers: set[int] = {r[0] for r in existing_qr.fetchall()}
+    next_pr = max(used_pr_numbers, default=0) + 1
     for c_info in _CB_CONTRIBUTORS:
         for _ in range(random.randint(3, 8)):
             db.add(ImageBuildPlan(
-                pr_number=random.randint(1, 500),
+                pr_number=next_pr,
                 commit_sha=_cb_generate_sha(),
                 commit_type=random.choice(_CB_COMMIT_TYPES),
                 build_type=random.choices(_CB_BUILD_TYPES, weights=_CB_BUILD_WEIGHTS, k=1)[0],
@@ -312,6 +319,7 @@ async def seed_contributor_board(db: Any, now: datetime) -> None:
                 repo_name='vllm-project/vllm-ascend',
                 created_at=now - timedelta(days=random.randint(1, 180)),
             ))
+            next_pr += 1
             bp_count += 1
     logger.info("  contributor_board: %d build plans", bp_count)
 
