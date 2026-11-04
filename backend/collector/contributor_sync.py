@@ -370,9 +370,16 @@ class ContributorSyncCollector:
                         author_profile["first_review_hours"] = min(author_profile["first_review_hours"], hours)
 
         # ── 构建计划（保留）──
-        await self._create_build_plan_from_pr(
-            pr, pr_number, commit_shas, commit_types, sorted(code_paths | doc_paths), result
-        )
+        # Build Plan 失败不应影响画像聚合：若让它冒泡到 collect 的 except 分支，
+        # 会触发共享 session 的 db.rollback()，连带撤销未提交的 DELETE/画像，
+        # 导致后续 INSERT 撞上残留行报 1062。这里就地捕获并记录。
+        try:
+            await self._create_build_plan_from_pr(
+                pr, pr_number, commit_shas, commit_types, sorted(code_paths | doc_paths), result
+            )
+        except Exception as e:
+            logger.warning("build plan PR #%s skipped: %s", pr_number, e)
+            result.errors.append(f"build plan PR #{pr_number}: {e}")
 
     # ── 私有方法：画像聚合 ─────────────────────────────────────────
 
@@ -431,61 +438,74 @@ class ContributorSyncCollector:
         user_info: dict[str, Any] | None,
         email: str,
     ) -> Contributor | None:
+        """幂等 upsert：在独立事务中查询/创建 Contributor，避免污染主 session。
+
+        使用独立 AsyncSession 做 contributor 的 SELECT+INSERT+COMMIT，
+        与主 session（负责 build plan + profile 写入）完全隔离。
+        即使 contributor 表出现 1062，也只影响独立 session，
+        绝不触发主 session 的 rollback。
+        """
         user_info = user_info or {}
         github_id = user_info.get("id")
         name = user_info.get("name", "")
         avatar_url = user_info.get("avatar_url", "")
         employee_id = self._extract_employee_id(user_info, email)
+        actual_github_id = github_id if github_id and github_id != 0 else hash(login) % (2**32)
 
-        if github_id is not None:
-            stmt = select(Contributor).where(Contributor.github_id == github_id)
-        else:
-            stmt = select(Contributor).where(Contributor.login == login)
-        result = await self.db.execute(stmt)
-        existing = result.scalar_one_or_none()
+        async with AsyncSessionLocal() as cdb:
+            try:
+                if github_id is not None:
+                    stmt = select(Contributor).where(Contributor.github_id == github_id)
+                else:
+                    stmt = select(Contributor).where(Contributor.login == login)
+                result = await cdb.execute(stmt)
+                existing = result.scalars().first()
 
-        if existing:
-            if name:
-                existing.name = name
-            if avatar_url:
-                existing.avatar_url = avatar_url or existing.avatar_url
-            if email:
-                existing.email = email
-            if employee_id:
-                existing.employee_id = employee_id
-            existing.updated_at = datetime.now(UTC)
-            return existing
-
-        is_community = not bool(employee_id)
-        try:
-            actual_github_id = github_id if github_id and github_id != 0 else hash(login) % (2**32)
-            new_c = Contributor(
-                github_id=actual_github_id,
-                login=login,
-                avatar_url=avatar_url or None,
-                email=email or None,
-                name=name or None,
-                is_community=is_community,
-                role_types=[],
-                company=(user_info.get("company") or None),
-                employee_id=employee_id,
-            )
-            self.db.add(new_c)
-            await self.db.flush()
-            return new_c
-        except Exception as e:
-            if "Duplicate entry" in str(e) or "1062" in str(e):
-                await self.db.rollback()
-                lookup = select(Contributor).where(Contributor.login == login)
-                r = await self.db.execute(lookup)
-                existing = r.scalar_one_or_none()
                 if existing:
-                    existing.name = name or existing.name
-                    existing.avatar_url = avatar_url or existing.avatar_url
+                    if name:
+                        existing.name = name
+                    if avatar_url:
+                        existing.avatar_url = avatar_url or existing.avatar_url
                     if email:
                         existing.email = email
+                    if employee_id:
+                        existing.employee_id = employee_id
+                    existing.updated_at = datetime.now(UTC)
+                    await cdb.commit()
                     return existing
-            raise
+
+                is_community = not bool(employee_id)
+                new_c = Contributor(
+                    github_id=actual_github_id,
+                    login=login,
+                    avatar_url=avatar_url or None,
+                    email=email or None,
+                    name=name or None,
+                    is_community=is_community,
+                    role_types=[],
+                    company=(user_info.get("company") or None),
+                    employee_id=employee_id,
+                )
+                cdb.add(new_c)
+                await cdb.commit()
+                await cdb.refresh(new_c)
+                return new_c
+            except Exception:
+                await cdb.rollback()
+                # 1062 兜底：按 login 重新查询（不触发主 session rollback）
+                lookup = select(Contributor).where(Contributor.login == login)
+                r = await cdb.execute(lookup)
+                existing = r.scalars().first()
+                if existing:
+                    if name:
+                        existing.name = name
+                    if avatar_url:
+                        existing.avatar_url = avatar_url or existing.avatar_url
+                    if email:
+                        existing.email = email
+                    await cdb.commit()
+                    return existing
+                raise
 
     # ── 私有方法：全量重建画像表 ───────────────────────────────────
 
@@ -647,9 +667,17 @@ class ContributorSyncCollector:
         )
         unique_commit_type = commit_types[0] if commit_types else "Misc"
 
-        stmt = select(ImageBuildPlan).where(ImageBuildPlan.pr_number == pr_number)
+        # 按 (pr_number, repo_name) 精确匹配；历史数据中同一 pr_number 可能因
+        # 多 repo 口径/多次同步堆积多行，故取 id 最大的最新一行作为 upsert 目标，
+        # 避免 scalar_one_or_none() 在多行时抛 "Multiple rows were found"。
+        stmt = (
+            select(ImageBuildPlan)
+            .where(ImageBuildPlan.pr_number == pr_number)
+            .where(ImageBuildPlan.repo_name == self.repo_name)
+            .order_by(ImageBuildPlan.id.desc())
+        )
         qr = await self.db.execute(stmt)
-        existing = qr.scalar_one_or_none()
+        existing = qr.scalars().first()
 
         if existing:
             existing.commit_sha = commit_shas[0] if commit_shas else ""

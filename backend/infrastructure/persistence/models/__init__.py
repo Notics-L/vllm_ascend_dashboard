@@ -1138,7 +1138,7 @@ class ContributorBoardSettings(Base):
 
 
 class ImageBuildPlan(Base):
-    """镜像构建计划记录表"""
+    """镜像构建计划记录表（每 pr_number + repo_name 一行）"""
     __tablename__ = "image_build_plans"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -1155,6 +1155,10 @@ class ImageBuildPlan(Base):
     files_changed = Column(JSON)
     repo_name = Column(String(200), nullable=True, index=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint("pr_number", "repo_name", name="uq_build_plan_pr_repo"),
+    )
 
 
 class ContributorSyncRecord(Base):
