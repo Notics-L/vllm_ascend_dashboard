@@ -904,6 +904,17 @@ class ContributorBoardService:
             )).scalars().first()
         )
 
+        # 批量拉取窗口内该贡献者的所有 DailyPR（一次查询替代 90+ 次）
+        pr_stmt_all = (
+            select(DailyPR.data_date, func.count(DailyPR.id))
+            .where(DailyPR.author == login)
+            .where(DailyPR.data_date >= ws)
+            .where(DailyPR.data_date <= we)
+            .group_by(DailyPR.data_date)
+        )
+        pr_rows = (await db.execute(pr_stmt_all)).all()
+        pr_by_day: dict[date, int] = {r[0]: int(r[1]) for r in pr_rows if r[0] is not None}
+
         # 生成连续日期序列
         all_days = [(ws + timedelta(days=i)) for i in range((we - ws).days + 1)]
 
@@ -923,13 +934,7 @@ class ContributorBoardService:
             today_commits = len(day_commits)
             today_add = sum(c.additions or 0 for c in day_commits)
             today_del = sum(c.deletions or 0 for c in day_commits)
-
-            # merged PR 数：该贡献者当天创建的 PR（按 DailyPR.created_at 日期）
-            pr_stmt = select(func.count(DailyPR.id)).where(
-                DailyPR.author == login,
-                DailyPR.data_date == d,
-            )
-            today_pr = int((await db.execute(pr_stmt)).scalar_one() or 0)
+            today_pr = pr_by_day.get(d, 0)
 
             commit_points.append(CommitTrendPoint(
                 date=d.isoformat(),

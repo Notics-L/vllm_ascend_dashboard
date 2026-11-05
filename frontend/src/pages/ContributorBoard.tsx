@@ -2706,14 +2706,20 @@ function ContributorDetailPage() {
     if (!login) return
     setLoading(true)
     try {
-      const [detailData, policyData, trendData] = await Promise.all([
+      const [detailData, policyData, trendData, heatmapData, distData, timelineData] = await Promise.all([
         getContributorDetail(login, 30).catch(() => null),
         getContributorPolicy(login).catch(() => null),
         getExtendedTrend(login).catch(() => null),
+        getContributorHeatmap(login).catch(() => null),
+        getContributorDistribution(login).catch(() => null),
+        getContributorTimeline(login).catch(() => null),
       ])
       setDetail(detailData)
       setPolicy(policyData)
       setTrend(trendData)
+      if (heatmapData) setHeatmap(heatmapData)
+      if (distData) setDistribution(distData)
+      if (timelineData) setTimeline(timelineData)
     } catch {
       message.error('加载贡献者详情失败')
     } finally {
@@ -3069,14 +3075,14 @@ function ContributorDetailPage() {
       {/* ===== 贡献活动热力图 ===== */}
       <Card
         title="贡献活动热力图"
-        extra={<Button size="small" onClick={loadHeatmap} loading={heatmapLoading}>加载热力图</Button>}
+        extra={<Button size="small" onClick={loadHeatmap} loading={heatmapLoading}>刷新</Button>}
         style={{ marginTop: 16 }}
       >
         <div style={{ height: 260 }}>
           {heatmap?.heatmap_data && heatmap.heatmap_data.length > 0 ? (
             <ContributorHeatmapChart data={heatmap.heatmap_data} />
           ) : (
-            <Empty description="暂无热力图数据，请点击右上角加载" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description="暂无热力图数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
         </div>
       </Card>
@@ -3086,7 +3092,7 @@ function ContributorDetailPage() {
         <Col span={12}>
           <Card
             title="模块贡献分布"
-            extra={<Button size="small" onClick={loadDistribution} loading={distLoading}>加载分布</Button>}
+            extra={<Button size="small" onClick={loadDistribution} loading={distLoading}>刷新</Button>}
           >
             <div style={{ height: 350 }}>
               {distribution?.modules && distribution.modules.length > 0 ? (
@@ -3119,7 +3125,7 @@ function ContributorDetailPage() {
       {/* ===== 贡献时间线 ===== */}
       <Card
         title="最近提交活动 (Timeline)"
-        extra={<Button size="small" onClick={loadTimeline} loading={timelineLoading}>加载时间线</Button>}
+        extra={<Button size="small" onClick={loadTimeline} loading={timelineLoading}>刷新</Button>}
         style={{ marginTop: 16 }}
       >
         {timeline?.commits && timeline.commits.length > 0 ? (
