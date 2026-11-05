@@ -1052,18 +1052,19 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
             <Button type={roleType === 'reviewer' ? 'primary' : 'default'} onClick={() => { setRoleType('reviewer'); setPagination(p => ({ ...p, current: 1 })) }}>评审人排行</Button>
             <Divider type="vertical" />
             <span style={{ fontSize: 13, color: '#8c8c8c' }}>时间范围:</span>
-            <Select
-              value={rankingDays}
-              onChange={(v) => { setRankingDays(v); setPagination(p => ({ ...p, current: 1 })) }}
-              style={{ width: 110 }}
-              options={[
-                { value: 7, label: '近 7 天' },
-                { value: 30, label: '近 30 天' },
-                { value: 90, label: '近 90 天' },
-                { value: 180, label: '近 180 天' },
-                { value: 365, label: '近 365 天' },
-              ]}
-            />
+                <Select
+                  value={rankingDays}
+                  onChange={(v) => setRankingDays(v)}
+                  style={{ width: 120 }}
+                  options={[
+                    { label: '近 7 天', value: 7 },
+                    { label: '近 30 天', value: 30 },
+                    { label: '近 60 天', value: 60 },
+                    { label: '近 90 天', value: 90 },
+                    { label: '近 180 天', value: 180 },
+                    { label: '近 365 天', value: 365 },
+                  ]}
+                />
             <Divider type="vertical" />
             <span style={{ fontSize: 13, color: '#8c8c8c' }}>象限筛选:</span>
             <Button type={!quadrantFilter ? 'primary' : 'default'} onClick={() => { setQuadrantFilter(''); setPagination(p => ({ ...p, current: 1 })) }}>全部</Button>

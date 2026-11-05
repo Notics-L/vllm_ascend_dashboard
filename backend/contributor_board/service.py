@@ -17,12 +17,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from contributor_board.classifier import classify_commit
 from contributor_board.quadrant_engine import calculate_quadrants
-from contributor_board.scoring_engine import get_default_weights, recalculate_all_scores
+from contributor_board.scoring_engine import (
+    assign_tier,
+    calculate_score,
+    get_default_weights,
+    recalculate_all_scores,
+)
 from contracts.schemas.contributor_board import (
     BuildOptimizationStats,
     BuildPlanListResponse,
@@ -57,9 +62,11 @@ from infrastructure.persistence.models import (
     ContributorBoardSettings,
     ContributorProfile,
     ContributorSyncRecord,
+    DailyCommit,
+    DailyPR,
     ImageBuildPlan,
 )
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 logger = logging.getLogger(__name__)
 
@@ -172,23 +179,72 @@ class ContributorBoardService:
         y_axis_type: str | None = None,
         days: int = 30,
     ) -> ContributorRankingResponse:
-        base = select(ContributorProfile).where(ContributorProfile.role != "reviewer" if role_type == "author"
-                                                  else ContributorProfile.role == "reviewer" if role_type == "reviewer"
-                                                  else ContributorProfile.role.isnot(None))
+        base = select(ContributorProfile)
         if role_type == "author":
-            base = base.where(ContributorProfile.role != "reviewer")
+            # 贡献者榜单：排除"纯 reviewer"（role='reviewer' 且无任何作者 PR）。
+            # 多身份贡献者（role 被标成 reviewer 但 pr_merged/pr_open/pr_closed>0，
+            # 如 wangxiyuan）需同时出现在贡献者榜单，否则开发者侧搜不到。
+            base = base.where(
+                or_(
+                    ContributorProfile.role != "reviewer",
+                    ContributorProfile.pr_merged > 0,
+                    ContributorProfile.pr_open > 0,
+                    ContributorProfile.pr_closed > 0,
+                )
+            )
         elif role_type == "reviewer":
             base = base.where(ContributorProfile.role == "reviewer")
+        # role_type == "all"：不加角色过滤
         if repo_name:
             base = base.where(ContributorProfile.repo_name == repo_name)
         tier = _normalize_tier(quadrant)
         if tier:
             base = base.where(ContributorProfile.tier == tier)
 
-        total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+        # 时间窗过滤：宽表只存全量累计（first_seen..last_seen），无日度明细。
+        # 按 days 窗口过滤"窗口内有活动"的贡献者：last_seen >= today - days。
+        # 同时按 max(days, active_days_90)/90 把 7 维指标缩放到窗口内估计值，
+        # 再用 scoring_engine 重算 score/tier，让 days 选项真正影响榜单。
+        days = max(1, int(days))
+        window_start = date.today() - timedelta(days=days)
+        base = base.where(ContributorProfile.last_seen >= window_start)
+
         rows = (await db.execute(base)).scalars().all()
 
-        # 内存排序（profile 已是最终评分，无需 join）
+        # 按窗口缩放指标 + 重算 score
+        weights = self._load_weights_setting(
+            (await db.execute(
+                select(ContributorBoardSettings).where(
+                    ContributorBoardSettings.setting_key == "scoring_weights"
+                )
+            )).scalars().first()
+        )
+        scale = min(1.0, days / 90.0)  # active_days_90 是 90 天窗口值；days>=90 不缩放
+        for r in rows:
+            active = r.active_days_90 or 0
+            if active > 0:
+                # 窗口内活跃天数估计：min(active * scale, days)
+                # 当 days>=90 时 scale=1.0，active 不变
+                r.active_days_90 = max(1, int(active * scale)) if scale < 1.0 else active
+            # span_days 缩放到窗口内（last_seen - first_seen 跨度，窗口内最大为 days）
+            r.span_days = min(r.span_days or 0, days)
+            # 重算 score + tier
+            metrics = {
+                "commit_count": r.commit_count or 0,
+                "code_files": r.code_files or 0,
+                "doc_files": r.doc_files or 0,
+                "pr_merged": r.pr_merged or 0,
+                "pr_open": r.pr_open or 0,
+                "pr_closed": r.pr_closed or 0,
+                "active_days_90": r.active_days_90 or 0,
+                "span_days": r.span_days or 0,
+            }
+            r.total_score = calculate_score(metrics, weights)
+            r.tier = assign_tier(r.total_score, r.active_days_90 or 0)
+
+        total = len(rows)
+
+        # 内存排序（用重算后的 score）
         sort_key = self._sort_key(sort_by)
         rows.sort(key=sort_key, reverse=(sort_order != "asc"))
 
@@ -210,7 +266,7 @@ class ContributorBoardService:
         return ContributorRankingResponse(
             role_type=role_type,
             rankings=items,
-            total=int(total),
+            total=total,
             repo_name=repo_name,
         )
 
@@ -739,18 +795,135 @@ class ContributorBoardService:
         await db.commit()
         return ContributorSyncScheduleConfig(**value)
 
-    # ══════════════════════════ 扩展趋势（宽表无日度数据）══════════════════════════════
+    # ══════════════════════════ 扩展趋势（贡献者详情页图表）══════════════════════════════
 
     async def get_extended_trend(
         self, db, login: str,
         period_start: date | None = None, period_end: date | None = None,
     ) -> dict:
-        from contracts.schemas.contributor_board import ExtendedTrendResponse
+        """贡献者详情页趋势：直接从 daily_commits / daily_prs 读真实日度数据。
+
+        - commit_trend: 每日 commit 数 / 代码增删行数（按 DailyCommit 聚合）
+        - review_trend: 空结构（当前不采集 review 日度明细，前端图会显示"无数据"）
+        - score_trend:  窗口内累计贡献分数（基于到当天为止的真实聚合，按 scoring_engine 重算）
+
+        无日度数据时（贡献者未跑过新采集器），返回空结构，前端显示空图。
+        窗口：默认最近 90 天；可被 period_start / period_end 覆盖。
+        """
+        from contracts.schemas.contributor_board import (
+            CommitTrendPoint, ReviewTrendPoint, ScoreTrendPoint, ExtendedTrendResponse,
+        )
+
+        today = date.today()
+        # 默认窗口：最近 90 天
+        ws = period_start or (today - timedelta(days=90))
+        we = period_end or today
+        if ws > we:
+            ws, we = we, ws
+        # 限制窗口最多 365 天
+        if (we - ws).days > 365:
+            ws = we - timedelta(days=365)
+
+        # 拉取该贡献者在窗口内的所有 commit
+        stmt = select(DailyCommit).where(
+            DailyCommit.author == login,
+            DailyCommit.data_date >= ws,
+            DailyCommit.data_date <= we,
+        )
+        commits = (await db.execute(stmt)).scalars().all()
+        # 按 data_date 分组
+        by_day: dict[date, list[DailyCommit]] = {}
+        for c in commits:
+            d = c.data_date or (c.committed_at.date() if c.committed_at else None)
+            if d is None:
+                continue
+            by_day.setdefault(d, []).append(c)
+
+        weights = self._load_weights_setting(
+            (await db.execute(
+                select(ContributorBoardSettings).where(
+                    ContributorBoardSettings.setting_key == "scoring_weights"
+                )
+            )).scalars().first()
+        )
+
+        # 生成连续日期序列
+        all_days = [(ws + timedelta(days=i)) for i in range((we - ws).days + 1)]
+
+        commit_points: list[CommitTrendPoint] = []
+        review_points: list[ReviewTrendPoint] = []
+        score_points: list[ScoreTrendPoint] = []
+
+        cum_pr = 0
+        cum_add = 0
+        cum_del = 0
+        cum_commit = 0
+        cum_days_active = 0
+        span_start: date | None = None
+
+        for d in all_days:
+            day_commits = by_day.get(d, [])
+            today_commits = len(day_commits)
+            today_add = sum(c.additions or 0 for c in day_commits)
+            today_del = sum(c.deletions or 0 for c in day_commits)
+
+            # merged PR 数：该贡献者当天创建的 PR（按 DailyPR.created_at 日期）
+            pr_stmt = select(func.count(DailyPR.id)).where(
+                DailyPR.author == login,
+                DailyPR.data_date == d,
+            )
+            today_pr = int((await db.execute(pr_stmt)).scalar_one() or 0)
+
+            commit_points.append(CommitTrendPoint(
+                date=d.isoformat(),
+                merged_pr_count=today_pr,
+                code_additions=today_add,
+                code_deletions=today_del,
+            ))
+            # review_trend 暂不采集日度 → 全 0
+            review_points.append(ReviewTrendPoint(
+                date=d.isoformat(),
+                review_count=0,
+                approval_count=0,
+            ))
+
+            # 累计
+            cum_pr += today_pr
+            cum_add += today_add
+            cum_del += today_del
+            cum_commit += today_commits
+            if today_pr > 0 or today_commits > 0:
+                cum_days_active += 1
+                if span_start is None:
+                    span_start = d
+            span_days = (d - span_start).days + 1 if span_start else 1
+
+            metrics = {
+                "commit_count": cum_commit,
+                "code_files": cum_add,
+                "doc_files": cum_del,
+                "pr_merged": cum_pr,
+                "pr_open": 0,
+                "pr_closed": 0,
+                "active_days_90": cum_days_active,
+                "span_days": span_days,
+                "review_count": 0,
+                "approval_count": 0,
+            }
+            score_points.append(ScoreTrendPoint(
+                date=d.isoformat(),
+                contribution_score=calculate_score(metrics, weights),
+                error_score=0,
+                review_count=0,
+                merged_pr_count=today_pr,
+                code_additions=today_add,
+            ))
+
         return ExtendedTrendResponse(
             login=login,
-            commit_trend=[],
-            review_trend=[],
-            score_trend=[],
+            commit_trend=commit_points,
+            review_trend=review_points,
+            score_trend=score_points,
         )
 
     # ══════════════════════════ 贡献者详情页增强（宽表无日度数据）══════════════════════════════
@@ -758,17 +931,133 @@ class ContributorBoardService:
     async def get_contributor_heatmap_data(
         self, db, login: str, repo_name: str | None = None, years: int = 1,
     ) -> dict:
-        return {"login": login, "heatmap_data": []}
+        """贡献者热力图：从 DailyCommit 按 data_date 聚合每日提交数。
+
+        返回最近 {years} 年的格子（date + commit_count + weekDay 0=Mon..6=Sun）。
+        weekDay 按 ISO weekday（周一=0，周日=6）与 GitHub 风格保持一致。
+        """
+        from contracts.schemas.contributor_board import HeatmapDataPoint, ContributorHeatmapResponse
+
+        today = date.today()
+        ws = today - timedelta(days=365 * max(1, years))
+        we = today
+
+        stmt = (
+            select(
+                DailyCommit.data_date,
+                func.count(DailyCommit.id),
+            )
+            .where(DailyCommit.author == login)
+            .where(DailyCommit.data_date >= ws)
+            .where(DailyCommit.data_date <= we)
+            .group_by(DailyCommit.data_date)
+        )
+        rows = (await db.execute(stmt)).all()
+        count_by_day: dict[date, int] = {r[0]: int(r[1]) for r in rows if r[0] is not None}
+
+        points: list[HeatmapDataPoint] = []
+        for i in range((we - ws).days + 1):
+            d = ws + timedelta(days=i)
+            n = count_by_day.get(d, 0)
+            points.append(HeatmapDataPoint(
+                date=d.isoformat(),
+                commit_count=n,
+                weekDay=d.weekday(),
+            ))
+        return ContributorHeatmapResponse(login=login, heatmap_data=points)
 
     async def get_contributor_module_distribution(
         self, db, login: str, repo_name: str | None = None,
     ) -> dict:
-        return {"login": login, "modules": [], "type_distribution": []}
+        """模块分布 + commit 类型分布：从 DailyCommit.files_changed 推断模块，
+        从 commit message 用 classify_commit 推断类型。
+        """
+        from contracts.schemas.contributor_board import (
+            ModuleDistributionItem, TypeDistributionItem, ContributorDistributionResponse,
+        )
+
+        stmt = select(DailyCommit).where(DailyCommit.author == login)
+        commits = (await db.execute(stmt)).scalars().all()
+
+        module_stat: dict[str, dict[str, int]] = {}
+        type_count: dict[str, int] = {}
+
+        for c in commits:
+            # commit 类型
+            cmsg = c.message or c.full_message or ""
+            cfiles = c.files_changed or []
+            ccls = classify_commit(cmsg, cfiles)
+            tname = ccls.commit_type.value
+            type_count[tname] = type_count.get(tname, 0) + 1
+
+            # 模块：取 files_changed 的顶层目录（root 兜底）
+            mods: set[str] = set()
+            for f in cfiles:
+                if not f:
+                    continue
+                parts = f.split("/")
+                mods.add(parts[0] if len(parts) > 1 else "root")
+            if not mods:
+                mods.add("unknown")
+            # 该 commit 的增删行均摊到每个模块（近似）
+            per_mod_add = (c.additions or 0) // len(mods) if mods else 0
+            per_mod_del = (c.deletions or 0) // len(mods) if mods else 0
+            for m in mods:
+                s = module_stat.setdefault(m, {"count": 0, "add": 0, "del": 0})
+                s["count"] += 1
+                s["add"] += per_mod_add
+                s["del"] += per_mod_del
+
+        modules: list[ModuleDistributionItem] = [
+            ModuleDistributionItem(
+                module=m,
+                commit_count=v["count"],
+                code_additions=v["add"],
+                code_deletions=v["del"],
+            )
+            for m, v in sorted(module_stat.items(), key=lambda kv: -kv[1]["count"])[:15]
+        ]
+        types: list[TypeDistributionItem] = [
+            TypeDistributionItem(commit_type=t, count=n)
+            for t, n in sorted(type_count.items(), key=lambda kv: -kv[1])
+        ]
+        return ContributorDistributionResponse(login=login, modules=modules, type_distribution=types)
 
     async def get_contributor_timeline(
         self, db, login: str, limit: int = 20,
     ) -> dict:
-        return {"login": login, "commits": []}
+        """提交时间线：最近 limit 条 commit，按 committed_at desc。"""
+        from contracts.schemas.contributor_board import TimelineCommitItem, ContributorTimelineResponse
+
+        stmt = (
+            select(DailyCommit)
+            .where(DailyCommit.author == login)
+            .order_by(DailyCommit.committed_at.desc())
+            .limit(limit)
+        )
+        commits = (await db.execute(stmt)).scalars().all()
+
+        items: list[TimelineCommitItem] = []
+        for c in commits:
+            cmsg = c.message or c.full_message or ""
+            cfiles = c.files_changed or []
+            ccls = classify_commit(cmsg, cfiles)
+            # 模块：文件首段
+            mod = "root"
+            if cfiles:
+                parts = cfiles[0].split("/")
+                mod = parts[0] if len(parts) > 1 else "root"
+            items.append(TimelineCommitItem(
+                commit_hash=c.sha or c.short_sha or "",
+                message=cmsg[:200],
+                classification=ccls.commit_type.value,
+                module=mod,
+                committed_at=c.committed_at,
+                files_changed=len(cfiles),
+                code_additions=c.additions or 0,
+                code_deletions=c.deletions or 0,
+            ))
+        return ContributorTimelineResponse(login=login, commits=items)
 
     # ══════════════════════════ 内部工具 ══════════════════════════
 

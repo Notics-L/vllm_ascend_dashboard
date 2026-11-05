@@ -38,6 +38,8 @@ from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 from infrastructure.persistence.models import (
     Contributor,
     ContributorProfile,
+    DailyCommit,
+    DailyPR,
     ImageBuildPlan,
 )
 from sqlalchemy import delete, select
@@ -123,6 +125,10 @@ class ContributorSyncCollector:
         self.repo = github_client.repo
         self.repo_name = f"{self.owner}/{self.repo}"
         self.progress_callback = progress_callback
+        # 日度明细追踪（本次同步扫到的 PR + 每个 PR 的 commit sha），
+        # 用于收尾前清理本仓库 stale 日度数据，保证窗口一致、无重复
+        self._daily_pr_numbers: set[int] = set()
+        self._daily_commit_shas: set[str] = set()
 
     # ── 入口方法 ──────────────────────────────────────────────────
 
@@ -206,6 +212,8 @@ class ContributorSyncCollector:
                 # 全量重建：在同一事务内清空并写入，commit 才一次性生效（原子化）
                 # commit_profiles=False 时，由调用方统一 commit（便于外层原子控制）
                 await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
+                # 清理本次同步窗口之外 / 已消失的日度明细，保证 daily 表与本次 PR 集一致
+                await self._cleanup_stale_daily()
 
         except Exception as e:
             logger.error("Contributor sync failed: %s", e, exc_info=True)
@@ -369,6 +377,18 @@ class ContributorSyncCollector:
                     else:
                         author_profile["first_review_hours"] = min(author_profile["first_review_hours"], hours)
 
+        # ── 日度明细（贡献者详情页趋势/热力图/分布/时间线）──
+        try:
+            self._write_daily_pr(pr, pr_number, pr_state, is_merged, pr_created, pr_merged_at, commits, reviews)
+        except Exception as e:
+            logger.warning("daily PR #%s write skipped: %s", pr_number, e)
+            result.errors.append(f"daily PR #{pr_number}: {e}")
+        try:
+            self._write_daily_commits(pr, pr_number, author, commits, pr_files, reviews)
+        except Exception as e:
+            logger.warning("daily commits PR #%s write skipped: %s", pr_number, e)
+            result.errors.append(f"daily commits PR #{pr_number}: {e}")
+
         # ── 构建计划（保留）──
         # Build Plan 失败不应影响画像聚合：若让它冒泡到 collect 的 except 分支，
         # 会触发共享 session 的 db.rollback()，连带撤销未提交的 DELETE/画像，
@@ -380,6 +400,221 @@ class ContributorSyncCollector:
         except Exception as e:
             logger.warning("build plan PR #%s skipped: %s", pr_number, e)
             result.errors.append(f"build plan PR #{pr_number}: {e}")
+
+    # ── 私有方法：日度明细写入（贡献者详情页图表）────────────────────
+
+    async def _write_daily_pr(
+        self,
+        pr: dict[str, Any],
+        pr_number: int,
+        pr_state: str,
+        is_merged: bool,
+        pr_created: datetime | None,
+        pr_merged_at: datetime | None,
+        commits: list[dict[str, Any]],
+        reviews: list[dict[str, Any]],
+    ) -> None:
+        """把当前 PR 按 created_at 的 data_date 写入 daily_prs（幂等 upsert）。"""
+        if pr_created is None:
+            pr_created = pr_merged_at or datetime.now(UTC)
+        data_date = pr_created.date()
+        project = self.repo_name
+
+        user_info = pr.get("user") or {}
+        author = user_info.get("login") or ""
+        if not author:
+            self._daily_pr_numbers.add(pr_number)
+            return
+
+        # 拉取 PR 关联的 commit sha 列表（用于 commits JSON 列 + 后续清理追踪）
+        pr_commit_shas: list[str] = []
+        for c in commits:
+            sha = c.get("sha", "")
+            if sha:
+                pr_commit_shas.append(sha)
+        self._daily_pr_numbers.add(pr_number)
+        self._daily_commit_shas.update(pr_commit_shas)
+
+        stmt = (
+            select(DailyPR)
+            .where(DailyPR.project == project)
+            .where(DailyPR.pr_number == pr_number)
+            .order_by(DailyPR.id.desc())
+        )
+        qr = await self.db.execute(stmt)
+        row = qr.scalars().first()
+
+        title = pr.get("title") or f"PR #{pr_number}"
+        html_url = pr.get("html_url") or f"https://github.com/{project}/pull/{pr_number}"
+        labels = [l.get("name") for l in (pr.get("labels") or []) if l.get("name")]
+        body = pr.get("body") or ""
+
+        if row is None:
+            row = DailyPR(
+                project=project,
+                pr_number=pr_number,
+                title=title,
+                state=pr_state,
+                author=author,
+                created_at=pr_created,
+                merged_at=pr_merged_at,
+                html_url=html_url,
+                labels=labels,
+                body=body,
+                commits=pr_commit_shas,
+                data_date=data_date,
+                fetched_at=datetime.now(UTC),
+            )
+            self.db.add(row)
+        else:
+            row.title = title
+            row.state = pr_state
+            row.author = author
+            row.created_at = pr_created
+            row.merged_at = pr_merged_at
+            row.html_url = html_url
+            row.labels = labels
+            row.body = body
+            row.commits = pr_commit_shas
+            row.data_date = data_date
+            row.fetched_at = datetime.now(UTC)
+
+    async def _write_daily_commits(
+        self,
+        pr: dict[str, Any],
+        pr_number: int,
+        author: str,
+        commits: list[dict[str, Any]],
+        pr_files: list[dict[str, Any]],
+        reviews: list[dict[str, Any]],
+    ) -> None:
+        """把每个 commit 按其 author.date 的 data_date 写入 daily_commits。
+
+        去重：同一个 sha 在同一 PR 里只写一次（GitHub /commits 已去重）。
+        跨 PR 的同一 sha（cherry-pick）会保留多行（不同 pr_number），属正常。
+        代码行增删：优先取 commit-level patch 行数（如果 API 已带）；
+        否则用 PR 级 additions/deletions 按 commit 数均摊（近似，避免空图）。
+        """
+        project = self.repo_name
+        if not commits:
+            return
+
+        pr_total_add = pr.get("additions") or 0
+        pr_total_del = pr.get("deletions") or 0
+        # 均摊到每个 commit（无 patch 级别的精确行数时用）
+        per_commit_add = pr_total_add / len(commits)
+        per_commit_del = pr_total_del / len(commits)
+
+        pr_title = pr.get("title") or f"PR #{pr_number}"
+        pr_desc = pr.get("body") or ""
+        html_url_pr = pr.get("html_url") or f"https://github.com/{project}/pull/{pr_number}"
+
+        for commit in commits:
+            sha = commit.get("sha", "")
+            if not sha:
+                continue
+            self._daily_commit_shas.add(sha)
+
+            cinfo = commit.get("commit") or {}
+            cmsg = cinfo.get("message") or ""
+            c_author_github = (commit.get("author") or {}).get("login") or author
+            c_author_email = (cinfo.get("author") or {}).get("email") or ""
+            c_committed_dt = (cinfo.get("author") or {}).get("date")
+            c_committed = self._parse_datetime(c_committed_dt)
+            # GitHub /commits 返回的 committed_date 在 commit.committed_date 字段
+            c_committed_date = cinfo.get("committed_date")
+            c_committed = self._parse_datetime(c_committed_date) or c_committed
+
+            if c_committed is None:
+                continue
+            data_date = c_committed.date()
+
+            # 增删行数：commit 级 patch 行（如有）否则均摊
+            patch_lines = commit.get("stats") or {}
+            additions = int(patch_lines.get("additions") or per_commit_add)
+            deletions = int(patch_lines.get("deletions") or per_commit_del)
+
+            # 文件变更：PR 级（commit 级通常没有）
+            files_list: list[str] = [f.get("filename", "") for f in pr_files if f.get("filename")]
+
+            short_sha = sha[:7]
+            commit_html = f"https://github.com/{project}/commit/{sha}"
+
+            stmt = (
+                select(DailyCommit)
+                .where(DailyCommit.project == project)
+                .where(DailyCommit.sha == sha)
+                .order_by(DailyCommit.id.desc())
+            )
+            qr = await self.db.execute(stmt)
+            row = qr.scalars().first()
+
+            if row is None:
+                row = DailyCommit(
+                    project=project,
+                    sha=sha,
+                    short_sha=short_sha,
+                    message=cmsg[:1000],
+                    full_message=cmsg,
+                    author=c_author_github,
+                    author_email=c_author_email or None,
+                    committed_at=c_committed,
+                    html_url=commit_html,
+                    pr_number=pr_number,
+                    pr_title=pr_title,
+                    pr_description=pr_desc,
+                    files_changed=files_list,
+                    additions=additions,
+                    deletions=deletions,
+                    data_date=data_date,
+                    fetched_at=datetime.now(UTC),
+                )
+                self.db.add(row)
+            else:
+                row.message = cmsg[:1000]
+                row.full_message = cmsg
+                row.author = c_author_github
+                row.author_email = c_author_email or None
+                row.committed_at = c_committed
+                row.pr_number = pr_number
+                row.pr_title = pr_title
+                row.pr_description = pr_desc
+                row.files_changed = files_list
+                row.additions = additions
+                row.deletions = deletions
+                row.data_date = data_date
+                row.fetched_at = datetime.now(UTC)
+
+    async def _cleanup_stale_daily(self) -> None:
+        """删除本仓库中：
+        1. sha 不在本次 commit 集里的 daily_commits 行（PR 被合入后 commit 集外的残留）
+        2. pr_number 不在本次 PR 集里的 daily_prs 行
+
+        这是幂等 upsert + 全量重建语义下对 stale 数据的清理。
+        仅删除本仓库（project=self.repo_name）的行，绝不动其它仓库。
+        """
+        if self._daily_pr_numbers:
+            await self.db.execute(
+                delete(DailyPR).where(
+                    DailyPR.project == self.repo_name,
+                    DailyPR.pr_number.not_in(self._daily_pr_numbers),
+                )
+            )
+        if self._daily_commit_shas:
+            # 批量 not_in 在 MySQL 有 65535 参数上限，分块处理
+            shas = list(self._daily_commit_shas)
+            for i in range(0, len(shas), 5000):
+                chunk = shas[i:i + 5000]
+                await self.db.execute(
+                    delete(DailyCommit).where(
+                        DailyCommit.project == self.repo_name,
+                        DailyCommit.sha.not_in(chunk),
+                    )
+                )
+        logger.info(
+            "Cleaned stale daily rows for %s (prs=%d, commits=%d)",
+            self.repo_name, len(self._daily_pr_numbers), len(self._daily_commit_shas),
+        )
 
     # ── 私有方法：画像聚合 ─────────────────────────────────────────
 

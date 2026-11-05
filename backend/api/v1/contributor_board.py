@@ -593,13 +593,8 @@ async def get_contributor_heatmap(
 ):
     """获取贡献者提交热力图数据"""
     service = get_contributor_board_service()
-    data = await service.get_contributor_heatmap_data(
+    return await service.get_contributor_heatmap_data(
         db, login=login, repo_name=repo_name, years=years
-    )
-    from contracts.schemas.contributor_board import HeatmapDataPoint
-    return ContributorHeatmapResponse(
-        login=data["login"],
-        heatmap_data=[HeatmapDataPoint(**p) for p in data["heatmap_data"]],
     )
 
 
@@ -611,17 +606,8 @@ async def get_contributor_distribution(
 ):
     """获取贡献者模块+类型分布数据"""
     service = get_contributor_board_service()
-    data = await service.get_contributor_module_distribution(
+    return await service.get_contributor_module_distribution(
         db, login=login, repo_name=repo_name
-    )
-    from contracts.schemas.contributor_board import (
-        ModuleDistributionItem,
-        TypeDistributionItem,
-    )
-    return ContributorDistributionResponse(
-        login=data["login"],
-        modules=[ModuleDistributionItem(**m) for m in data["modules"]],
-        type_distribution=[TypeDistributionItem(**t) for t in data["type_distribution"]],
     )
 
 
@@ -633,12 +619,7 @@ async def get_contributor_timeline(
 ):
     """获取贡献者提交时间线"""
     service = get_contributor_board_service()
-    data = await service.get_contributor_timeline(db, login=login, limit=limit)
-    from contracts.schemas.contributor_board import TimelineCommitItem
-    return ContributorTimelineResponse(
-        login=data["login"],
-        commits=[TimelineCommitItem(**c) for c in data["commits"]],
-    )
+    return await service.get_contributor_timeline(db, login=login, limit=limit)
 
 
 # =====================================================================
