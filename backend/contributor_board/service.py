@@ -61,6 +61,7 @@ from infrastructure.persistence.models import (
     Contributor,
     ContributorBoardSettings,
     ContributorProfile,
+    ContributorSyncCheckpoint,
     ContributorSyncRecord,
     DailyCommit,
     DailyPR,
@@ -560,6 +561,9 @@ class ContributorBoardService:
         # 5. 同步历史
         r = await db.execute(delete(ContributorSyncRecord))
         counts["sync_records"] = int(r.rowcount or 0)
+        # 6. 断点持久化数据
+        r = await db.execute(delete(ContributorSyncCheckpoint))
+        counts["sync_checkpoints"] = int(r.rowcount or 0)
 
         await db.commit()
         logger.warning(

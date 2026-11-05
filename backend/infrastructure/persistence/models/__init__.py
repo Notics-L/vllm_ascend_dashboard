@@ -1186,6 +1186,37 @@ class ContributorSyncRecord(Base):
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
 
 
+class ContributorSyncCheckpoint(Base):
+    """贡献者同步断点持久化（跨额度窗口续跑）。
+
+    每次全量同步被 rate limit 中断时，将已处理到的 PR number 和
+    聚合 profiles JSON 写入本表；服务重启或重新触发时从本表恢复，
+    跳过已完成的 PR，继续处理剩余的。
+    """
+    __tablename__ = "contributor_sync_checkpoints"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_name = Column(String(200), nullable=False, index=True)
+    # 已处理到的最后 PR number（下次从这之后继续）
+    last_processed_pr = Column(Integer, nullable=False)
+    total_prs = Column(Integer, nullable=False, default=0)
+    # since/until 时间窗口（用于校验是否同一批同步）
+    since_date = Column(Date, nullable=False)
+    until_date = Column(Date, nullable=True)
+    # 聚合 profiles 快照（JSON），key=login, value=profile dict
+    profiles_snapshot = Column(JSON, nullable=False)
+    # 已处理完的 PR number 集合（JSON list），恢复时用于跳过
+    pr_numbers_done = Column(JSON, nullable=False)
+    # 同步结果中的计数
+    contributors_count = Column(Integer, default=0)
+    errors_count = Column(Integer, default=0)
+    # 中断原因（用于日志）
+    abort_reason = Column(String(500), nullable=True)
+    # 标记为 completed 或 aborted
+    status = Column(String(20), nullable=False, default="active", index=True)
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
 class ContributorScoringVersion(Base):
     """评分权重版本记录表"""
     __tablename__ = "contributor_scoring_version"

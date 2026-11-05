@@ -54,7 +54,7 @@ class GitHubClient:
 
     # 速率限制等待配置：等待到 X-RateLimit-Reset 后继续，避免全量同步中途被限流打断
     RATE_LIMIT_MAX_WAIT_PER_LOOP = 3700  # 单次等待上限（秒），略小于重置窗口 1h，防止异常挂死
-    RATE_LIMIT_WAIT_LOOPS = 2  # 最多续等次数（累计上限 2 个重置窗口）
+    RATE_LIMIT_WAIT_LOOPS = 12  # 最多续等次数（累计上限 12 个重置窗口 ≈ 12h，覆盖全量同步 ~10h）
 
     def __init__(self, token: str, owner: str | None = None, repo: str | None = None):
         """

@@ -15,6 +15,7 @@ contributor_profiles 宽表（每贡献者一行），并保留 ImageBuildPlan �
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 from infrastructure.persistence.models import (
     Contributor,
     ContributorProfile,
+    ContributorSyncCheckpoint,
     DailyCommit,
     DailyPR,
     ImageBuildPlan,
@@ -153,33 +155,77 @@ class ContributorSyncCollector:
             until.isoformat(),
         )
 
-        # 每贡献者一个聚合桶（全量重建）
-        profiles: dict[str, dict[str, Any]] = {}
-        pr_numbers_seen: set[int] = set()
+        # ── 尝试恢复断点 ──
+        resumed = False
+        last_processed_pr = 0
+        cp = await self._load_checkpoint(since, until)
+        if cp:
+            profiles, pr_numbers_seen, last_processed_pr = cp
+            resumed = True
+            logger.info(
+                "Resuming from checkpoint: %d PRs done, %d contributors aggregated",
+                len(pr_numbers_seen), len(profiles),
+            )
+            # 断点恢复后内存里的 daily 追踪集合是空的，从 DB 恢复
+            await self._finalize_daily_from_db()
+        else:
+            profiles: dict[str, dict[str, Any]] = {}
+            pr_numbers_seen: set[int] = set()
+
+        interrupted = False
+        skipped = 0
 
         try:
             prs = await self._fetch_prs(since, until)
             result.total_prs_scanned = len(prs)
-            logger.info("Fetched %d PRs for contributor sync", len(prs))
+            logger.info(
+                "Fetched %d PRs for contributor sync (%s)",
+                len(prs),
+                "resuming from checkpoint" if resumed else "full scan",
+            )
             if self.progress_callback:
                 await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
 
             total = len(prs)
-            interrupted = False
             for idx, pr in enumerate(prs, 1):
                 pr_number = pr.get("number")
                 if pr_number is None:
                     continue
+
+                # 断点续跑：跳过已完成的 PR
+                if resumed and pr_number in pr_numbers_seen:
+                    skipped += 1
+                    continue
+
                 if idx % 5 == 0 or idx == total:
                     pct = min(95, int(idx / max(1, total) * 90) + 5)
                     if self.progress_callback:
                         await self.progress_callback(pct, f"Processing PRs: {idx}/{total}")
                 try:
                     await self._process_pr(pr, pr_number, profiles, pr_numbers_seen, result)
+                    last_processed_pr = pr_number
                 except GitHubRateLimitError as e:
-                    # 限流（客户端层已尝试等待复位，仍失败）：标记为中断，保留旧数据
-                    logger.error("Rate limited at PR #%s, aborting rebuild to preserve data: %s", pr_number, e)
+                    # 限流（客户端层已等待 RESET 窗口仍失败）：
+                    # 保存断点 + 回滚未提交的 DB 变更，重新触发时从断点续跑
+                    logger.error(
+                        "Rate limited at PR #%s, saving checkpoint and aborting: %s",
+                        pr_number, e,
+                    )
                     result.errors.append(f"Rate limit at PR #{pr_number}: {e}")
+                    try:
+                        await self.db.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        await self._save_checkpoint(
+                            profiles, pr_numbers_seen,
+                            last_processed_pr, total,
+                            since, until,
+                            len(result.errors),
+                            str(e),
+                        )
+                    except Exception as ckpt_exc:
+                        logger.error("Failed to save checkpoint: %s", ckpt_exc)
                     interrupted = True
                     break
                 except GitHubAPIError as e:
@@ -195,25 +241,28 @@ class ContributorSyncCollector:
                     continue
 
             if interrupted:
-                # 关键修复：中途被限流打断 → 回滚事务，绝不清空/只写一半
-                # 保留上一份完整画像，反复同步时表现为幂等更新而非数据丢失
-                logger.warning("Sync interrupted, rolling back to preserve existing contributor data")
-                try:
-                    await self.db.rollback()
-                except Exception:
-                    pass
+                logger.warning("Sync interrupted by rate limit, checkpoint saved for resume")
                 if self.progress_callback:
-                    await self.progress_callback(99, "Rate limited - aborted to preserve existing data, please re-trigger")
+                    await self.progress_callback(
+                        99,
+                        f"Rate limited at PR #{last_processed_pr} - checkpoint saved, "
+                        f"re-trigger to resume ({skipped}/{total} already done)",
+                    )
                 result.contributors_synced = 0
-                result.errors.append("ABORTED: aborted before writing any data to preserve existing state")
-                # 跳到统一的收尾逻辑（计算 duration + synced_at）
-                pass
+                result.errors.append(
+                    f"INTERRUPTED: rate limit at PR #{last_processed_pr}, "
+                    f"checkpoint saved ({len(pr_numbers_seen)}/{total} PRs done)"
+                )
             else:
+                if skipped:
+                    logger.info("Skipped %d already-processed PRs from checkpoint", skipped)
                 # 全量重建：在同一事务内清空并写入，commit 才一次性生效（原子化）
                 # commit_profiles=False 时，由调用方统一 commit（便于外层原子控制）
                 await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
                 # 清理本次同步窗口之外 / 已消失的日度明细，保证 daily 表与本次 PR 集一致
                 await self._cleanup_stale_daily()
+                # 同步完成：清除断点
+                await self._clear_checkpoint()
 
         except Exception as e:
             logger.error("Contributor sync failed: %s", e, exc_info=True)
@@ -227,9 +276,10 @@ class ContributorSyncCollector:
         result.duration_seconds = (end_time - start_time).total_seconds()
         result.synced_at = end_time
         logger.info(
-            "Contributor sync finished: contributors=%d prs=%d errors=%d duration=%.1fs",
+            "Contributor sync finished: contributors=%d prs=%d errors=%d duration=%.1fs%s",
             result.contributors_synced, result.total_prs_scanned,
             len(result.errors), result.duration_seconds,
+            " (resumed)" if resumed else "",
         )
         return result
 
@@ -615,6 +665,168 @@ class ContributorSyncCollector:
             "Cleaned stale daily rows for %s (prs=%d, commits=%d)",
             self.repo_name, len(self._daily_pr_numbers), len(self._daily_commit_shas),
         )
+
+    # ── 私有方法：断点持久化（跨额度窗口续跑）───────────────────────
+
+    @staticmethod
+    def _serialize_profiles(profiles: dict[str, dict[str, Any]]) -> str:
+        """把 profiles dict 序列化为 JSON（set 转 sorted list，date 转 iso）。"""
+
+        def _conv(obj: Any) -> Any:
+            if isinstance(obj, set):
+                return sorted(str(x) for x in obj)
+            if isinstance(obj, date):
+                return obj.isoformat()
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return str(obj)
+
+        return json.dumps(profiles, default=_conv, ensure_ascii=False)
+
+    @staticmethod
+    def _deserialize_profiles(raw: str) -> dict[str, dict[str, Any]]:
+        """反序列化 profiles JSON，还原 set / date 对象。"""
+        data: dict[str, dict[str, Any]] = json.loads(raw)
+        for prof in data.values():
+            ad = prof.get("active_days")
+            if isinstance(ad, list):
+                prof["active_days"] = {date.fromisoformat(s) for s in ad}
+            for key in ("first_seen", "last_seen"):
+                val = prof.get(key)
+                if isinstance(val, str):
+                    prof[key] = date.fromisoformat(val)
+        return data
+
+    async def _save_checkpoint(
+        self,
+        profiles: dict[str, dict[str, Any]],
+        pr_numbers_done: set[int],
+        last_processed_pr: int,
+        total_prs: int,
+        since: datetime,
+        until: datetime,
+        errors_count: int,
+        abort_reason: str,
+    ) -> None:
+        """在独立 session 中保存断点（主 session 可能已 rollback）。"""
+        profiles_json = self._serialize_profiles(profiles)
+        async with AsyncSessionLocal() as cdb:
+            existing = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == self.repo_name,
+                        ContributorSyncCheckpoint.status == "active",
+                    )
+                )
+            ).scalars().first()
+
+            if existing:
+                existing.last_processed_pr = last_processed_pr
+                existing.total_prs = total_prs
+                existing.since_date = since.date()
+                existing.until_date = until.date()
+                existing.profiles_snapshot = profiles_json
+                existing.pr_numbers_done = sorted(pr_numbers_done)
+                existing.contributors_count = len(profiles)
+                existing.errors_count = errors_count
+                existing.abort_reason = abort_reason[:500]
+            else:
+                cdb.add(ContributorSyncCheckpoint(
+                    repo_name=self.repo_name,
+                    last_processed_pr=last_processed_pr,
+                    total_prs=total_prs,
+                    since_date=since.date(),
+                    until_date=until.date(),
+                    profiles_snapshot=profiles_json,
+                    pr_numbers_done=sorted(pr_numbers_done),
+                    contributors_count=len(profiles),
+                    errors_count=errors_count,
+                    abort_reason=abort_reason[:500],
+                    status="active",
+                ))
+            await cdb.commit()
+        logger.info(
+            "Checkpoint saved: repo=%s last_pr=%d total=%d contributors=%d",
+            self.repo_name, last_processed_pr, total_prs, len(profiles),
+        )
+
+    async def _load_checkpoint(
+        self,
+        since: datetime,
+        until: datetime,
+    ) -> tuple[dict[str, dict[str, Any]], set[int], int] | None:
+        """加载匹配的 active checkpoint；窗口不匹配则清除旧 checkpoint。
+
+        Returns:
+            (profiles, pr_numbers_done, last_processed_pr) 或 None（无有效断点）
+        """
+        async with AsyncSessionLocal() as cdb:
+            cp = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == self.repo_name,
+                        ContributorSyncCheckpoint.status == "active",
+                    )
+                )
+            ).scalars().first()
+            if cp is None:
+                return None
+
+            # 校验时间窗口是否一致
+            cp_since: date = cp.since_date
+            cp_until: date | None = cp.until_date
+            since_d: date = since.date()
+            until_d: date = until.date()
+            if cp_since != since_d or cp_until != until_d:
+                logger.info(
+                    "Checkpoint window mismatch (%s~%s vs current %s~%s), discarding",
+                    cp_since, cp_until, since_d, until_d,
+                )
+                cdb.delete(cp)
+                await cdb.commit()
+                return None
+
+            profiles = self._deserialize_profiles(cp.profiles_snapshot)
+            pr_done: set[int] = set(cp.pr_numbers_done or [])
+            return profiles, pr_done, cp.last_processed_pr
+
+    async def _clear_checkpoint(self) -> None:
+        """同步完成后清除 active checkpoint。"""
+        async with AsyncSessionLocal() as cdb:
+            cps = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == self.repo_name,
+                        ContributorSyncCheckpoint.status == "active",
+                    )
+                )
+            ).scalars().all()
+            for cp in cps:
+                cdb.delete(cp)
+            if cps:
+                await cdb.commit()
+                logger.info("Cleared %d active checkpoint(s) for %s", len(cps), self.repo_name)
+
+    async def _finalize_daily_from_db(self) -> None:
+        """从 daily_prs 表重建 _daily_pr_numbers / _daily_commit_shas，
+        然后调用 _cleanup_stale_daily。用于跨窗口续跑：断点恢复后内存里的
+        追踪集合是空的，需要从数据库里已有的行恢复，保证清理不会误删。"""
+        result = await self.db.execute(
+            select(DailyPR.pr_number, DailyPR.commits).where(
+                DailyPR.project == self.repo_name
+            )
+        )
+        self._daily_pr_numbers.clear()
+        self._daily_commit_shas.clear()
+        for row in result:
+            self._daily_pr_numbers.add(row.pr_number)
+            if row.commits:
+                self._daily_commit_shas.update(row.commits)
+        logger.info(
+            "Rebuilt daily tracking from DB: prs=%d commits=%d",
+            len(self._daily_pr_numbers), len(self._daily_commit_shas),
+        )
+        await self._cleanup_stale_daily()
 
     # ── 私有方法：画像聚合 ─────────────────────────────────────────
 
