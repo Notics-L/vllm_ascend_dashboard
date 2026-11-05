@@ -388,6 +388,15 @@ export const cancelSync = async (recordId: number) => {
 }
 
 /**
+ * 一键清空贡献者模块的采集数据（排行榜 / 四象限 / 详情页图表 / 热力图 / 时间线）
+ * 返回 { cleared: boolean, message: string, counts: Record<string, number> }
+ */
+export const clearSyncData = async () => {
+  const response = await api.post('/contributor-board/sync/clear-data')
+  return response.data
+}
+
+/**
  * 获取同步历史记录
  */
 export const getSyncHistory = async (params?: {

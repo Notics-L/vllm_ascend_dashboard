@@ -342,6 +342,34 @@ async def get_sync_summary(
     return await service.get_sync_summary(db, repo_name=repo_name)
 
 
+@router.post("/sync/clear-data")
+async def clear_sync_data(
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """一键清空贡献者模块的采集数据（排行榜 / 四象限 / 详情页图表 / 热力图 / 时间线）。
+
+    保留评估设置与评分权重版本。清除后请重新触发全量同步。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    service = get_contributor_board_service()
+    try:
+        counts = await service.clear_sync_data(db)
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error("clear_sync_data failed: %s", e, exc_info=True)
+        raise
+    logger.warning("Contributor collector data cleared via API: %s", counts)
+    return {
+        "cleared": True,
+        "message": "贡献者采集数据已清除，请重新触发全量同步。",
+        "counts": counts,
+    }
+
+
 @router.post("/sync/status/{record_id}/cancel")
 async def cancel_sync(
     record_id: int,

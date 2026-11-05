@@ -66,7 +66,7 @@ from infrastructure.persistence.models import (
     DailyPR,
     ImageBuildPlan,
 )
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +513,59 @@ class ContributorBoardService:
         )
 
     # ══════════════════════════ 同步管理 ══════════════════════════
+
+    async def clear_sync_data(self, db) -> dict[str, int]:
+        """一键清空贡献者模块的采集数据，回到"干净"状态便于重新全量同步。
+
+        覆盖范围（排行榜 / 四象限 / 贡献者详情页图表 / 热力图 / 时间线 的数据源）：
+            - contributor_profiles  宽表（排行榜 + 四象限）
+            - contributors          贡献者身份表
+            - daily_prs             日度 PR 明细（详情页趋势等）
+            - daily_commits         日度 commit 明细（详情页热力图 / 模块分布 / 时间线）
+            - contributor_sync_records 同步历史
+        并把所有 running/pending 的任务置为 cancelled，避免残留"运行中"状态。
+
+        刻意保留：评估设置(contributor_board_settings)、评分权重版本 / 快照 / 审计
+        （它们是配置与历史版本，不影响采集数据，重跑时会按当前权重自动重算分数）。
+
+        单事务原子执行：全部清成功才 commit，任一失败则整体回滚。
+        """
+        now = datetime.now(UTC)
+        counts: dict[str, int] = {}
+
+        # 1. 宽表（排行榜 + 四象限数据源）
+        r = await db.execute(delete(ContributorProfile))
+        counts["contributor_profiles"] = int(r.rowcount or 0)
+        # 2. 日度明细（详情页图表 / 热力图 / 时间线数据源）
+        r = await db.execute(delete(DailyPR))
+        counts["daily_prs"] = int(r.rowcount or 0)
+        r = await db.execute(delete(DailyCommit))
+        counts["daily_commits"] = int(r.rowcount or 0)
+        # 3. 贡献者身份表
+        r = await db.execute(delete(Contributor))
+        counts["contributors"] = int(r.rowcount or 0)
+        # 4. 运行中/待处理任务置为 cancelled（保留历史记录供审计）
+        res = (
+            await db.execute(
+                select(ContributorSyncRecord).where(
+                    ContributorSyncRecord.status.in_(["running", "pending"])
+                )
+            )
+        ).scalars().all()
+        for rec in res:
+            rec.status = "cancelled"
+            rec.completed_at = now
+            rec.progress_message = (rec.progress_message or "") + " | 已由'清除并重置'终止"
+        counts["sync_records_cancelled"] = len(res)
+        # 5. 同步历史
+        r = await db.execute(delete(ContributorSyncRecord))
+        counts["sync_records"] = int(r.rowcount or 0)
+
+        await db.commit()
+        logger.warning(
+            "Contributor board collector data cleared: %s", counts
+        )
+        return counts
 
     async def trigger_sync(
         self, db, since_date: date | None = None, until_date: date | None = None,

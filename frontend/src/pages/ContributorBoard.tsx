@@ -136,13 +136,14 @@ import {
   getSyncSchedule,
   updateSyncSchedule,
   type ContributorSyncScheduleConfig,
-    syncContributors,
-    type SyncRecord,
-    type SyncSummary,
-     getSyncStatus,
-     getSyncHistory,
-     getSyncSummary,
-     cancelSync,
+     syncContributors,
+     type SyncRecord,
+     type SyncSummary,
+      getSyncStatus,
+      getSyncHistory,
+      getSyncSummary,
+      cancelSync,
+      clearSyncData,
 } from '../services/contributorBoard'
 import { getLLMProviders, type LLMProvider } from '../services/dailySummary'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -3252,6 +3253,50 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
     }
   }
 
+  const [clearing, setClearing] = useState(false)
+
+  const handleClearData = () => {
+    if (clearing || isRunning) return
+    Modal.confirm({
+      title: '清除贡献者采集数据？',
+      icon: <WarningOutlined />,
+      content: (
+        <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+          <p style={{ margin: '0 0 8px' }}>将彻底清空以下已采集数据（排行榜、四象限、贡献者详情、热力图、时间线），评分设置与权重版本会保留：</p>
+          <ul style={{ margin: 0, paddingLeft: 18, color: '#666' }}>
+            <li>贡献者画像 / 排行 / 四象限</li>
+            <li>日度 PR 明细（详情页趋势等）</li>
+            <li>日度 commit 明细（热力图 / 模块分布 / 时间线）</li>
+            <li>贡献者身份表 + 同步历史</li>
+          </ul>
+          <p style={{ margin: '10px 0 0', color: '#cf1322' }}>此为不可逆操作，清除后请重新触发全量同步。</p>
+        </div>
+      ),
+      okText: '确认清除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setClearing(true)
+        try {
+          await clearSyncData()
+          message.success('已清除全部贡献者采集数据，请重新触发全量同步。')
+          // 刷新排行榜/统计、四象限、设置、同步历史
+          window.dispatchEvent(new Event('settings-updated'))
+          window.dispatchEvent(new Event('sync-history-refresh'))
+          // 重置本面板状态
+          setSyncMode('full')
+          setSingleDate(null)
+          setDateRange(null)
+        } catch (err: unknown) {
+          const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '清除失败'
+          message.error(msg)
+        } finally {
+          setClearing(false)
+        }
+      },
+    })
+  }
+
   const [cancelling, setCancelling] = useState(false)
 
   const isRunning = currentRecord?.status === 'running' || currentRecord?.status === 'pending'
@@ -3324,15 +3369,26 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
     {
       title: <><GithubOutlined style={{ marginRight: 6, color: '#722ed1' }} />目标仓库</>,
       extra: (
-        <Button
-          type="primary"
-          icon={<CloudUploadOutlined />}
-          loading={syncLoading && !currentRecord}
-          disabled={isRunning}
-          onClick={handleSync}
-        >
-          {isRunning ? '同步中' : '开始'}
-        </Button>
+        <Space>
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            loading={clearing}
+            disabled={isRunning}
+            onClick={handleClearData}
+          >
+            清除并重置
+          </Button>
+          <Button
+            type="primary"
+            icon={<CloudUploadOutlined />}
+            loading={syncLoading && !currentRecord}
+            disabled={isRunning}
+            onClick={handleSync}
+          >
+            {isRunning ? '同步中' : '开始'}
+          </Button>
+        </Space>
       ),
       children: (
         <Select
