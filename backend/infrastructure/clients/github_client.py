@@ -72,6 +72,8 @@ class GitHubClient:
         # 速率限制状态
         self.rate_limit_remaining = 5000
         self.rate_limit_reset: datetime | None = None
+        # 限流等待计数：累计"续等重置窗口"次数，达到 RATE_LIMIT_WAIT_LOOPS 即优雅放弃
+        self.rate_wait_loops = 0
 
         # 创建 HTTP 客户端
         self.client = httpx.AsyncClient(
