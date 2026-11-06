@@ -432,28 +432,48 @@ class CIDailyReportBuilder:
             DailyFailureRecord.report_date >= start_date,
             DailyFailureRecord.report_date <= end_date,
         )
-        if request.hardware:
-            stmt = stmt.where(func.lower(DailyFailureRecord.hardware) == request.hardware.lower())
+        # 分支过滤在 SQL 层做（source_branch 直接存储在 record 上）
         if request.branch and request.branch != "all":
             stmt = stmt.where(DailyFailureRecord.source_branch.like(f"{request.branch}%"))
+        # 硬件过滤不在 SQL 层做：rec.hardware 可能为 NULL（fallback 到 CIResult.hardware），
+        # 需在 Python 层利用 run_by_id 做 fallback 后过滤。
         records = list((await self.db.execute(stmt)).scalars().all())
-        # 二次过滤：用 started_at / completed_at 精确匹配时间窗口
-        # （report_date 是天粒度的，无法区分同一天内的不同时段）
+
+        # 批量查 CIResult.hardware 作为 fallback
+        run_ids = {rec.run_id for rec in records if rec.run_id}
+        run_hw: dict[int, str | None] = {}
+        if run_ids:
+            hw_map = dict(
+                (await self.db.execute(
+                    select(CIResult.run_id, CIResult.hardware).where(CIResult.run_id.in_(list(run_ids)))
+                )).all()
+            )
+            run_hw = {rid: hw for rid, hw in hw_map}
+
+        def _effective_hw(rec) -> str | None:
+            if rec.hardware:
+                return rec.hardware.lower()
+            return run_hw.get(rec.run_id)
+
         def _in_window(rec) -> bool:
             ts = rec.started_at or rec.completed_at
             if ts is None:
-                # 无时间戳时回退用 report_date 判断（保守：保留）
-                rd = rec.report_date
-                if hasattr(rd, "date"):
-                    rd = rd.date() if callable(getattr(rd, "date", None)) else rd
-                rd_bj = rd.replace(tzinfo=SHANGHAI_TZ) if not hasattr(rd, "hour") else rd
-                # 简化：如果无法判断时间，保留该记录
                 return True
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=UTC)
             ts_utc_naive = ts.astimezone(UTC).replace(tzinfo=None)
             return start_utc <= ts_utc_naive < end_utc
-        return [r for r in records if _in_window(r)]
+
+        result = []
+        for rec in records:
+            if not _in_window(rec):
+                continue
+            if request.hardware:
+                hw = _effective_hw(rec)
+                if hw != request.hardware.lower():
+                    continue
+            result.append(rec)
+        return result
 
     async def _query_case_runs(self, start, end) -> list[TestRun]:
         stmt = select(TestRun).where(
@@ -576,7 +596,9 @@ class CIDailyReportBuilder:
             case = case_detail.get((rec.run_id, rec.job_id)) or case_detail.get((rec.run_id, -1))
 
             branch = rec.source_branch or (run.branch if run else None) or "main"
-            hardware = rec.hardware or (job.hardware if job else None) or "未知"
+            # hardware: rec.hardware 为空时 fallback 到 CIResult.hardware（workflow 级），再 fallback 到 CIJob
+            hw = rec.hardware or (run.hardware if run else None) or (job.hardware if job else None) or "未知"
+            hardware = hw
             duration = rec.duration_seconds if rec.duration_seconds is not None else (
                 job.duration_seconds if job else None
             )
