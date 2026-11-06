@@ -251,22 +251,40 @@ def render_failure_by_model(failure_by_model: dict[str, int], top_n: int = 10) -
     return _fig_to_b64(fig)
 
 
-def render_processing_status(processing_distribution: dict[str, int]) -> str:
-    """失败处理状态分布（饼图）。"""
-    if not processing_distribution:
+def render_analysis_status(analysis_distribution: dict[str, int]) -> str:
+    """AI 分析状态横向柱状图（替代原处理状态饼图）。"""
+    if not analysis_distribution:
         return _empty("无失败记录")
-    items = processing_distribution.items()
-    labels = [f"{k} {v}" for k, v in items]
+    items = sorted(analysis_distribution.items(), key=lambda kv: kv[1], reverse=True)
+    labels = [k for k, _ in items]
     values = [v for _, v in items]
-    colors = [STATUS_COLORS.get(k, GREY) for k, _ in items]
-    fig, ax = plt.subplots(figsize=(5.6, 3.8))
-    ax.pie(
-        values, labels=labels, colors=colors, startangle=90, counterclock=False,
-        textprops={"fontsize": 10, "color": DARK},
-        wedgeprops={"edgecolor": "white", "linewidth": 1.5},
-        autopct=lambda p: f"{p:.0f}%" if p >= 8 else "",
-    )
-    ax.set_title("失败 · 处理状态", fontsize=13, fontweight="bold", color=DARK, pad=14)
+    as_colors = {
+        "未分析": "#9ca3af",
+        "pending": "#f59e0b",
+        "analyzing": "#3b82f6",
+        "completed": "#2fc25b",
+        "reused": "#06b6d4",
+        "failed": "#dc2626",
+        "degraded": "#2563eb",
+        "cancelled": "#6b7280",
+        "raw_log_collected": "#8b5cf6",
+    }
+    colors = [as_colors.get(l, GREY) for l in labels]
+    fig, ax = plt.subplots(figsize=(6.4, max(2.6, len(labels) * 0.5 + 1.2)))
+    y = range(len(labels))
+    bars = ax.barh(y, values, color=colors, alpha=0.9, height=0.6, zorder=3)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=10)
+    ax.invert_yaxis()
+    for bar, v in zip(bars, values, strict=False):
+        ax.text(bar.get_width() + max(values) * 0.02, bar.get_y() + bar.get_height() / 2,
+                str(v), va="center", fontsize=10, fontweight="bold", color=DARK)
+    ax.set_xlim(0, max(values) * 1.18 if max(values) else 1)
+    ax.set_xlabel("失败 Job 数", fontsize=10, color=DARK)
+    ax.set_title("失败 · AI 分析状态", fontsize=13, fontweight="bold", color=DARK, pad=12)
+    ax.grid(axis="x", alpha=0.3, zorder=0)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
     return _fig_to_b64(fig)
 
 
@@ -383,8 +401,8 @@ def render_report_charts(report_data: dict[str, Any]) -> dict[str, str]:
         summary.get("failure_by_hardware", {})))
     _safe("failure_by_model", lambda: render_failure_by_model(
         summary.get("failure_by_model", {})))
-    _safe("processing_status", lambda: render_processing_status(
-        summary.get("processing_distribution", {})))
+    _safe("analysis_status", lambda: render_analysis_status(
+        summary.get("analysis_distribution", {})))
     _safe("success_rate_trend", lambda: render_success_rate_trend(report_data.get("trends", [])))
     _safe("failed_job_durations", lambda: render_failed_job_durations(failures))
     return charts

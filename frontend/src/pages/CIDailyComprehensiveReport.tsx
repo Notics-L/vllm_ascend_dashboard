@@ -119,13 +119,15 @@ function CIDailyComprehensiveReport() {
     hardware: null,
     branch: null,
   })
-  const [applied, setApplied] = useState<FilterState>({
+  const [applied, setApplied] = useState<FilterState & { key: number }>({
     start: null,
     end: null,
     hardware: null,
     branch: null,
+    key: 0,
   })
   const [range, setRange] = useState<{ start: dayjs.Dayjs; end: dayjs.Dayjs }>(() => defaultWindow())
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null)
   const [collectingLogs, setCollectingLogs] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
@@ -143,7 +145,7 @@ function CIDailyComprehensiveReport() {
 
   const applyFilters = () => {
     setRawLogsReport(null)
-    setApplied({ ...filters })
+    setApplied((prev) => ({ ...filters, key: prev.key + 1 }))
   }
 
   const handleRangeChange = (values: [dayjs.Dayjs | null, dayjs.Dayjs | null] | null) => {
@@ -250,8 +252,24 @@ function CIDailyComprehensiveReport() {
     }
   }
 
-  const summary = activeReport?.summary
+  const rawSummary = activeReport?.summary
   const allGreen = activeReport?.all_green
+
+  // CIResult 无数据时（窄窗口/时区边界），从失败记录推断「整体运行」
+  const summary = useMemo(() => {
+    if (!rawSummary) return undefined
+    if (rawSummary.total_runs > 0) return rawSummary
+    const failures = activeReport?.failures ?? []
+    if (failures.length === 0) return rawSummary
+    const uniqueRunIds = new Set(failures.map((f) => f.run_id).filter(Boolean))
+    const failedRuns = uniqueRunIds.size
+    return {
+      ...rawSummary,
+      total_runs: failedRuns,
+      failed_runs: failedRuns,
+      success_rate: 0,
+    }
+  }, [rawSummary, activeReport?.failures])
 
   const sortedFailures = useMemo(() => {
     const items = activeReport?.failures ?? []
@@ -479,7 +497,7 @@ function CIDailyComprehensiveReport() {
     'failure_by_branch',
     'failure_by_hardware',
     'failure_by_model',
-    'processing_status',
+    'analysis_status',
   ]
   const distributionCharts = chartKeys.filter((k) => charts[k])
 
@@ -560,10 +578,25 @@ function CIDailyComprehensiveReport() {
           <RangePicker
             showTime
             allowClear
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
             value={[range.start, range.end]}
             onChange={handleRangeChange}
             format={['YYYY-MM-DD HH:mm', 'YYYY-MM-DD HH:mm']}
             style={{ width: 420 }}
+            renderExtraFooter={() => (
+              <Space size={4}>
+                <Button size="small" onClick={() => setRange(() => { const def = defaultWindow(); setFilters((f) => ({ ...f, start: def.start.format('YYYY-MM-DD HH:mm:ss'), end: def.end.format('YYYY-MM-DD HH:mm:ss') })); return def })}>
+                  默认 13h
+                </Button>
+                <Button size="small" onClick={() => setRange(() => { const end = dayjs().endOf('day'); const start = end.subtract(1, 'day').startOf('day'); setFilters((f) => ({ ...f, start: start.format('YYYY-MM-DD HH:mm:ss'), end: end.format('YYYY-MM-DD HH:mm:ss') })); return { start, end } })}>
+                  近 24h
+                </Button>
+                <Button size="small" onClick={() => setRange(() => { const end = dayjs().endOf('day'); const start = end.subtract(7, 'day').startOf('day'); setFilters((f) => ({ ...f, start: start.format('YYYY-MM-DD HH:mm:ss'), end: end.format('YYYY-MM-DD HH:mm:ss') })); return { start, end } })}>
+                  近 7 天
+                </Button>
+              </Space>
+            )}
           />
           <span>硬件</span>
           <Select
@@ -584,7 +617,7 @@ function CIDailyComprehensiveReport() {
             style={{ width: 130 }}
             onChange={(v) => setFilters((f) => ({ ...f, branch: v === 'all' ? null : v }))}
           />
-          <Button type="primary" onClick={applyFilters}>应用</Button>
+          <Button type="primary" onClick={() => { applyFilters(); setPickerOpen(false) }}>应用</Button>
         </Space>
         <div style={{ marginTop: 8 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>

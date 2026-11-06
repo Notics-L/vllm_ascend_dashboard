@@ -676,6 +676,7 @@ export interface ComprehensiveReportSummary {
   failure_by_hardware: Record<string, number>
   failure_by_model: Record<string, number>
   processing_distribution: Record<string, number>
+  analysis_distribution: Record<string, number>
   unprocessed_failures: number
   top_failure_category: string | null
   top_failure_category_count: number

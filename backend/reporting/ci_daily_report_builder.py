@@ -865,48 +865,136 @@ class CIDailyReportBuilder:
     def _extract_error_lines(log_text: str | None, max_lines: int) -> list[str]:
         """从完整 GitHub Actions 日志中抽取若干高价值的错误线索行。
 
-        与 _extract_error_line 同源打分，但保留得分最高的若干行（而非单行），
-        便于报告中展示「原始报错信息线索行」全貌。
+        策略：
+        1. 定位最后一个 traceback / fatal / fatal error 位置作为「失败锚点」
+        2. 锚点之后 ± 窗口内的行按关键词打分
+        3. 锚点之前的高分行（AISBench case failed / 验证失败）也纳入
+        4. 取得分最高的 max_lines 条，同分取最靠近锚点的
         """
         if not log_text:
             return []
         ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-        scored: list[tuple[int, str]] = []
+        lines = log_text.splitlines()
+        total = len(lines)
+        if total == 0:
+            return []
+
+        # 找最后一个 traceback 位置（失败锚点）
+        anchor = 0
+        for i in range(total - 1, -1, -1):
+            if "traceback" in lines[i].lower():
+                anchor = i
+                break
+
+        # anchor 附近的窗口（取锚点前 5 行 ~ 末尾，最多 80 行）
+        win_start = max(0, anchor - 5)
+        win_end = min(total, anchor + 80) if anchor else total
+
+        scored: list[tuple[int, int, str]] = []  # (score, line_idx, text)
         seen: set[str] = set()
-        for raw in log_text.splitlines():
+        window = lines[win_start:win_end]
+        for i, raw in enumerate(window):
             line = ansi.sub("", raw).strip()
+            if not line:
+                continue
             lowered = line.lower()
-            if not line or any(
+            if any(
                 noise in lowered for noise in (
-                    'echo "::error::', "::error::upload failed", "process completed with exit code",
+                    'echo "::error::', "::error::upload failed",
+                    "process completed with exit code",
+                    "##[warning]", "##[notice]",
                 )
             ):
                 continue
             score = 0
-            if any(m in lowered for m in (
-                "the following aisbench case failed",
-                "performance verification failed",
-                "accuracy verification failed",
-            )):
+            if "the following aisbench case failed" in lowered:
+                score = 12
+            elif "performance verification failed" in lowered or "accuracy verification failed" in lowered:
+                score = 11
+            elif "fatal python error" in lowered or "fatal error" in lowered:
+                score = 11
+            elif "segmentation fault" in lowered or "core dumped" in lowered:
                 score = 10
+            elif "out of memory" in lowered or "oomkilled" in lowered:
+                score = 10
+            elif "runtimeerror" in lowered or "runtime error" in lowered:
+                score = 9
+            elif "assertionerror" in lowered or "assertion failed" in lowered:
+                score = 8
+            elif "exception" in lowered and "no exception" not in lowered:
+                score = 7
             elif "traceback" in lowered:
-                score = 5
-            elif "assertionerror" in lowered or "exception" in lowered:
-                score = 4
+                score = 6
             elif "error:" in lowered or "[error]" in lowered or "err!" in lowered:
+                score = 5
+            elif "failed" in lowered and "0 failed" not in lowered and "no failed" not in lowered:
                 score = 3
-            elif "failed" in lowered:
+            elif "canceled" in lowered or "cancelled" in lowered:
                 score = 2
             if score and line not in seen:
                 seen.add(line)
+                idx = win_start + i
+                proximity = abs(idx - anchor) if anchor else 0
                 short = line if len(line) <= ERROR_LINE_MAX_LEN else f"{line[:ERROR_LINE_MAX_LEN - 3]}..."
-                scored.append((score, short))
+                scored.append((score, (proximity, idx), short))
+
         if not scored:
             return []
-        best = max(s for s, _ in scored)
-        top = [ln for s, ln in scored if s == best]
-        # 同分多行：保留最末出现的若干条（最贴近失败点）
-        return top[-max_lines:]
+        # 排序：得分降序 → 接近锚点 → 行号降序（越靠后越接近失败点）
+        scored.sort(key=lambda x: (-x[0], x[1][0], -x[1][1]))
+        return [item[2] for item in scored[:max_lines]]
+
+    @staticmethod
+    def _extract_job_timestamps(log_text: str) -> tuple[str | None, str | None, int | None]:
+        """从 GitHub Actions 日志中提取 job 的开始/结束时间和耗时。
+
+        返回 (started_beijing, completed_beijing, duration_seconds)。
+        解析 "Job started" / "Job completed" 等标记行中的 UTC 时间戳，
+        转为北京时间。若无法解析则返回 (None, None, None)。
+        """
+        ts_pattern = re.compile(
+            r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)"
+        )
+        start_ts: datetime | None = None
+        end_ts: datetime | None = None
+        for raw_line in log_text.splitlines():
+            lowered = raw_line.lower()
+            ts_match = ts_pattern.search(raw_line)
+            if not ts_match:
+                continue
+            raw_ts = ts_match.group(1)
+            try:
+                if "T" in raw_ts:
+                    parsed = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                else:
+                    fmts = ("%Y-%m-%d %H:%M:%S.%f %z", "%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
+                    parsed = None
+                    for fmt in fmts:
+                        try:
+                            parsed = datetime.strptime(raw_ts, fmt)
+                            break
+                        except ValueError:
+                            continue
+                    if parsed is None:
+                        continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                if start_ts is None and ("job started" in lowered or "job started at" in lowered or "started at" in lowered):
+                    start_ts = parsed
+                if end_ts is None and ("job completed" in lowered or "completed at" in lowered or "job finished" in lowered):
+                    end_ts = parsed
+            except (ValueError, OverflowError):
+                continue
+            if start_ts and end_ts:
+                break
+        if not start_ts or not end_ts:
+            return (None, None, None)
+        duration = int((end_ts - start_ts).total_seconds())
+        return (
+            start_ts.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            end_ts.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            max(duration, 0),
+        )
 
     async def collect_raw_logs(self, report: dict[str, Any]) -> dict[str, Any]:
         """对报告中的失败记录自动访问 GitHub 原始日志链接，拉取并解析报错线索。
@@ -965,6 +1053,17 @@ class CIDailyReportBuilder:
                     return
             if not log_text:
                 return
+            # 提取时间戳（即使没有错误行也回写时间）
+            if not f.get("started_at") or not f.get("started_at").strip():
+                ts_start, ts_end, ts_dur = self._extract_job_timestamps(log_text)
+                if ts_start:
+                    f["started_at"] = ts_start
+                    f["report_datetime"] = ts_start
+                if ts_end:
+                    f["completed_at"] = ts_end
+                if ts_dur is not None and not f.get("duration_seconds"):
+                    f["duration_seconds"] = ts_dur
+                    f["duration_text"] = format_duration(ts_dur)
             lines = self._extract_error_lines(log_text, self.RAW_LOG_LINES_PER_FAILURE)
             if not lines:
                 return
@@ -1023,6 +1122,7 @@ class CIDailyReportBuilder:
 
         processing_distribution = _count_by([f["processing_status"] for f in failures_data])
         unprocessed = processing_distribution.get("未处理", 0)
+        analysis_distribution = _count_by([f.get("analysis_status") or "未分析" for f in failures_data])
         top_category = next(iter(failure_by_category), None)
 
         return {
@@ -1039,6 +1139,7 @@ class CIDailyReportBuilder:
             "failure_by_hardware": failure_by_hardware,
             "failure_by_model": failure_by_model,
             "processing_distribution": processing_distribution,
+            "analysis_distribution": analysis_distribution,
             "unprocessed_failures": unprocessed,
             "top_failure_category": top_category,
             "top_failure_category_count": failure_by_category.get(top_category, 0) if top_category else 0,
