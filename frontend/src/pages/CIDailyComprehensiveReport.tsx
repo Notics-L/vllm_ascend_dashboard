@@ -1,21 +1,21 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import dayjs from 'dayjs'
 import {
   Alert,
+  Button,
   Card,
   Col,
   DatePicker,
+  Descriptions,
+  Drawer,
+  Modal,
   Row,
   Select,
   Space,
   Statistic,
   Table,
   Tag,
-  Tooltip,
   Typography,
-  Button,
-  Spin,
-  Empty,
   message,
   type TableColumnsType,
 } from 'antd'
@@ -27,19 +27,15 @@ import {
   ReloadOutlined,
   CloudDownloadOutlined,
   RobotOutlined,
+  FileSearchOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
+  ExpandOutlined,
+  LinkOutlined,
 } from '@ant-design/icons'
 
 import { FailureAnalysisDetailModal } from '../components/FailureAnalysisDetailModal'
 import { useJobFailureAnalysis } from '../hooks/useFailureAnalysis'
-
-export const CONCLUSION_ZH: Record<string, string> = {
-  success: '成功',
-  failure: '失败',
-  cancelled: '已取消',
-  skipped: '已跳过',
-  timed_out: '超时',
-  startup_failure: '启动失败',
-}
 import { useComprehensiveReport } from '../hooks/useCI'
 import {
   type ComprehensiveReportFailure,
@@ -49,13 +45,35 @@ import {
   autoAnalyzeComprehensiveReport,
 } from '../services/ci'
 
+export const CONCLUSION_ZH: Record<string, string> = {
+  success: '成功',
+  failure: '失败',
+  cancelled: '已取消',
+  skipped: '已跳过',
+  timed_out: '超时',
+  startup_failure: '启动失败',
+}
+
 const AI_STATUS_ZH: Record<string, string> = {
   completed: '已完成',
   analyzing: '分析中',
   pending: '待分析',
   reused: '已复用',
   failed: '分析失败',
+  degraded: '已降级(GitHub)',
   cancelled: '已取消',
+  raw_log_collected: '已收集日志',
+}
+
+const AI_STATUS_COLORS: Record<string, string> = {
+  completed: 'green',
+  analyzing: 'processing',
+  pending: 'orange',
+  reused: 'cyan',
+  failed: 'red',
+  degraded: 'blue',
+  cancelled: 'default',
+  raw_log_collected: 'geekblue',
 }
 
 const { Text, Title } = Typography
@@ -67,6 +85,7 @@ type FilterState = {
   hardware: string | null
   branch: string | null
 }
+type SortOrder = 'desc' | 'asc'
 
 const HARDWARE_OPTIONS = [
   { label: '全部硬件', value: 'all' },
@@ -86,50 +105,64 @@ const CATEGORY_COLORS: Record<string, string> = {
 }
 
 function defaultWindow(): { start: dayjs.Dayjs; end: dayjs.Dayjs } {
-  // 默认窗口：昨日 20:00 ~ 今日 09:00（北京时间/本地）
   const end = dayjs().hour(9).minute(0).second(0).millisecond(0)
   const start = end.subtract(1, 'day').hour(20).minute(0).second(0)
   return { start, end }
 }
 
 function CIDailyComprehensiveReport() {
-  const [filters, setFilters] = useState<FilterState>(
-    () => ({ start: null, end: null, hardware: null, branch: null }),
-  )
-  const [query, setQuery] = useState<{
-    start: string | null
-    end: string | null
-    hardware: string | null
-    branch: string | null
-  }>(() => ({ start: null, end: null, hardware: null, branch: null }))
+  const [filters, setFilters] = useState<FilterState>({
+    start: null,
+    end: null,
+    hardware: null,
+    branch: null,
+  })
+  const [applied, setApplied] = useState<FilterState>({
+    start: null,
+    end: null,
+    hardware: null,
+    branch: null,
+  })
   const [range, setRange] = useState<{ start: dayjs.Dayjs; end: dayjs.Dayjs }>(() => defaultWindow())
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null)
   const [collectingLogs, setCollectingLogs] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisModalJobId, setAnalysisModalJobId] = useState<number | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
+  const [logModalRow, setLogModalRow] = useState<ComprehensiveReportFailure | null>(null)
+  const [detailDrawerRow, setDetailDrawerRow] = useState<ComprehensiveReportFailure | null>(null)
 
-  // 当前选中行的 AI 分析详情（按 jobId 拉取，分析中自动轮询）
   const { data: modalAnalysis } = useJobFailureAnalysis(analysisModalJobId)
 
-  const {
-    data: report,
-    isLoading,
-    isError,
-    error,
-    refetch,
-  } = useComprehensiveReport(query)
+  const { data: report, isLoading, isError, error, refetch } = useComprehensiveReport(applied)
 
-  // 本地覆盖：抓取到的原始日志版本（覆盖 useQuery 的 data）
   const [rawLogsReport, setRawLogsReport] = useState<ComprehensiveReport | null>(null)
   const activeReport: ComprehensiveReport | undefined = rawLogsReport ?? report
 
   const applyFilters = () => {
     setRawLogsReport(null)
-    setQuery({ ...filters })
+    setApplied({ ...filters })
   }
 
-  // 一键自动 AI 分析：对「结论=失败 且尚无分析记录」的失败项自动入队，
-  // 入队后自动刷新报告（analysis_status 会变为「分析中」），由后端 Collector worker 异步执行。
+  const handleRangeChange = (values: [dayjs.Dayjs | null, dayjs.Dayjs | null] | null) => {
+    if (values && values[0] && values[1]) {
+      setRange({ start: values[0], end: values[1] })
+      setFilters((f) => ({
+        ...f,
+        start: values[0]!.format('YYYY-MM-DD HH:mm:ss'),
+        end: values[1]!.format('YYYY-MM-DD HH:mm:ss'),
+      }))
+    } else {
+      const def = defaultWindow()
+      setRange(def)
+      setFilters((f) => ({
+        ...f,
+        start: null,
+        end: null,
+      }))
+    }
+  }
+
   const handleAutoAnalyze = async () => {
     const failures = activeReport?.failures ?? []
     const targets = failures.filter(
@@ -142,14 +175,13 @@ function CIDailyComprehensiveReport() {
     setAnalyzing(true)
     try {
       const res = await autoAnalyzeComprehensiveReport({
-        start: query.start,
-        end: query.end,
-        hardware: query.hardware,
-        branch: query.branch,
+        start: applied.start,
+        end: applied.end,
+        hardware: applied.hardware,
+        branch: applied.branch,
       })
       if (res.triggered > 0) {
-        message.success(`已自动触发 ${res.triggered} 条 AI 失败分析（后台执行，稍后可刷新查看结果）`)
-        // 触发后刷新，让表格 AI 分析列反映「分析中」状态
+        message.success(`已自动触发 ${res.triggered} 条 AI 失败分析（后台执行）`)
         setTimeout(() => {
           refetch()
           setRawLogsReport(null)
@@ -168,11 +200,10 @@ function CIDailyComprehensiveReport() {
   }
 
   const handleCollectRawLogs = async () => {
-    // 仅对「缺少原始报错行 / 未定界」的失败项，自动访问 GitHub 原始日志链接并解析报错线索
     const targets = (activeReport?.failures ?? []).filter(
       (f) =>
         f.job_id &&
-        (!(f.error_line || '').trim() || !f.problem_category || f.problem_category === '未定界'),
+        (!(f.error_line || '').trim() || !f.problem_category || f.problem_category === '未定界' || f.analysis_status === 'failed'),
     )
     if (targets.length === 0) {
       message.info('当前失败项均已有原始报错信息，无需抓取')
@@ -181,10 +212,10 @@ function CIDailyComprehensiveReport() {
     setCollectingLogs(true)
     try {
       const enhanced = await collectComprehensiveRawLogs({
-        start: query.start,
-        end: query.end,
-        hardware: query.hardware,
-        branch: query.branch,
+        start: applied.start,
+        end: applied.end,
+        hardware: applied.hardware,
+        branch: applied.branch,
       })
       setRawLogsReport(enhanced)
       message.success(`已抓取并解析 ${enhanced._raw_log_stats?.collected ?? 0}/${targets.length} 条失败项的原始日志`)
@@ -195,24 +226,15 @@ function CIDailyComprehensiveReport() {
     }
   }
 
-  const handleRangeChange = (_: unknown, dateStrings: [string, string]) => {
-    setFilters((f) => ({
-      ...f,
-      start: dateStrings[0] ? dayjs(dateStrings[0]).format('YYYY-MM-DD HH:mm:ss') : null,
-      end: dateStrings[1] ? dayjs(dateStrings[1]).format('YYYY-MM-DD HH:mm:ss') : null,
-    }))
-  }
-
   const handleExport = async (format: 'pdf' | 'excel') => {
     if (!activeReport) return
     setExporting(format)
     try {
-      const hw = query.hardware && query.hardware !== 'all' ? query.hardware : null
-      const br = query.branch && query.branch !== 'all' ? query.branch : null
-      // 若当前页已抓取原始日志（rawLogsReport），则导出时同样抓取，保证图文一致
+      const hw = applied.hardware && applied.hardware !== 'all' ? applied.hardware : null
+      const br = applied.branch && applied.branch !== 'all' ? applied.branch : null
       await downloadComprehensiveReport(format, {
-        start: query.start,
-        end: query.end,
+        start: applied.start,
+        end: applied.end,
         hardware: hw,
         branch: br,
         collectRawLogs: !!rawLogsReport,
@@ -229,145 +251,171 @@ function CIDailyComprehensiveReport() {
   const summary = activeReport?.summary
   const allGreen = activeReport?.all_green
 
+  const sortedFailures = useMemo(() => {
+    const items = activeReport?.failures ?? []
+    const sorted = [...items].sort((a, b) => {
+      const da = a.started_at || a.report_datetime || ''
+      const db = b.started_at || b.report_datetime || ''
+      return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
+    })
+    return sorted
+  }, [activeReport, sortOrder])
+
   const failureColumns: TableColumnsType<ComprehensiveReportFailure> = useMemo(
     () => [
       {
-        title: '日期（北京时间）',
+        title: '时间',
         dataIndex: 'report_datetime',
-        width: 160,
+        width: 155,
+        fixed: 'left' as const,
+        sorter: (a: ComprehensiveReportFailure, b: ComprehensiveReportFailure) =>
+          (a.started_at || '').localeCompare(b.started_at || ''),
         render: (v: string, r) => (
-          <span style={{ whiteSpace: 'nowrap' }}>{v || r.report_date}</span>
+          <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{v || r.report_date}</span>
         ),
       },
-      { title: '分支', dataIndex: 'source_branch', width: 90, render: (v: string) => <Tag color="blue">{v}</Tag> },
-      { title: 'Workflow', dataIndex: 'workflow_name', width: 150, ellipsis: true },
-      { title: 'Job', dataIndex: 'job_name', width: 150, ellipsis: true },
       {
-        title: '模型 / 用例',
-        dataIndex: 'test_model',
-        width: 160,
-        ellipsis: true,
-        render: (v: string | null, r: ComprehensiveReportFailure) =>
-          v || r.display_name || <Text type="secondary">-</Text>,
+        title: '分支',
+        dataIndex: 'source_branch',
+        width: 140,
+        ellipsis: { showTitle: true },
+        render: (v: string) => <Tag color="blue">{v}</Tag>,
       },
-      { title: '硬件', dataIndex: 'hardware', width: 90, render: (v: string) => <Tag>{v}</Tag> },
+      {
+        title: 'Workflow',
+        dataIndex: 'workflow_name',
+        width: 130,
+        ellipsis: { showTitle: true },
+      },
+      {
+        title: 'Job',
+        dataIndex: 'job_name',
+        width: 180,
+        ellipsis: { showTitle: true },
+      },
+      {
+        title: '模型/用例',
+        dataIndex: 'test_model',
+        width: 180,
+        ellipsis: { showTitle: true },
+        render: (v: string | null, r) => v || r.display_name || <Text type="secondary">-</Text>,
+      },
+      {
+        title: '硬件',
+        dataIndex: 'hardware',
+        width: 80,
+        render: (v: string) => <Tag>{v}</Tag>,
+      },
       {
         title: '结论',
         dataIndex: 'conclusion',
-        width: 100,
-        render: (_: string | null, r: ComprehensiveReportFailure) => (
-          <Tag color="red">{r.conclusion_zh || CONCLUSION_ZH[(r.conclusion || '').toLowerCase()] || r.conclusion || '-'}</Tag>
-        ),
+        width: 85,
+        render: (_: string | null, r) => {
+          const zh = r.conclusion_zh || CONCLUSION_ZH[(r.conclusion || '').toLowerCase()]
+          const color = (r.conclusion || '').toLowerCase() === 'failure' ? 'red' : 'default'
+          return <Tag color={color}>{zh || r.conclusion || '-'}</Tag>
+        },
       },
       {
         title: '责任人',
         dataIndex: 'owner',
-        width: 110,
+        width: 90,
+        ellipsis: { showTitle: true },
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
-        title: '失败关键步骤',
+        title: '关键步骤',
         dataIndex: 'failed_step',
-        width: 140,
+        width: 120,
+        ellipsis: { showTitle: true },
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
-      { title: '耗时', dataIndex: 'duration_text', width: 80 },
       {
-        title: '问题范畴',
+        title: '耗时',
+        dataIndex: 'duration_text',
+        width: 75,
+        render: (v: string) => <span style={{ fontSize: 12 }}>{v}</span>,
+      },
+      {
+        title: '范畴',
         dataIndex: 'problem_category',
-        width: 110,
+        width: 95,
         render: (v: string | null) => (
           <Tag color={CATEGORY_COLORS[v || ''] || 'orange'}>{v || '未定界'}</Tag>
         ),
       },
       {
-        title: 'AI 分析',
+        title: 'AI分析',
         dataIndex: 'analysis_status',
-        width: 130,
-        render: (_: string | null, r: ComprehensiveReportFailure) => {
+        width: 110,
+        render: (_: string | null, r) => {
           const st = r.analysis_status
-          const color =
-            st === 'completed' ? 'green'
-            : st === 'analyzing' ? 'processing'
-            : st === 'failed' ? 'red'
-            : st ? 'orange'
-            : 'default'
+          const color = AI_STATUS_COLORS[st || ''] || 'default'
           return (
-            <Space size={4}>
-              <Tag color={color}>{AI_STATUS_ZH[st || ''] ?? st ?? '未分析'}</Tag>
+            <Space size={2}>
+              <Tag color={color} style={{ fontSize: 11 }}>{AI_STATUS_ZH[st || ''] ?? st ?? '未分析'}</Tag>
               {st === 'completed' && r.analysis_id && (
-                <Button
-                  size="small"
-                  type="link"
-                  icon={<RobotOutlined />}
+                <Button size="small" type="link" icon={<RobotOutlined />}
+                  style={{ padding: 0, height: 'auto' }}
                   onClick={() => setAnalysisModalJobId(r.job_id ?? null)}
-                >
-                  详情
-                </Button>
+                />
               )}
             </Space>
           )
         },
       },
       {
-        title: '原始报错线索行',
+        title: '报错线索',
         dataIndex: 'error_line',
-        render: (_: string | null, r: ComprehensiveReportFailure) => {
-          const lines: string[] = r.raw_log_lines?.length ? r.raw_log_lines : r.error_line ? [r.error_line] : []
-          if (!lines.length) {
-            return (
-              <Tooltip title={r.problem_line} placement="topLeft">
-                <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#999' }}>{r.problem_line || '-'}</span>
-              </Tooltip>
-            )
-          }
+        width: 200,
+        render: (_: string | null, r) => {
+          const hasLines = (r.raw_log_lines?.length || 0) > 0 || !!(r.error_line || '').trim()
+          if (!hasLines) return <Text type="secondary">-</Text>
           return (
-            <div style={{ maxWidth: 420 }}>
-              {lines.slice(0, 3).map((ln, i) => (
-                <div
-                  key={i}
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                    color: '#991b1b',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                  title={ln}
-                >
-                  {ln}
-                </div>
-              ))}
-              {lines.length > 3 && (
-                <div style={{ color: '#8a8f98', fontSize: 11, textAlign: 'right' }}>+{lines.length - 3} 行</div>
-              )}
-            </div>
+            <Button
+              size="small"
+              icon={<FileSearchOutlined />}
+              onClick={() => setLogModalRow(r)}
+            >
+              查看（{(r.raw_log_lines?.length || 1)}行）
+            </Button>
           )
         },
       },
       {
-        title: '处理状态',
+        title: '处理',
         dataIndex: 'processing_status',
-        width: 100,
-        render: (v: string) => <Tag color={v === '未处理' ? 'volcano' : 'green'}>{v}</Tag>,
+        width: 80,
+        render: (v: string) => (
+          <Tag color={v === '未处理' ? 'volcano' : 'green'}>{v}</Tag>
+        ),
       },
       {
-        title: '链接',
-        dataIndex: 'github_url',
-        width: 70,
-        render: (url: string | null) =>
-          url ? (
-            <a href={url} target="_blank" rel="noreferrer">GitHub</a>
-          ) : (
-            <Text type="secondary">-</Text>
-          ),
+        title: '操作',
+        key: 'actions',
+        width: 130,
+        fixed: 'right' as const,
+        render: (_: unknown, r) => (
+          <Space size={4}>
+            <Button size="small" type="link" icon={<ExpandOutlined />}
+              onClick={() => setDetailDrawerRow(r)}
+            >
+              详情
+            </Button>
+            {r.github_url && (
+              <Button size="small" type="link" icon={<LinkOutlined />}
+                href={r.github_url} target="_blank"
+              >
+                GH
+              </Button>
+            )}
+          </Space>
+        ),
       },
     ],
     [],
   )
 
-  // 图表 base64（key 与后端 ci_report_charts 对齐），展示 activeReport（含抓取增强版）
   const charts = (activeReport?.charts ?? {}) as Record<string, string>
   const chartKeys = [
     'failure_by_category',
@@ -381,7 +429,7 @@ function CIDailyComprehensiveReport() {
   if (isLoading) {
     return (
       <div style={{ padding: 60, textAlign: 'center' }}>
-        <Spin size="large" tip="正在聚合 CI 综合报错数据…" />
+        <Text type="secondary" style={{ fontSize: 16 }}>正在聚合 CI 综合报错数据…</Text>
       </div>
     )
   }
@@ -393,11 +441,7 @@ function CIDailyComprehensiveReport() {
         showIcon
         message="综合报告加载失败"
         description={(error as Error)?.message || '请稍后重试'}
-        action={
-          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
-            重试
-          </Button>
-        }
+        action={<Button icon={<ReloadOutlined />} onClick={() => refetch()}>重试</Button>}
       />
     )
   }
@@ -405,22 +449,15 @@ function CIDailyComprehensiveReport() {
   return (
     <div>
       {/* 顶部标题 + 导出 */}
-      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>CI 每日综合报错报告</Title>
-          <Text type="secondary">
-            以「失败详情」为核心：哪些用例 / 模型失败了、失败原因（问题范畴 + 原始报错线索行）。
-            窗口内无失败即标记全绿。
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            以「失败详情」为核心 · 窗口内无失败即标记全绿
           </Text>
         </div>
         <Space>
-          <Button
-            icon={<DownloadOutlined />}
-            disabled={!report}
-            onClick={() => refetch()}
-          >
-            刷新
-          </Button>
+          <Button icon={<DownloadOutlined />} disabled={!report} onClick={() => refetch()}>刷新</Button>
           <Button
             icon={<CloudDownloadOutlined />}
             loading={collectingLogs}
@@ -445,7 +482,7 @@ function CIDailyComprehensiveReport() {
             disabled={!report}
             onClick={() => handleExport('pdf')}
           >
-            导出 PDF
+            PDF
           </Button>
           <Button
             type="primary"
@@ -454,7 +491,7 @@ function CIDailyComprehensiveReport() {
             disabled={!report}
             onClick={() => handleExport('excel')}
           >
-            导出 Excel
+            Excel
           </Button>
         </Space>
       </div>
@@ -468,6 +505,7 @@ function CIDailyComprehensiveReport() {
             allowClear
             value={[range.start, range.end]}
             onChange={handleRangeChange}
+            format={['YYYY-MM-DD HH:mm', 'YYYY-MM-DD HH:mm']}
             style={{ width: 420 }}
           />
           <span>硬件</span>
@@ -483,6 +521,7 @@ function CIDailyComprehensiveReport() {
               { label: '全部分支', value: 'all' },
               { label: 'main', value: 'main' },
               { label: 'release', value: 'release' },
+              { label: 'release-all', value: 'release-all' },
             ]}
             value={filters.branch ?? 'all'}
             style={{ width: 130 }}
@@ -490,6 +529,13 @@ function CIDailyComprehensiveReport() {
           />
           <Button type="primary" onClick={applyFilters}>应用</Button>
         </Space>
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            已应用：{applied.start || '默认昨日20:00'} ~ {applied.end || '默认今日09:00'}
+            {applied.hardware ? ` · ${applied.hardware}` : ''}
+            {applied.branch ? ` · ${applied.branch}` : ''}
+          </Text>
+        </div>
       </Card>
 
       {/* 全绿横幅 */}
@@ -498,14 +544,14 @@ function CIDailyComprehensiveReport() {
           type="success"
           showIcon
           icon={<CheckCircleFilled />}
-          message="时间窗口内无失败 —— 流水线全绿"
+          message="时间窗口内无失败 — 流水线全绿"
           description={`窗口：${activeReport?.window?.start_beijing} ~ ${activeReport?.window?.end_beijing}（北京时间）`}
           style={{ marginBottom: 16 }}
         />
       )}
 
-      {/* 核心摘要：失败统计（核心） */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+      {/* 核心摘要 */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         <Col xs={24} sm={12} md={8} lg={4}>
           <Card size="small">
             <Statistic title="失败记录" value={summary?.total_failed ?? 0}
@@ -520,9 +566,7 @@ function CIDailyComprehensiveReport() {
               valueStyle={{ color: CATEGORY_COLORS[summary?.top_failure_category || ''] || '#d97706', fontWeight: 700 }}
             />
             {summary?.top_failure_category_count ? (
-              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                {summary.top_failure_category_count} 次
-              </div>
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>{summary.top_failure_category_count} 次</div>
             ) : null}
           </Card>
         </Col>
@@ -552,60 +596,44 @@ function CIDailyComprehensiveReport() {
       {/* 失败明细表（核心） */}
       <Card
         size="small"
-        title={`失败明细（${activeReport?.failures?.length ?? 0}）`}
-        style={{ marginBottom: 24 }}
+        title={
+          <Space>
+            <span>失败明细（{sortedFailures.length}）</span>
+            <Button
+              size="small"
+              icon={sortOrder === 'desc' ? <ArrowDownOutlined /> : <ArrowUpOutlined />}
+              onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
+            >
+              {sortOrder === 'desc' ? '时间降序' : '时间升序'}
+            </Button>
+          </Space>
+        }
+        style={{ marginBottom: 20 }}
       >
-        {activeReport?.failures.length === 0 ? (
-          <Empty description="窗口内无失败记录" />
+        {sortedFailures.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <Text type="secondary">窗口内无失败记录</Text>
+          </div>
         ) : (
           <Table<ComprehensiveReportFailure>
             rowKey={(r) => `${r.run_id}-${r.job_id ?? 'run'}`}
             size="small"
             columns={failureColumns}
-            dataSource={activeReport?.failures ?? []}
-            scroll={{ x: 1900 }}
+            dataSource={sortedFailures}
+            scroll={{ x: 1850 }}
             pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-            expandable={{
-              expandedRowRender: (r) => (
-                <div style={{ padding: '4px 8px' }}>
-                  {r.root_cause_summary && (
-                    <p style={{ margin: '2px 0' }}>
-                      <Text strong>AI 根因摘要：</Text>
-                      <span style={{ whiteSpace: 'pre-wrap' }}>{r.root_cause_summary}</span>
-                    </p>
-                  )}
-                  {r.improvement_measures && (
-                    <p style={{ margin: '2px 0' }}>
-                      <Text strong>改进措施：</Text>
-                      {r.improvement_measures}
-                    </p>
-                  )}
-                  {r.notes && (
-                    <p style={{ margin: '2px 0' }}>
-                      <Text strong>备注：</Text>
-                      {r.notes}
-                    </p>
-                  )}
-                </div>
-              ),
-              rowExpandable: (r) => Boolean(r.root_cause_summary || r.improvement_measures || r.notes),
-            }}
           />
         )}
       </Card>
 
       {/* 失败维度分布图表 */}
       {distributionCharts.length > 0 && (
-        <Card size="small" title="失败维度分布" style={{ marginBottom: 24 }}>
+        <Card size="small" title="失败维度分布" style={{ marginBottom: 20 }}>
           <Row gutter={[16, 16]}>
             {distributionCharts.map((key) => (
               <Col xs={24} md={12} key={key}>
                 <div style={{ textAlign: 'center' }}>
-                  <img
-                    alt={key}
-                    src={charts[key]}
-                    style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }}
-                  />
+                  <img alt={key} src={charts[key]} style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
                 </div>
               </Col>
             ))}
@@ -613,8 +641,8 @@ function CIDailyComprehensiveReport() {
         </Card>
       )}
 
-      {/* 次级：整体运行（弱化） + 趋势 + 成功率图 */}
-      <Card size="small" title="整体运行（次级信息）" style={{ marginBottom: 24 }}>
+      {/* 次级：整体运行 */}
+      <Card size="small" title="整体运行（次级信息）" style={{ marginBottom: 20 }}>
         <Row gutter={[16, 16]}>
           <Col xs={24} sm={8} md={4} lg={3}>
             <Statistic title="总运行数" value={summary?.total_runs ?? 0} />
@@ -626,49 +654,173 @@ function CIDailyComprehensiveReport() {
             <Statistic title="失败" value={summary?.failed_runs ?? 0} valueStyle={{ color: '#cf1322' }} />
           </Col>
           <Col xs={24} sm={8} md={4} lg={3}>
-            <Statistic
-              title="成功率"
-              value={summary?.success_rate ?? 0}
-              suffix="%"
-              valueStyle={{ color: (summary?.success_rate ?? 0) >= 90 ? '#3f8600' : '#cf1322' }}
-            />
+            <Statistic title="成功率" value={summary?.success_rate ?? 0} suffix="%"
+              valueStyle={{ color: (summary?.success_rate ?? 0) >= 90 ? '#3f8600' : '#cf1322' }} />
           </Col>
           <Col xs={24} sm={8} md={4} lg={4}>
-            <Statistic
-              title="平均耗时"
-              value={summary?.avg_duration_seconds ?? '-'}
-              suffix={summary?.avg_duration_seconds ? 's' : ''}
-            />
+            <Statistic title="平均耗时" value={summary?.avg_duration_seconds ?? '-'} suffix={summary?.avg_duration_seconds ? 's' : ''} />
           </Col>
           <Col xs={24} sm={8} md={4} lg={4}>
-            <Statistic
-              title="P90 耗时"
-              value={summary?.p90_duration_seconds ?? '-'}
-              suffix={summary?.p90_duration_seconds ? 's' : ''}
-            />
+            <Statistic title="P90 耗时" value={summary?.p90_duration_seconds ?? '-'} suffix={summary?.p90_duration_seconds ? 's' : ''} />
           </Col>
         </Row>
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           {charts.result_distribution && (
             <Col xs={24} md={12}>
               <div style={{ textAlign: 'center' }}>
-                <img alt="整体运行结果" src={charts.result_distribution}
-                  style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
+                <img alt="整体运行结果" src={charts.result_distribution} style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
               </div>
             </Col>
           )}
           {charts.success_rate_trend && (
             <Col xs={24} md={12}>
               <div style={{ textAlign: 'center' }}>
-                <img alt="成功率趋势" src={charts.success_rate_trend}
-                  style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
+                <img alt="成功率趋势" src={charts.success_rate_trend} style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
               </div>
             </Col>
           )}
         </Row>
       </Card>
 
-      {/* AI 失败分析详情弹窗（复用 FailureAnalysisDetailModal，分析中自动轮询） */}
+      {/* 报错线索弹窗 */}
+      <Modal
+        title={`原始报错线索 — ${logModalRow?.job_name || ''}`}
+        open={!!logModalRow}
+        onCancel={() => setLogModalRow(null)}
+        footer={<Button onClick={() => setLogModalRow(null)}>关闭</Button>}
+        width={800}
+      >
+        {logModalRow && (
+          <div>
+            {logModalRow.error_brief && (
+              <Alert type="warning" showIcon message={logModalRow.error_brief} style={{ marginBottom: 12 }} />
+            )}
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 16, fontFamily: 'Consolas, monospace', fontSize: 13, lineHeight: 1.8, maxHeight: 500, overflowY: 'auto' }}>
+              {(logModalRow.raw_log_lines?.length
+                ? logModalRow.raw_log_lines
+                : logModalRow.error_line
+                  ? [logModalRow.error_line]
+                  : ['-']
+              ).map((ln, i) => (
+                <div key={i} style={{ color: '#991b1b', wordBreak: 'break-all' }}>{ln}</div>
+              ))}
+            </div>
+            {logModalRow.root_cause_summary && (
+              <div style={{ marginTop: 12 }}>
+                <Text strong>AI 根因摘要：</Text>
+                <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{logModalRow.root_cause_summary}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* 详情抽屉 */}
+      <Drawer
+        title={`失败详情 — ${detailDrawerRow?.job_name || ''}`}
+        open={!!detailDrawerRow}
+        onClose={() => setDetailDrawerRow(null)}
+        width={720}
+        placement="right"
+      >
+        {detailDrawerRow && (
+          <div>
+            <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="时间">{detailDrawerRow.report_datetime}</Descriptions.Item>
+              <Descriptions.Item label="分支"><Tag color="blue">{detailDrawerRow.source_branch}</Tag></Descriptions.Item>
+              <Descriptions.Item label="Workflow">{detailDrawerRow.workflow_name}</Descriptions.Item>
+              <Descriptions.Item label="Job">{detailDrawerRow.job_name}</Descriptions.Item>
+              <Descriptions.Item label="模型/用例">{detailDrawerRow.test_model || detailDrawerRow.display_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="硬件"><Tag>{detailDrawerRow.hardware}</Tag></Descriptions.Item>
+              <Descriptions.Item label="结论">
+                <Tag color="red">{detailDrawerRow.conclusion_zh || CONCLUSION_ZH[(detailDrawerRow.conclusion || '').toLowerCase()] || detailDrawerRow.conclusion}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="耗时">{detailDrawerRow.duration_text}</Descriptions.Item>
+              <Descriptions.Item label="责任人">{detailDrawerRow.owner || '-'}</Descriptions.Item>
+              <Descriptions.Item label="失败关键步骤">{detailDrawerRow.failed_step || '-'}</Descriptions.Item>
+              <Descriptions.Item label="问题范畴">
+                <Tag color={CATEGORY_COLORS[detailDrawerRow.problem_category || ''] || 'orange'}>{detailDrawerRow.problem_category || '未定界'}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="AI 分析状态">
+                <Tag color={AI_STATUS_COLORS[detailDrawerRow.analysis_status || ''] || 'default'}>
+                  {AI_STATUS_ZH[detailDrawerRow.analysis_status || ''] ?? detailDrawerRow.analysis_status ?? '未分析'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="处理状态">
+                <Tag color={detailDrawerRow.processing_status === '未处理' ? 'volcano' : 'green'}>{detailDrawerRow.processing_status}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="责任范围(Fo)">
+                {detailDrawerRow.model_fo || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="部署类型">{detailDrawerRow.deployment_type || '-'}</Descriptions.Item>
+              <Descriptions.Item label="关联 PR">{detailDrawerRow.related_pr || '-'}</Descriptions.Item>
+            </Descriptions>
+
+            {detailDrawerRow.error_brief && (
+              <Alert type="warning" showIcon message={detailDrawerRow.error_brief} style={{ marginBottom: 12 }} />
+            )}
+
+            {/* 完整报错线索 */}
+            <div style={{ marginBottom: 12 }}>
+              <Text strong style={{ marginBottom: 4, display: 'block' }}>原始报错线索</Text>
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 12, fontFamily: 'Consolas, monospace', fontSize: 12, lineHeight: 1.8, maxHeight: 300, overflowY: 'auto' }}>
+                {(detailDrawerRow.raw_log_lines?.length
+                  ? detailDrawerRow.raw_log_lines
+                  : detailDrawerRow.error_line
+                    ? [detailDrawerRow.error_line]
+                    : ['-']
+                ).map((ln, i) => (
+                  <div key={i} style={{ color: '#991b1b', wordBreak: 'break-all' }}>{ln}</div>
+                ))}
+              </div>
+            </div>
+
+            {/* AI 分析 */}
+            {detailDrawerRow.root_cause_summary && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong style={{ marginBottom: 4, display: 'block' }}>AI 根因摘要</Text>
+                <div style={{ background: '#f0f9ff', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', fontSize: 13 }}>{detailDrawerRow.root_cause_summary}</div>
+              </div>
+            )}
+            {detailDrawerRow.improvement_measures && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong style={{ marginBottom: 4, display: 'block' }}>改进措施</Text>
+                <div style={{ background: '#f0fdf4', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', fontSize: 13 }}>{detailDrawerRow.improvement_measures}</div>
+              </div>
+            )}
+            {detailDrawerRow.notes && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong style={{ marginBottom: 4, display: 'block' }}>备注</Text>
+                <div style={{ background: '#fffbeb', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', fontSize: 13 }}>{detailDrawerRow.notes}</div>
+              </div>
+            )}
+
+            {/* AI 分析详情按钮 */}
+            {detailDrawerRow.analysis_status === 'completed' && detailDrawerRow.analysis_id && (
+              <Button
+                type="primary"
+                icon={<RobotOutlined />}
+                onClick={() => {
+                  setDetailDrawerRow(null)
+                  setAnalysisModalJobId(detailDrawerRow.job_id ?? null)
+                }}
+                style={{ marginBottom: 12 }}
+              >
+                查看完整 AI 分析报告
+              </Button>
+            )}
+
+            {/* GitHub 链接 */}
+            {detailDrawerRow.github_url && (
+              <a href={detailDrawerRow.github_url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <LinkOutlined /> 查看 GitHub 原始日志（{detailDrawerRow.github_url}）
+              </a>
+            )}
+          </div>
+        )}
+      </Drawer>
+
+      {/* AI 失败分析详情弹窗 */}
       {analysisModalJobId !== null && (
         <FailureAnalysisDetailModal
           open={analysisModalJobId !== null}

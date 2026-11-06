@@ -31,7 +31,9 @@ _AI_STATUS_ZH: dict[str, str] = {
     "pending": "待分析",
     "reused": "已复用",
     "failed": "分析失败",
+    "degraded": "已降级",
     "cancelled": "已取消",
+    "raw_log_collected": "已收集",
 }
 
 
@@ -40,7 +42,7 @@ def _ai_status_zh(status: Any) -> Any:
         return None
     return _AI_STATUS_ZH.get(str(status), str(status))
 
-HEADER_FILL = "1F6FEB"
+HEADER_FILL = "1E40AF"
 RED_FILL = "FECACA"
 GREEN_FILL = "DCFCE7"
 AMBER_FILL = "FEF3C7"
@@ -130,56 +132,92 @@ class CIDailyReportExcel:
         ws = wb.active
         ws.title = "失败详情"
 
+        # GitHub 前置（第3列），用户可快速跳转
         columns = [
-            "日期（北京时间）", "分支", "Workflow", "Job", "模型/用例", "硬件", "结论",
+            "日期（北京时间）", "分支", "GitHub 链接",
+            "Workflow", "Job", "模型/用例", "硬件", "结论",
             "责任人", "失败关键步骤",
-            "耗时(秒)", "耗时", "问题范畴", "AI 分析", "原始报错线索行", "处理状态",
-            "责任范围", "根因摘要", "改进措施", "备注", "GitHub",
+            "耗时(秒)", "耗时", "问题范畴", "AI 分析",
+            "精炼错误", "原始报错线索行", "处理状态",
+            "责任范围", "根因摘要", "改进措施", "备注",
         ]
         header_row = self._headers(ws, "失败详情（核心）", columns)
 
+        # 需要换行的列索引（1-based）
+        WRAP_COLS = {5, 6, 10, 15, 16, 18, 19, 20, 21}
+        # 需要颜色填充的列索引
+        CONCLUSION_COL = 8
+        AI_STATUS_COL = 14
+        PROCESSING_COL = 17
+        CONCLUSION_COLORS = {
+            "失败": RED_FILL, "超时": RED_FILL, "启动失败": RED_FILL,
+            "成功": GREEN_FILL, "已取消": GRAY_FILL, "已跳过": GRAY_FILL,
+        }
+        AI_COLORS = {
+            "已完成": GREEN_FILL, "分析中": AMBER_FILL, "待分析": AMBER_FILL,
+            "分析失败": RED_FILL, "已复用": None,
+        }
+
         for r, f in enumerate(failures, header_row + 1):
-            # 原始报错线索行：优先多行抓取结果，其次单行 error_line
             raw_lines = f.get("raw_log_lines") or []
             if raw_lines:
                 error_cell = "\n".join(str(x) for x in raw_lines)
             else:
                 error_cell = f.get("error_line") or "—"
             row = [
-                self._fmt(f.get("report_datetime") or f.get("report_date")),
-                self._fmt(f.get("source_branch")),
-                self._fmt(f.get("workflow_name")),
-                self._fmt(f.get("job_name")),
-                self._fmt(f.get("test_model")) or "—",
-                self._fmt(f.get("hardware")),
-                format_conclusion_zh(f.get("conclusion")),
-                self._fmt(f.get("owner")) or "—",
-                self._fmt(f.get("failed_step")) or "—",
-                self._fmt(f.get("duration_seconds")),
-                self._fmt(f.get("duration_text")),
-                self._fmt(f.get("problem_category")) or "未定界",
-                _ai_status_zh(f.get("analysis_status")),
-                error_cell,
-                self._fmt(f.get("processing_status")),
-                self._fmt(f.get("model_fo")),
-                self._fmt(f.get("root_cause_summary")),
-                self._fmt(f.get("improvement_measures")),
-                self._fmt(f.get("notes")),
-                self._fmt(f.get("github_url")),
+                self._fmt(f.get("report_datetime") or f.get("report_date")),  # 1
+                self._fmt(f.get("source_branch")),                            # 2
+                self._fmt(f.get("github_url")),                               # 3
+                self._fmt(f.get("workflow_name")),                            # 4
+                self._fmt(f.get("job_name")),                                 # 5
+                self._fmt(f.get("test_model")) or "—",                        # 6
+                self._fmt(f.get("hardware")),                                 # 7
+                format_conclusion_zh(f.get("conclusion")),                    # 8
+                self._fmt(f.get("owner")) or "—",                             # 9
+                self._fmt(f.get("failed_step")) or "—",                       # 10
+                self._fmt(f.get("duration_seconds")),                         # 11
+                self._fmt(f.get("duration_text")),                            # 12
+                self._fmt(f.get("problem_category")) or "未定界",              # 13
+                _ai_status_zh(f.get("analysis_status")),                     # 14
+                self._fmt(f.get("error_brief")) or "—",                       # 15
+                error_cell,                                                   # 16
+                self._fmt(f.get("processing_status")),                       # 17
+                self._fmt(f.get("model_fo")),                                # 18
+                self._fmt(f.get("root_cause_summary")),                      # 19
+                self._fmt(f.get("improvement_measures")),                    # 20
+                self._fmt(f.get("notes")),                                   # 21
             ]
             for idx, v in enumerate(row, 1):
-                ws.cell(row=r, column=idx, value=v)
+                cell = ws.cell(row=r, column=idx, value=v)
+                # 换行
+                if idx in WRAP_COLS:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                # 结论颜色
+                if idx == CONCLUSION_COL and v in CONCLUSION_COLORS:
+                    cell.fill = PatternFill("solid", fgColor=CONCLUSION_COLORS[v])
+                    cell.font = Font(bold=True, color="1F2937" if v == "失败" else "1F2937")
+                # AI 状态颜色
+                if idx == AI_STATUS_COL and v in AI_COLORS:
+                    fill = AI_COLORS[v]
+                    if fill:
+                        cell.fill = PatternFill("solid", fgColor=fill)
+                # 处理状态颜色
+                if idx == PROCESSING_COL and v == "未处理":
+                    cell.fill = PatternFill("solid", fgColor=AMBER_FILL)
+                    cell.font = Font(bold=True, color="92400E")
 
-        # 列宽按内容自适应（带上限/下限）
+        # GitHub 列超链接
+        for r in range(header_row + 1, header_row + 1 + len(failures)):
+            url_cell = ws.cell(row=r, column=3)
+            if url_cell.value and str(url_cell.value).startswith("http"):
+                url_cell.hyperlink = str(url_cell.value)
+                url_cell.font = Font(color="2563EB", underline="single")
+
+        # 列宽
         self._autosize(ws, len(columns), header_row, len(failures))
-        # 宽列（报错行/根因/改进措施）特别放大
-        wide = {14: 60, 17: 50, 18: 40}
+        wide = {3: 50, 5: 40, 6: 40, 10: 15, 15: 50, 16: 60, 18: 50, 19: 50, 20: 40, 21: 30}
         for idx, width in wide.items():
             ws.column_dimensions[get_column_letter(idx)].width = width
-
-        # 给"原始报错线索行"列（多行抓取结果）套换行
-        for r in range(header_row + 1, header_row + 1 + len(failures)):
-            ws.cell(row=r, column=14).alignment = Alignment(wrap_text=True, vertical="top")
 
         self._add_table(ws, header_row, len(columns), len(failures))
 
@@ -247,9 +285,14 @@ class CIDailyReportExcel:
                 self._fmt(run.get("github_url")),
             ]
             for idx, v in enumerate(row, 1):
-                ws.cell(row=r, column=idx, value=v)
+                cell = ws.cell(row=r, column=idx, value=v)
+                # GitHub 列超链接
+                if idx == 13 and v and str(v).startswith("http"):
+                    cell.hyperlink = str(v)
+                    cell.font = Font(color="2563EB", underline="single")
 
         self._autosize(ws, len(columns), header_row, len(runs))
+        ws.column_dimensions["M"].width = 50
         self._add_table(ws, header_row, len(columns), len(runs))
 
     # ------------------------------------------------------------------

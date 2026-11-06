@@ -38,7 +38,19 @@ AI_STATUS_ZH: dict[str, str] = {
     "pending": "待分析",
     "reused": "已复用",
     "failed": "分析失败",
+    "degraded": "已降级",
     "cancelled": "已取消",
+    "raw_log_collected": "已收集",
+}
+_AI_COLORS: dict[str, str] = {
+    "completed": "green",
+    "analyzing": "amber",
+    "pending": "amber",
+    "reused": "gray",
+    "failed": "red",
+    "degraded": "gray",
+    "cancelled": "gray",
+    "raw_log_collected": "gray",
 }
 
 
@@ -48,10 +60,15 @@ def _ai_status_zh(status: str | None) -> str:
     return AI_STATUS_ZH.get(status, status)
 
 
-# 失败详情表格列（表头, 数据键）。
-# 注：日期精确到秒（report_datetime），结论/范畴/AI 状态在模板内用中文/着色渲染。
+def _ai_status_color(status: str | None) -> str:
+    if not status:
+        return "gray"
+    return _AI_COLORS.get(status, "gray")
+
+
+# 失败详情表格列（精简版：12 列，PDF 横向 A4）
 FAILURE_COLUMNS: tuple[str, str] = (
-    ("日期（北京时间）", "report_datetime"),
+    ("时间（北京时间）", "report_datetime"),
     ("分支", "source_branch"),
     ("Workflow", "workflow_name"),
     ("Job", "job_name"),
@@ -59,12 +76,10 @@ FAILURE_COLUMNS: tuple[str, str] = (
     ("硬件", "hardware"),
     ("结论", "conclusion_zh"),
     ("责任人", "owner"),
-    ("失败关键步骤", "failed_step"),
     ("耗时", "duration_text"),
     ("问题范畴", "problem_category"),
     ("AI 分析", "analysis_status"),
-    ("原始报错线索行", "error_line"),
-    ("处理状态", "processing_status"),
+    ("原始报错线索", "error_line"),
 )
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
@@ -73,47 +88,50 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset=\"utf-8\"/>
 <title>CI 每日综合报告 {{ window.start_date }}</title>
 <style>
-  @page { size: A4; margin: 14mm 12mm 16mm 12mm; }
+  @page { size: A4 landscape; margin: 12mm 10mm 14mm 10mm; }
   * { box-sizing: border-box; }
   body { font-family: 'Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', sans-serif;
-         font-size: 10.5px; color: #1f2937; line-height: 1.5; }
-  h1 { font-size: 20px; margin: 0 0 4px 0; }
-  h2 { font-size: 14px; margin: 18px 0 8px 0; color: #111827;
+         font-size: 9.5px; color: #1f2937; line-height: 1.4; }
+  h1 { font-size: 18px; margin: 0 0 4px 0; }
+  h2 { font-size: 13px; margin: 14px 0 6px 0; color: #111827;
        border-left: 3px solid #2563eb; padding-left: 8px; }
-  .muted { color: #6b7280; font-size: 11px; }
+  .muted { color: #6b7280; font-size: 10px; }
   .all-green { background: linear-gradient(90deg,#22c55e,#16a34a); color: #fff;
-               border-radius: 8px; padding: 10px 14px; margin: 12px 0;
-               font-size: 16px; font-weight: 600; }
-  .banner { border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 13px; }
+               border-radius: 8px; padding: 8px 12px; margin: 10px 0;
+               font-size: 15px; font-weight: 600; }
+  .banner { border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px; }
   .banner.red { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-  .cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-  .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px;
-          min-width: 90px; flex: 1 0 auto; }
-  .card .k { color: #6b7280; font-size: 10.5px; }
-  .card .v { font-size: 17px; font-weight: 700; margin-top: 2px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 10px;
+          min-width: 80px; flex: 1 0 auto; }
+  .card .k { color: #6b7280; font-size: 9.5px; }
+  .card .v { font-size: 16px; font-weight: 700; margin-top: 2px; }
   .card .v.red { color: #dc2626; }
   .card .v.green { color: #16a34a; }
   .card .v.amber { color: #d97706; }
-  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-  th, td { border: 1px solid #e5e7eb; padding: 4px 6px; text-align: left;
+  table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+  th, td { border: 1px solid #e5e7eb; padding: 3px 5px; text-align: left;
            vertical-align: top; word-break: break-word; }
-  th { background: #f3f4f6; font-weight: 600; }
-  tr:nth-child(even) td { background: #fafafa; }
+  th { background: #1e40af; color: #fff; font-weight: 600; font-size: 9px;
+       position: sticky; top: 0; }
+  tr:nth-child(even) td { background: #f8fafc; }
   .nowrap { white-space: nowrap; }
-  .err { font-family: Consolas, 'Courier New', monospace; font-size: 9.5px;
-         color: #991b1b; word-break: break-all; }
-  .tag { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 10px; }
+  .err { font-family: Consolas, 'Courier New', monospace; font-size: 8.5px;
+         color: #991b1b; word-break: break-all; line-height: 1.4; }
+  .err .brief { color: #1e40af; font-weight: 600; }
+  .tag { display: inline-block; border-radius: 3px; padding: 0 4px; font-size: 9px; }
   .tag.red { background: #fee2e2; color: #991b1b; }
   .tag.green { background: #dcfce7; color: #166534; }
   .tag.amber { background: #fef3c7; color: #92400e; }
   .tag.gray { background: #f3f4f6; color: #374151; }
-  .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
-  .charts-grid .chart { border: 1px solid #e5e7eb; border-radius: 8px;
-                        padding: 6px; text-align: center; }
+  .tag.blue { background: #dbeafe; color: #1e40af; }
+  .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+  .charts-grid .chart { border: 1px solid #e5e7eb; border-radius: 6px;
+                        padding: 4px; text-align: center; }
   .charts-grid .full { grid-column: 1 / -1; }
   .charts-grid img { max-width: 100%; height: auto; }
-  .footer { margin-top: 18px; color: #9ca3af; font-size: 10px; text-align: center;
-            border-top: 1px solid #e5e7eb; padding-top: 8px; }
+  .footer { margin-top: 14px; color: #9ca3af; font-size: 9px; text-align: center;
+            border-top: 1px solid #e5e7eb; padding-top: 6px; }
 </style>
 </head>
 <body>
@@ -165,32 +183,32 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <tbody>
       {% for f in failures %}
       <tr>
-        <td class=\"nowrap\">{{ f.report_datetime or f.report_date }}</td>
-        <td><span class=\"tag gray\">{{ f.source_branch }}</span></td>
-        <td>{{ f.workflow_name }}</td>
+        <td class="nowrap">{{ f.report_datetime or f.report_date }}</td>
+        <td><span class="tag blue">{{ f.source_branch }}</span></td>
+        <td class="nowrap">{{ f.workflow_name }}</td>
         <td>{{ f.job_name }}</td>
         <td>{{ f.test_model or '—' }}</td>
         <td>{{ f.hardware }}</td>
-        <td><span class=\"tag red\">{{ f.conclusion_zh or (f.conclusion or '—') }}</span></td>
+        <td><span class="tag {{ 'red' if (f.conclusion or '').lower() in ('failure','timed_out','startup_failure') else 'gray' }}">{{ f.conclusion_zh or (f.conclusion or '—') }}</span></td>
         <td>{{ f.owner or '—' }}</td>
-        <td class=\"nowrap\">{{ f.failed_step or '—' }}</td>
-        <td>{{ f.duration_text }}</td>
-        <td><span class=\"tag amber\">{{ f.problem_category or '未定界' }}</span></td>
+        <td class="nowrap">{{ f.duration_text or '—' }}</td>
+        <td><span class="tag amber">{{ f.problem_category or '未定界' }}</span></td>
         <td>
-          {% if f.analysis_status %}
-            <span class=\"tag {{ 'green' if f.analysis_status == 'completed' else ('amber' if f.analysis_status in ('analyzing','pending','reused') else 'red') }}\">{{ ai_zh(f.analysis_status) }}</span>
-          {% else %}
-            <span class=\"tag gray\">未分析</span>
-          {% endif %}
+          <span class="tag {{ ai_color(f.analysis_status) }}">{{ ai_zh(f.analysis_status) }}</span>
         </td>
-        <td class=\"err\">
+        <td class="err">
+          {% if f.error_brief %}
+            <div class="brief">{{ f.error_brief }}</div>
+          {% endif %}
           {% if f.raw_log_lines %}
-            {% for ln in f.raw_log_lines %}<div>· {{ ln }}</div>{% endfor %}
+            {% for ln in f.raw_log_lines[:3] %}<div>· {{ ln }}</div>{% endfor %}
+            {% if f.raw_log_lines | length > 3 %}<div style="color:#8a8f98">... 共 {{ f.raw_log_lines|length }} 行</div>{% endif %}
+          {% elif f.error_line %}
+            {{ f.error_line }}
           {% else %}
-            {{ f.error_line or '—' }}
+            —
           {% endif %}
         </td>
-        <td><span class=\"tag {{ 'red' if f.processing_status == '未处理' else 'green' }}\">{{ f.processing_status }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -235,6 +253,7 @@ def _load_template() -> jinja2.Template:
         lstrip_blocks=True,
     )
     env.globals["ai_zh"] = _ai_status_zh
+    env.globals["ai_color"] = _ai_status_color
     return env.from_string(_HTML_TEMPLATE)
 
 

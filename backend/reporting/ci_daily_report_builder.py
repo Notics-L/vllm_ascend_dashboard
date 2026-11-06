@@ -137,11 +137,11 @@ def parse_window(start: str | None, end: str | None) -> tuple[datetime, datetime
         return parsed.replace(tzinfo=SHANGHAI_TZ)
 
     if start and end:
-        return _to_utc(_parse(start, True)), _to_utc(_parse(end, False))
+        return _to_utc(_parse(start, is_start=True)), _to_utc(_parse(end, is_start=False))
     if start:
-        s = _parse(start, True)
+        s = _parse(start, is_start=True)
         return _to_utc(s), _to_utc(s + timedelta(hours=span_hours))
-    e = _parse(end, False)
+    e = _parse(end, is_start=False)
     return _to_utc(e - timedelta(hours=span_hours)), _to_utc(e)
 
 
@@ -667,6 +667,7 @@ class CIDailyReportBuilder:
             "error_line": error_line,
             "problem_line": _format_problem_line(category, error_line),
             "raw_log_lines": kwargs.get("raw_log_lines"),
+            "error_brief": kwargs.get("error_brief"),
             # AI 分析状态：有分析记录时透出（供前端判断是否可点「AI分析」查看详情）
             "analysis_status": (
                 analysis.analysis_status if analysis else kwargs.get("analysis_status")
@@ -871,10 +872,12 @@ class CIDailyReportBuilder:
     async def collect_raw_logs(self, report: dict[str, Any]) -> dict[str, Any]:
         """对报告中的失败记录自动访问 GitHub 原始日志链接，拉取并解析报错线索。
 
-        - 仅对具备 job_id 且当前 error_line 缺失 / 未定界的失败项拉取（避免重复抓已解析的）。
+        - 对具备 job_id 且 (error_line 缺失 / 未定界 / AI 分析失败) 的失败项拉取。
+        - AI 分析失败（analysis_status='failed'）时自动降级：从 GitHub 日志提取完整
+          报错 + 精炼一句话（【根因】：【原始线索行】）。
         - 并发受 RAW_LOG_CONCURRENCY 限制，单条抓取网络失败不中断整体。
-        - 就地更新 report["failures"]，并把拉取到的线索行回写 error_line / raw_log_lines。
-        - 返回增强后的 report（同一对象）便于调用方继续渲染 PDF / Excel / JSON。
+        - 就地更新 report["failures"]，回写 error_line / raw_log_lines / error_brief。
+        - 返回增强后的 report（同一对象）。
         """
         import asyncio
 
@@ -882,8 +885,11 @@ class CIDailyReportBuilder:
         targets = [
             f for f in failures
             if f.get("job_id")
-            and (not (f.get("error_line") or "").strip()
-                 or (f.get("problem_category") in (None, "", "未定界")))
+            and (
+                not (f.get("error_line") or "").strip()
+                or (f.get("problem_category") in (None, "", "未定界"))
+                or f.get("analysis_status") == "failed"
+            )
         ]
         if not settings.GITHUB_TOKEN:
             logger.warning("GITHUB_TOKEN not configured; skip raw log collection")
@@ -930,7 +936,15 @@ class CIDailyReportBuilder:
             f["problem_line"] = _format_problem_line(
                 f.get("problem_category"), f.get("error_line")
             )
-            f["analysis_status"] = f.get("analysis_status") or "raw_log_collected"
+            # 精炼一句话：【根因】：【原始线索行】（AI 失败降级 / 无分析时提供）
+            category = (f.get("problem_category") or "未定界").strip()
+            clue = (f.get("error_line") or lines[0])[:120]
+            f["error_brief"] = f"【{category}】：{clue}"
+            # AI 分析失败时标记为降级（前端/报告用 raw_log 替代 AI 结果）
+            if f.get("analysis_status") == "failed":
+                f["analysis_status"] = "degraded"
+            elif not f.get("analysis_status"):
+                f["analysis_status"] = "raw_log_collected"
             collected += 1
 
         await asyncio.gather(*(_one(f) for f in targets))

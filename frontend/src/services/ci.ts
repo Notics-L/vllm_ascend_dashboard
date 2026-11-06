@@ -714,6 +714,7 @@ export interface ComprehensiveReportFailure {
   duration_text: string
   problem_category: string | null
   error_line: string | null
+  error_brief?: string | null
   problem_line: string
   root_cause_summary: string | null
   improvement_measures: string | null
