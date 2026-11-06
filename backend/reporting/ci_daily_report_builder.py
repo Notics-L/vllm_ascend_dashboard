@@ -409,7 +409,7 @@ class CIDailyReportBuilder:
         if request.hardware:
             stmt = stmt.where(func.lower(CIResult.hardware) == request.hardware.lower())
         if request.branch and request.branch != "all":
-            stmt = stmt.where(CIResult.branch == request.branch)
+            stmt = stmt.where(CIResult.branch.like(f"{request.branch}%"))
         return list((await self.db.execute(stmt)).scalars().all())
 
     async def _query_jobs(self, start, end, failed_run_ids) -> list[CIJob]:
@@ -435,7 +435,7 @@ class CIDailyReportBuilder:
         if request.hardware:
             stmt = stmt.where(func.lower(DailyFailureRecord.hardware) == request.hardware.lower())
         if request.branch and request.branch != "all":
-            stmt = stmt.where(DailyFailureRecord.source_branch == request.branch)
+            stmt = stmt.where(DailyFailureRecord.source_branch.like(f"{request.branch}%"))
         records = list((await self.db.execute(stmt)).scalars().all())
         # 二次过滤：用 started_at / completed_at 精确匹配时间窗口
         # （report_date 是天粒度的，无法区分同一天内的不同时段）

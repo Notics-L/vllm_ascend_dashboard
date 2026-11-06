@@ -609,8 +609,7 @@ function CIDailyComprehensiveReport() {
             options={[
               { label: '全部分支', value: 'all' },
               { label: 'main', value: 'main' },
-              { label: 'release', value: 'release' },
-              { label: 'release-all', value: 'release-all' },
+              { label: 'releases', value: 'releases' },
             ]}
             value={filters.branch ?? 'all'}
             style={{ width: 130 }}
