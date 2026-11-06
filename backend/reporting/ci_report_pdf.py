@@ -66,13 +66,14 @@ def _ai_status_color(status: str | None) -> str:
     return _AI_COLORS.get(status, "gray")
 
 
-# 失败详情表格列（精简版：12 列，PDF 横向 A4）
+# 失败详情表格列（精简版：13 列，PDF 横向 A4）
 FAILURE_COLUMNS: tuple[str, str] = (
     ("时间（北京时间）", "report_datetime"),
     ("分支", "source_branch"),
     ("Workflow", "workflow_name"),
     ("Job", "job_name"),
-    ("模型/用例", "test_model"),
+    ("模型", "model_name"),
+    ("测试内容", "test_yaml"),
     ("硬件", "hardware"),
     ("结论", "conclusion_zh"),
     ("责任人", "owner"),
@@ -187,7 +188,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <td><span class="tag blue">{{ f.source_branch }}</span></td>
         <td class="nowrap">{{ f.workflow_name }}</td>
         <td>{{ f.job_name }}</td>
-        <td>{{ f.test_model or '—' }}</td>
+        <td>{{ f.model_name or (f.test_model or '—') }}</td>
+        <td>{{ f.test_yaml or '—' }}</td>
         <td>{{ f.hardware }}</td>
         <td><span class="tag {{ 'red' if (f.conclusion or '').lower() in ('failure','timed_out','startup_failure') else 'gray' }}">{{ f.conclusion_zh or (f.conclusion or '—') }}</span></td>
         <td>{{ f.owner or '—' }}</td>

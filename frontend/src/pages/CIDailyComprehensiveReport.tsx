@@ -12,9 +12,11 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
   type TableColumnsType,
@@ -258,7 +260,35 @@ function CIDailyComprehensiveReport() {
       const db = b.started_at || b.report_datetime || ''
       return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
     })
-    return sorted
+    // 按 (workflow_name, job_name, run_id) 分组 → 树形 parent/child
+    const groupMap = new Map<string, ComprehensiveReportFailure[]>()
+    for (const item of sorted) {
+      const key = [item.workflow_name, item.job_name, item.run_id].join('|')
+      const arr = groupMap.get(key)
+      if (arr) arr.push(item)
+      else groupMap.set(key, [item])
+    }
+    const tree: ComprehensiveReportFailure[] = []
+    for (const [, group] of groupMap) {
+      if (group.length === 1) {
+        tree.push({ ...group[0], _isParent: false } as ComprehensiveReportFailure)
+      } else {
+        // parent = 第一条，children = 全部
+        const parent = { ...group[0] }
+        parent._stepGroup = group
+        parent.failed_steps = group.map((g) => g.failed_step || g.job_name || 'unknown').filter(Boolean)
+        const children = group.map((g) => ({ ...g, _isParent: true, _parent: parent } as ComprehensiveReportFailure))
+        parent.children = children
+        tree.push(parent as ComprehensiveReportFailure)
+      }
+    }
+    // 按 parent 时间排序
+    tree.sort((a, b) => {
+      const da = a.started_at || a.report_datetime || ''
+      const db = b.started_at || b.report_datetime || ''
+      return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
+    })
+    return tree
   }, [activeReport, sortOrder])
 
   const failureColumns: TableColumnsType<ComprehensiveReportFailure> = useMemo(
@@ -294,11 +324,19 @@ function CIDailyComprehensiveReport() {
         ellipsis: { showTitle: true },
       },
       {
-        title: '模型/用例',
-        dataIndex: 'test_model',
-        width: 180,
+        title: '模型',
+        dataIndex: 'model_name',
+        width: 160,
         ellipsis: { showTitle: true },
-        render: (v: string | null, r) => v || r.display_name || <Text type="secondary">-</Text>,
+        render: (v: string | null, r) =>
+          v || <Text type="secondary">{r.test_model ? r.test_model.replace(/\.ya?ml$/i, '') : '-'}</Text>,
+      },
+      {
+        title: '测试内容',
+        dataIndex: 'test_yaml',
+        width: 160,
+        ellipsis: { showTitle: true },
+        render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
         title: '硬件',
@@ -324,11 +362,30 @@ function CIDailyComprehensiveReport() {
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
-        title: '关键步骤',
-        dataIndex: 'failed_step',
-        width: 120,
-        ellipsis: { showTitle: true },
-        render: (v: string | null) => v || <Text type="secondary">-</Text>,
+        title: '失败 Steps',
+        dataIndex: 'failed_steps',
+        width: 130,
+        render: (_: string[] | null | undefined, r) => {
+          // parent 行（有 children）：显示聚合数
+          if (r.children?.length && r.children.length > 0) {
+            return (
+              <Tag color="red" icon={<span>•</span>}>
+                {r.children.length} steps
+              </Tag>
+            )
+          }
+          const steps = r.failed_steps
+          if (steps?.length) {
+            if (steps.length === 1) return <span style={{ fontSize: 12 }}>{steps[0]}</span>
+            return (
+              <Tooltip title={steps.join('\n')}>
+                <Tag color="orange">{steps.length} steps</Tag>
+              </Tooltip>
+            )
+          }
+          if (r.failed_step) return <span style={{ fontSize: 12 }}>{r.failed_step}</span>
+          return <Text type="secondary">-</Text>
+        },
       },
       {
         title: '耗时',
@@ -616,12 +673,13 @@ function CIDailyComprehensiveReport() {
           </div>
         ) : (
           <Table<ComprehensiveReportFailure>
-            rowKey={(r) => `${r.run_id}-${r.job_id ?? 'run'}`}
+            rowKey={(r, idx) => `${r.run_id}-${r.job_id ?? 'run'}-${r.id ?? ''}-${idx}`}
             size="small"
             columns={failureColumns}
-            dataSource={sortedFailures}
-            scroll={{ x: 1850 }}
+            dataSource={sortedFailures as ComprehensiveReportFailure[]}
+            scroll={{ x: 2000 }}
             pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+            defaultExpandAllRows={false}
           />
         )}
       </Card>

@@ -695,6 +695,7 @@ export interface ComprehensiveReportFailure {
   analysis_id?: number | null
   analysis_phase?: string | null
   failed_step?: string | null
+  failed_steps?: string[] | null
   conclusion_zh?: string
   source_branch: string
   workflow_name: string
@@ -703,6 +704,8 @@ export interface ComprehensiveReportFailure {
   job_id: number | null
   display_name: string | null
   test_model: string | null
+  model_name?: string | null
+  test_yaml?: string | null
   model_fo: string | null
   deployment_type: string | null
   hardware: string
@@ -722,6 +725,9 @@ export interface ComprehensiveReportFailure {
   processing_status: string
   notes: string | null
   github_url: string | null
+  error_brief?: string | null
+  /** 树形子行（antd Tree Table children） */
+  children?: ComprehensiveReportFailure[]
 }
 
 export interface ComprehensiveReportRun {

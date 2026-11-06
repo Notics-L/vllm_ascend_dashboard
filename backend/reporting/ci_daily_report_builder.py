@@ -265,25 +265,32 @@ def _format_problem_line(category: str | None, error_line: str | None) -> str:
 
 
 def _extract_first_failed_step(steps_data: str | None) -> str | None:
-    """从 CIJob.steps_data（JSON）中解析首个处于失败态的 step 名称。
+    """从 CIJob.steps_data（JSON）中解析首个处于失败态的 step 名称（兼容旧逻辑）。"""
+    steps = _extract_all_failed_steps(steps_data)
+    return steps[0] if steps else None
 
-    steps_data 可能是 list（GitHub Actions steps 序列化）或 dict。
-    step 元素可能含 status / conclusion / name 字段；失败态以 conclusion 为准
-    （failure / cancelled / timed_out），缺失时退化为 status == failure。
+
+def _extract_all_failed_steps(steps_data: str | None) -> list[str]:
+    """从 CIJob.steps_data 中解析所有处于失败态的 step 名称列表。
+
+    steps_data 可能是 list（GitHub Actions steps 序列化）或 dict with "steps" key。
+    失败态判定：conclusion in {failure, cancelled, timed_out, startup_failure}
+    或 status == "failure"。
     """
     if not steps_data:
-        return None
+        return []
     try:
         data = json.loads(steps_data)
     except (ValueError, TypeError):
-        return None
+        return []
     if isinstance(data, dict):
         steps = data.get("steps") or data.get("jobs") or []
     elif isinstance(data, list):
         steps = data
     else:
-        return None
+        return []
     failed_conclusions = {"failure", "cancelled", "timed_out", "startup_failure"}
+    out: list[str] = []
     for st in steps:
         if not isinstance(st, dict):
             continue
@@ -292,9 +299,28 @@ def _extract_first_failed_step(steps_data: str | None) -> str | None:
         if conclusion in failed_conclusions or status == "failure":
             name = st.get("name") or st.get("title") or st.get("id")
             if name:
-                # 截断过长名称
-                return str(name)[:80]
-    return None
+                out.append(str(name)[:100])
+    return out
+
+
+def _parse_model_and_yaml(test_model: str | None) -> tuple[str | None, str | None]:
+    """从 test_model 字段（如 'Qwen3.8-Flash-Next-w8a8-mxfp8-ntp-A5.yaml'）
+    拆分为 (model_name, test_yaml)。
+
+    - 如果包含 '.yaml' / '.yml' 后缀：model_name = 去后缀部分，test_yaml = 完整值
+    - 如果无后缀：model_name = 完整值，test_yaml = None
+    """
+    if not test_model:
+        return (None, None)
+    name = test_model.strip()
+    lower = name.lower()
+    if lower.endswith(".yaml"):
+        model = name[:-5]
+        return (model, name)
+    if lower.endswith(".yml"):
+        model = name[:-4]
+        return (model, name)
+    return (name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +667,16 @@ class CIDailyReportBuilder:
             report_date_display = f"{started_at} 00:00:00"
         else:
             report_date_display = kwargs.get("report_date") or ""
+        # 模型/测试内容拆分
+        model_name, test_yaml = _parse_model_and_yaml(kwargs.get("test_model"))
+        # 所有失败 steps
+        steps_data = None
+        job = kwargs.get("job")
+        if job is not None and hasattr(job, "steps_data"):
+            steps_data = job.steps_data
+        all_failed_steps = kwargs.get("failed_steps") or _extract_all_failed_steps(steps_data)
+        if not all_failed_steps and kwargs.get("failed_step"):
+            all_failed_steps = [kwargs["failed_step"]]
         return {
             "id": kwargs.get("id"),
             "report_date": kwargs.get("report_date"),
@@ -652,11 +688,14 @@ class CIDailyReportBuilder:
             "job_id": kwargs.get("job_id"),
             "display_name": kwargs.get("display_name"),
             "test_model": kwargs.get("test_model"),
+            "model_name": model_name,
+            "test_yaml": test_yaml,
             "model_fo": kwargs.get("model_fo"),
             "deployment_type": kwargs.get("deployment_type"),
             "hardware": kwargs.get("hardware") or "未知",
             "owner": kwargs.get("owner"),
             "failed_step": kwargs.get("failed_step"),
+            "failed_steps": all_failed_steps,
             "conclusion": kwargs.get("conclusion"),
             "conclusion_zh": format_conclusion_zh(kwargs.get("conclusion")),
             "started_at": format_beijing(started_at),
