@@ -8,12 +8,14 @@ import {
   RobotOutlined,
   ExclamationCircleOutlined,
   SettingOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import { useCIStats, useRuns } from '../hooks/useCI'
 import { useAnalyzeBatch } from '../hooks/useFailureAnalysis'
 import JobBoard from './JobBoard'
 import DailyFailureTracking from './DailyFailureTracking'
 import NightlyTestCaseConfig from './NightlyTestCaseConfig'
+import CIDailyComprehensiveReport from './CIDailyComprehensiveReport'
 import WorkflowTestExecutionTable from '../components/WorkflowTestExecutionTable'
 import CIBuildDurationChart from '../components/CIBuildDurationChart'
 import CIBuildTimeRange, { type CIBuildTimeRangeValue } from '../components/CIBuildTimeRange'
@@ -22,7 +24,7 @@ import './CIBoard.css'
 
 const { Text, Title } = Typography
 
-const CI_BOARD_TABS = ['workflow', 'job', 'daily-failure', 'test-case-config'] as const
+const CI_BOARD_TABS = ['workflow', 'job', 'daily-failure', 'daily-report', 'test-case-config'] as const
 type CIBoardTab = typeof CI_BOARD_TABS[number]
 const CI_BOARD_TAB_STORAGE_KEY = 'ci-board-active-tab'
 
@@ -214,6 +216,16 @@ function CIBoard() {
               </Space>
             ),
             children: <DailyFailureTracking />,
+          },
+          {
+            key: 'daily-report',
+            label: (
+              <Space>
+                <FileTextOutlined />
+                <span>每日综合报告</span>
+              </Space>
+            ),
+            children: <CIDailyComprehensiveReport />,
           },
           {
             key: 'test-case-config',

@@ -2594,6 +2594,227 @@ async def get_daily_report(
         )
 
 
+# ============ CI 每日综合报错报告（失败详情为核心，支持 PDF / Excel 导出）===========
+
+@router.get("/reports/comprehensive")
+async def get_comprehensive_report(
+    db: DbSession,
+    start: str | None = Query(default=None, description="窗口起始，北京时间 'YYYY-MM-DD HH:MM'；缺省默认昨日 20:00"),
+    end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
+    hardware: str | None = Query(default=None, description="硬件过滤（如 910B），缺省全部"),
+    branch: str | None = Query(default=None, description="分支过滤（如 main/release），缺省全部"),
+):
+    """聚合指定时间窗口内的 CI 综合报错数据。
+
+    报告以「失败详情」为核心：哪些用例/模型失败了、失败原因（问题范畴 +
+    原始报错线索行 + AI 根因摘要）、处理状态。窗口内无失败时 all_green=true。
+
+    返回包含 summary / failures / runs / trends / charts（base64 图表）。
+    """
+    from reporting.ci_daily_report_builder import (
+        CIDailyReportBuilder,
+        ReportRequest,
+        parse_window,
+    )
+    from reporting.ci_report_charts import render_report_charts
+
+    try:
+        start_utc, end_utc = parse_window(start, end)
+        request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
+        builder = CIDailyReportBuilder(db)
+        report = await builder.build_report(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Failed to build CI comprehensive report")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"构建综合报告失败: {e}",
+        )
+
+    charts: dict[str, Any] = {}
+    try:
+        charts = render_report_charts(report)
+    except Exception as e:
+        logger.warning("render CI report charts failed: %s", e)
+    report["charts"] = charts
+    return report
+
+
+@router.post("/reports/comprehensive/collect-raw-logs")
+async def collect_comprehensive_raw_logs(
+    db: DbSession,
+    start: str | None = Query(default=None, description="窗口起始，北京时间 'YYYY-MM-DD HH:MM'；缺省默认昨日 20:00"),
+    end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
+    hardware: str | None = Query(default=None, description="硬件过滤"),
+    branch: str | None = Query(default=None, description="分支过滤"),
+):
+    """对窗口内失败记录自动访问 GitHub 原始日志链接，抓取并解析报错线索行。
+
+    仅对「缺少原始报错行 / 未定界」的失败项抓取（已分析的复用 AI 结果）。
+    返回增强后的完整报告（含 failures 内新填充的 raw_log_lines / error_line）。
+    """
+    from reporting.ci_daily_report_builder import (
+        CIDailyReportBuilder,
+        ReportRequest,
+        parse_window,
+    )
+    from reporting.ci_report_charts import render_report_charts
+
+    try:
+        start_utc, end_utc = parse_window(start, end)
+        request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
+        builder = CIDailyReportBuilder(db)
+        report = await builder.build_report(request)
+        report = await builder.collect_raw_logs(report)
+        report["charts"] = render_report_charts(report)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Failed to collect CI comprehensive raw logs")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"抓取原始日志失败: {e}",
+        )
+    return report
+
+
+@router.post("/reports/comprehensive/auto-analyze")
+async def auto_analyze_comprehensive_report(
+    db: DbSession,
+    start: str | None = Query(default=None, description="窗口起始，北京时间 'YYYY-MM-DD HH:MM'；缺省默认昨日 20:00"),
+    end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
+    hardware: str | None = Query(default=None, description="硬件过滤"),
+    branch: str | None = Query(default=None, description="分支过滤"),
+):
+    """对窗口内「结论=失败 且尚无 AI 分析记录」的用例，自动入队 AI 分析。
+
+    复用 FailureAnalysisService + TaskManager（与失败列表「分析失败用例」同一套
+    占位 + 异步执行链路），让导出的 PDF/Excel 更有价值（带 AI 根因摘要）。
+    已 analyzing/completed 的不重复入队；单条入队失败不中断整体。
+
+    返回 { triggered, skipped, total_failures, errors, triggered_jobs }。
+    分析为异步执行——前端可稍后重新拉取报告查看 analysis_status / AI 结果。
+    """
+    from reporting.ci_daily_report_builder import (
+        CIDailyReportBuilder,
+        ReportRequest,
+        parse_window,
+    )
+
+    try:
+        start_utc, end_utc = parse_window(start, end)
+        request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
+        builder = CIDailyReportBuilder(db)
+        report = await builder.build_report(request)
+        result = await builder.auto_analyze_missing(report)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Failed to auto-analyze CI comprehensive failures")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"自动 AI 分析入队失败: {e}",
+        )
+    return result
+
+
+@router.get("/reports/comprehensive/export.pdf")
+async def export_comprehensive_report_pdf(
+    db: DbSession,
+    start: str | None = Query(default=None, description="窗口起始，北京时间 'YYYY-MM-DD HH:MM'；缺省默认昨日 20:00"),
+    end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
+    hardware: str | None = Query(default=None, description="硬件过滤"),
+    branch: str | None = Query(default=None, description="分支过滤"),
+    collect_raw_logs: bool = Query(default=False, description="导出前自动抓取 GitHub 原始日志并解析报错线索（失败项较多时较慢）"),
+):
+    """导出 CI 每日综合报错报告为 PDF（含 matplotlib 图表 + 失败明细表）。"""
+    from reporting.ci_daily_report_builder import (
+        CIDailyReportBuilder,
+        ReportRequest,
+        parse_window,
+    )
+    from reporting.ci_report_charts import render_report_charts
+    from reporting.ci_report_pdf import CIDailyReportPDF
+
+    try:
+        start_utc, end_utc = parse_window(start, end)
+        request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
+        builder = CIDailyReportBuilder(db)
+        report = await builder.build_report(request)
+        if collect_raw_logs:
+            report = await builder.collect_raw_logs(report)
+        try:
+            report["charts"] = render_report_charts(report)
+        except Exception as e:
+            logger.warning("render CI report charts failed: %s", e)
+            report["charts"] = {}
+        pdf_bytes = CIDailyReportPDF(report).render()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Failed to export CI comprehensive report PDF")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导出 PDF 失败: {e}",
+        )
+
+    from reporting.ci_report_pdf import CIDailyReportPDF as _Pdf
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{_Pdf.default_filename(report)}"'
+        },
+    )
+
+
+@router.get("/reports/comprehensive/export.xlsx")
+async def export_comprehensive_report_excel(
+    db: DbSession,
+    start: str | None = Query(default=None, description="窗口起始，北京时间 'YYYY-MM-DD HH:MM'；缺省默认昨日 20:00"),
+    end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
+    hardware: str | None = Query(default=None, description="硬件过滤"),
+    branch: str | None = Query(default=None, description="分支过滤"),
+    collect_raw_logs: bool = Query(default=False, description="导出前自动抓取 GitHub 原始日志并解析报错线索（失败项较多时较慢）"),
+):
+    """导出 CI 每日综合报错报告为 Excel（多 Sheet：失败详情/失败维度统计/运行记录）。"""
+    from reporting.ci_daily_report_builder import (
+        CIDailyReportBuilder,
+        ReportRequest,
+        parse_window,
+    )
+    from reporting.ci_report_excel import CIDailyReportExcel
+
+    try:
+        start_utc, end_utc = parse_window(start, end)
+        request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
+        builder = CIDailyReportBuilder(db)
+        report = await builder.build_report(request)
+        if collect_raw_logs:
+            report = await builder.collect_raw_logs(report)
+        excel_bytes = CIDailyReportExcel(report).render()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Failed to export CI comprehensive report Excel")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"导出 Excel 失败: {e}",
+        )
+
+    from reporting.ci_report_excel import CIDailyReportExcel as _Xlsx
+
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{_Xlsx.default_filename(report)}"'
+        },
+    )
+
+
 # ============ Failure Analysis API ============
 
 @router.post("/failure-analysis/analyze/{job_id}")

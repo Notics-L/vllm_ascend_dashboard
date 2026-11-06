@@ -264,3 +264,22 @@ export const useNightlyGantt = (runNumber: number | null, hardware: string = 'a3
     staleTime: 5 * 60 * 1000,
   })
 }
+
+/**
+ * 获取 CI 每日综合报错报告（失败详情为核心）
+ *
+ * 默认窗口由后端解析（昨日 20:00 ~ 当日 09:00，北京时间）。
+ */
+export const useComprehensiveReport = (params?: {
+  start?: string | null
+  end?: string | null
+  hardware?: string | null
+  branch?: string | null
+}, enabled = true) => {
+  return useQuery({
+    queryKey: ['ci-comprehensive-report', params],
+    queryFn: () => ciApi.getComprehensiveReport(params),
+    enabled,
+    staleTime: 60 * 1000,
+  })
+}
