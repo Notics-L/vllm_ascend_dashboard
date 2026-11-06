@@ -397,6 +397,25 @@ export const clearSyncData = async () => {
 }
 
 /**
+ * 独立补录日度明细（daily_prs + daily_commits），不碰 contributor_profiles
+ */
+export const triggerDailyBackfill = async (params: {
+  full_resync?: boolean
+  since_date?: string | null
+  until_date?: string | null
+  repo_name?: string | null
+}) => {
+  const body: Record<string, unknown> = {
+    full_resync: params.full_resync ?? false,
+  }
+  if (params.since_date) body.since_date = params.since_date
+  if (params.until_date) body.until_date = params.until_date
+  if (params.repo_name) body.repo_name = params.repo_name
+  const response = await api.post('/contributor-board/sync/daily-backfill', body)
+  return response.data as { record_id: number; [key: string]: unknown }
+}
+
+/**
  * 获取同步历史记录
  */
 export const getSyncHistory = async (params?: {

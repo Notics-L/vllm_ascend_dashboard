@@ -141,9 +141,10 @@ import {
      type SyncSummary,
       getSyncStatus,
       getSyncHistory,
-      getSyncSummary,
-      cancelSync,
-      clearSyncData,
+       getSyncSummary,
+       cancelSync,
+       clearSyncData,
+       triggerDailyBackfill,
 } from '../services/contributorBoard'
 import { getLLMProviders, type LLMProvider } from '../services/dailySummary'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -3303,6 +3304,60 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
     })
   }
 
+  const [backfilling, setBackfilling] = useState(false)
+
+  const handleDailyBackfill = () => {
+    if (backfilling || isRunning) return
+    Modal.confirm({
+      title: '补录日度明细数据？',
+      icon: <WarningOutlined />,
+      content: (
+        <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+          <p style={{ margin: '0 0 8px' }}>仅重新拉取并写入日度 PR / commit 明细（热力图、模块分布、时间线、趋势的数据源），不会修改排行榜数据。</p>
+          <p style={{ margin: '0', color: '#fa8c16' }}>
+            注意：需要拉取约 2 × PR 数次 GitHub API，全量约 5 小时（受 5000/h 限额约束）。
+          </p>
+        </div>
+      ),
+      okText: '开始补录',
+      cancelText: '取消',
+      onOk: async () => {
+        setBackfilling(true)
+        try {
+          const res = await triggerDailyBackfill({
+            full_resync: syncMode === 'full',
+            since_date: syncMode === 'incremental' && singleDate ? singleDate.format('YYYY-MM-DD') : (syncMode === 'range' && dateRange ? dateRange[0].format('YYYY-MM-DD') : null),
+            until_date: syncMode === 'range' && dateRange ? dateRange[1].format('YYYY-MM-DD') : null,
+            repo_name: targetRepo || null,
+          })
+          message.success(`日度明细补录已启动，任务 ID: ${res.record_id}`)
+          setSyncLoading(true)
+          setCurrentRecord({ id: res.record_id, status: 'running', progress_percent: 5, progress_message: '日度明细补录中...' } as any)
+          pollTimerRef.current = setInterval(async () => {
+            try {
+              const s = await getSyncStatus(res.record_id)
+              setSyncProgress(s.progress_percent || 0)
+              setSyncProgressMsg(s.progress_message || '')
+              if (s.status !== 'running' && s.status !== 'pending') {
+                if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+                pollTimerRef.current = null
+                setSyncLoading(false)
+                setCurrentRecord(null)
+                message.success(s.status === 'completed' ? '日度明细补录完成' : `补录状态: ${s.status}`)
+                window.dispatchEvent(new Event('sync-history-refresh'))
+              }
+            } catch { /* ignore */ }
+          }, 5000)
+        } catch (err: unknown) {
+          const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '启动补录失败'
+          message.error(msg)
+        } finally {
+          setBackfilling(false)
+        }
+      },
+    })
+  }
+
   const [cancelling, setCancelling] = useState(false)
 
   const isRunning = currentRecord?.status === 'running' || currentRecord?.status === 'pending'
@@ -3384,6 +3439,14 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
             onClick={handleClearData}
           >
             清除并重置
+          </Button>
+          <Button
+            icon={<ClockCircleOutlined />}
+            loading={backfilling}
+            disabled={isRunning}
+            onClick={handleDailyBackfill}
+          >
+            补录日度明细
           </Button>
           <Button
             type="primary"

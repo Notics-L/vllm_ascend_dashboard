@@ -428,13 +428,15 @@ class ContributorSyncCollector:
                         author_profile["first_review_hours"] = min(author_profile["first_review_hours"], hours)
 
         # ── 日度明细（贡献者详情页趋势/热力图/分布/时间线）──
+        # 注意：_write_daily_pr / _write_daily_commits 是 async 方法，必须 await
+        # 否则 coroutine 被创建但从不执行，日度数据全部丢失
         try:
-            self._write_daily_pr(pr, pr_number, pr_state, is_merged, pr_created, pr_merged_at, commits, reviews)
+            await self._write_daily_pr(pr, pr_number, pr_state, is_merged, pr_created, pr_merged_at, commits, reviews)
         except Exception as e:
             logger.warning("daily PR #%s write skipped: %s", pr_number, e)
             result.errors.append(f"daily PR #{pr_number}: {e}")
         try:
-            self._write_daily_commits(pr, pr_number, author, commits, pr_files, reviews)
+            await self._write_daily_commits(pr, pr_number, author, commits, pr_files, reviews)
         except Exception as e:
             logger.warning("daily commits PR #%s write skipped: %s", pr_number, e)
             result.errors.append(f"daily commits PR #{pr_number}: {e}")
@@ -1281,5 +1283,175 @@ async def sync_contributors(
         "All repos sync finished: contributors=%d commits=%d build_plans=%d errors=%d",
         combined.contributors_synced, combined.commits_classified,
         combined.build_plans_created, len(combined.errors),
+    )
+    return combined
+
+
+# ── 独立日度明细补录 ─────────────────────────────────────────────
+
+async def backfill_daily_data(
+    since_date: datetime | None = None,
+    until_date: datetime | None = None,
+    repo_name: str | None = None,
+    progress_callback=None,
+) -> SyncResult:
+    """独立补录日度明细（daily_prs + daily_commits），不碰 contributor_profiles。
+
+    用于：
+    1. 全量同步时因限流跳过了日度写入，事后补录
+    2. 日度数据丢失后重建
+    3. 单独只刷新详情页图表数据
+
+    需要 2 × PR 数 次 API 调用（commits + files），~16K PR ≈ ~5h
+    （受 GitHub 5000/h 限额约束，RATE_LIMIT_WAIT_LOOPS=12 允许跨窗口等待）
+    """
+    import asyncio
+
+    token = settings.GITHUB_TOKEN
+    if not token:
+        logger.warning("GITHUB_TOKEN is not configured, skipping daily backfill")
+        return SyncResult(errors=["GITHUB_TOKEN not configured"])
+
+    if since_date is None:
+        since_date = datetime(2025, 1, 1, tzinfo=UTC)
+    if until_date is None:
+        until_date = datetime.now(UTC)
+
+    all_repos = _resolve_repos()
+    if repo_name:
+        if "/" in repo_name:
+            target_repos = [repo_name.split("/", 1)]
+        else:
+            matched = [(o, r) for o, r in all_repos if r == repo_name]
+            if not matched:
+                return SyncResult(errors=[f"Repo not found: {repo_name}"])
+            target_repos = matched
+    else:
+        target_repos = all_repos
+
+    logger.info("Daily backfill target repos: %s since=%s until=%s",
+                 target_repos, since_date.isoformat(), until_date.isoformat())
+
+    start_time = datetime.now(UTC)
+    combined = SyncResult()
+
+    async def _backfill_single(owner: str, repo: str) -> SyncResult:
+        repo_key = f"{owner}/{repo}"
+        result = SyncResult()
+        async with GitHubClient(token=token, owner=owner, repo=repo) as github:
+            async with AsyncSessionLocal() as db:
+                # 构建一个轻量 collector 实例来复用 _write_daily_pr / _write_daily_commits
+                collector = ContributorSyncCollector(github, db)
+                try:
+                    prs = await github.get_pull_requests_by_updated_range(
+                        owner, repo, since_date, until_date, max_items=None
+                    )
+                    result.total_prs_scanned = len(prs)
+                    logger.info("Backfill %s: fetched %d PRs", repo_key, len(prs))
+                    if progress_callback:
+                        await progress_callback(5, f"Fetched {len(prs)} PRs for daily backfill...")
+
+                    total = len(prs)
+                    for idx, pr in enumerate(prs, 1):
+                        pr_number = pr.get("number")
+                        if pr_number is None:
+                            continue
+                        if idx % 10 == 0 or idx == total:
+                            pct = min(95, int(idx / max(1, total) * 90) + 5)
+                            if progress_callback:
+                                await progress_callback(pct, f"Backfill daily: {idx}/{total}")
+
+                        user_info = pr.get("user") or {}
+                        author = user_info.get("login") or ""
+                        if not author:
+                            continue
+
+                        pr_created = collector._parse_datetime(pr.get("created_at"))
+                        pr_merged_at = collector._parse_datetime(pr.get("merged_at"))
+                        pr_state = pr.get("state", "closed")
+                        is_merged = bool(pr.get("merged_at")) or (
+                            pr_state == "closed" and bool(pr.get("merged"))
+                        )
+
+                        # 拉 commits + files（每个 PR 2 次 API）
+                        commits: list[dict[str, Any]] = []
+                        pr_files: list[dict[str, Any]] = []
+                        try:
+                            commits = await github.get_pr_commits(owner, repo, pr_number)
+                        except GitHubRateLimitError:
+                            raise
+                        except Exception as e:
+                            logger.warning("backfill commits PR #%s failed: %s", pr_number, e)
+                        try:
+                            pr_files = await github.get_pr_files(owner, repo, pr_number)
+                        except GitHubRateLimitError:
+                            raise
+                        except Exception as e:
+                            logger.warning("backfill files PR #%s failed: %s", pr_number, e)
+
+                        # 写日度明细（幂等 upsert）
+                        try:
+                            await collector._write_daily_pr(
+                                pr, pr_number, pr_state, is_merged,
+                                pr_created, pr_merged_at, commits, [],
+                            )
+                        except Exception as e:
+                            logger.warning("backfill daily PR #%s write skipped: %s", pr_number, e)
+                        try:
+                            await collector._write_daily_commits(
+                                pr, pr_number, author, commits, pr_files, [],
+                            )
+                        except Exception as e:
+                            logger.warning("backfill daily commits PR #%s write skipped: %s", pr_number, e)
+
+                        result.commits_classified += len(commits)
+
+                    # 提交
+                    await db.commit()
+                    logger.info(
+                        "Backfill %s done: prs=%d commits=%d errors=%d",
+                        repo_key, result.total_prs_scanned,
+                        result.commits_classified, len(result.errors),
+                    )
+                except GitHubRateLimitError as e:
+                    logger.error("Backfill %s interrupted by rate limit: %s", repo_key, e)
+                    await db.rollback()
+                    result.errors.append(f"Rate limit: {e}")
+                    if progress_callback:
+                        await progress_callback(99, "Rate limited - re-trigger to resume")
+                except Exception as e:
+                    logger.error("Backfill %s failed: %s", repo_key, e, exc_info=True)
+                    await db.rollback()
+                    result.errors.append(f"Backfill failed: {e}")
+        return result
+
+    semaphore = asyncio.Semaphore(min(2, len(target_repos)))
+
+    async def _with_sem(owner: str, repo: str) -> SyncResult:
+        async with semaphore:
+            return await _backfill_single(owner, repo)
+
+    tasks = [_with_sem(o, r) for o, r in target_repos]
+    repo_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for r in repo_results:
+        if isinstance(r, Exception):
+            combined.errors.append(f"Backup error: {r}")
+        else:
+            combined.total_prs_scanned += r.total_prs_scanned
+            combined.commits_classified += r.commits_classified
+            combined.errors.extend(r.errors)
+            if r.synced_at and (combined.synced_at is None or r.synced_at > combined.synced_at):
+                combined.synced_at = r.synced_at
+
+    if progress_callback:
+        await progress_callback(100, "Daily backfill complete")
+
+    combined.duration_seconds = (datetime.now(UTC) - start_time).total_seconds()
+    combined.synced_at = combined.synced_at or datetime.now(UTC)
+    logger.info(
+        "All daily backfill done: prs=%d commits=%d errors=%d duration=%.1fs",
+        combined.total_prs_scanned, combined.commits_classified,
+        len(combined.errors), combined.duration_seconds,
     )
     return combined

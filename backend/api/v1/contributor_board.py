@@ -370,6 +370,35 @@ async def clear_sync_data(
     }
 
 
+@router.post("/sync/daily-backfill", response_model=ContributorSyncResponse)
+async def trigger_daily_backfill(
+    request: ContributorSyncRequest,
+    db: DbSession,
+    _access: CurrentSuperAdminUser,
+):
+    """独立补录日度明细（daily_prs + daily_commits），不碰 contributor_profiles。
+
+    用于全量同步时因限流跳过了日度写入后的事后补录。
+    需要 2 × PR 数 次 API 调用，~16K PR ≈ 5h。
+    """
+    from fastapi import HTTPException
+    logger = logging.getLogger(__name__)
+    service = get_contributor_board_service()
+    try:
+        logger.info(
+            "Triggering daily backfill: repo=%s, since=%s, until=%s",
+            request.repo_name, request.since_date, request.until_date,
+        )
+        return await service.trigger_daily_backfill(
+            db=db,
+            since_date=request.since_date,
+            until_date=request.until_date,
+            repo_name=request.repo_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.post("/sync/status/{record_id}/cancel")
 async def cancel_sync(
     record_id: int,
