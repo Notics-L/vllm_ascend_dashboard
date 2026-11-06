@@ -271,15 +271,15 @@ function CIDailyComprehensiveReport() {
     const tree: ComprehensiveReportFailure[] = []
     for (const [, group] of groupMap) {
       if (group.length === 1) {
-        tree.push({ ...group[0], _isParent: false } as ComprehensiveReportFailure)
+        tree.push(group[0])
       } else {
-        // parent = 第一条，children = 全部
-        const parent = { ...group[0] }
-        parent._stepGroup = group
-        parent.failed_steps = group.map((g) => g.failed_step || g.job_name || 'unknown').filter(Boolean)
-        const children = group.map((g) => ({ ...g, _isParent: true, _parent: parent } as ComprehensiveReportFailure))
-        parent.children = children
-        tree.push(parent as ComprehensiveReportFailure)
+        // parent = 第一条，children = 全部子 step
+        const parent: ComprehensiveReportFailure = {
+          ...group[0],
+          failed_steps: group.map((g) => g.failed_step || g.job_name || 'unknown').filter(Boolean),
+          children: [...group],
+        }
+        tree.push(parent)
       }
     }
     // 按 parent 时间排序
