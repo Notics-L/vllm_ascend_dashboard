@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, false, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.config import settings
@@ -407,32 +407,53 @@ class CIDailyReportBuilder:
         start, end = request.start_utc, request.end_utc
         stmt = select(CIResult).where(CIResult.started_at >= start, CIResult.started_at < end)
         if request.hardware:
-            stmt = stmt.where(CIResult.hardware == request.hardware)
+            stmt = stmt.where(func.lower(CIResult.hardware) == request.hardware.lower())
         if request.branch and request.branch != "all":
             stmt = stmt.where(CIResult.branch == request.branch)
         return list((await self.db.execute(stmt)).scalars().all())
 
     async def _query_jobs(self, start, end, failed_run_ids) -> list[CIJob]:
-        run_filter = CIJob.run_id.in_(failed_run_ids) if failed_run_ids else false()
+        # 时间窗口内的 job + 窗口内失败 run 的全部 job（跨窗口兜底）
+        time_cond = and_(CIJob.started_at >= start, CIJob.started_at < end)
+        run_cond = CIJob.run_id.in_(failed_run_ids) if failed_run_ids else false()
         stmt = (
             select(CIJob)
-            .where(or_(and_(CIJob.started_at >= start, CIJob.started_at < end), run_filter))
+            .where(or_(time_cond, run_cond))
             .order_by(CIJob.started_at.asc())
         )
         return list((await self.db.execute(stmt)).scalars().all())
 
     async def _query_failure_records(self, request: ReportRequest) -> list[DailyFailureRecord]:
-        start_date = request.start_utc.replace(tzinfo=UTC).astimezone(SHANGHAI_TZ).date()
-        end_date = request.end_utc.replace(tzinfo=UTC).astimezone(SHANGHAI_TZ).date()
+        start_utc, end_utc = request.start_utc, request.end_utc
+        # 宽泛日期范围（覆盖跨午夜窗口），再用时间戳二次过滤
+        start_date = start_utc.replace(tzinfo=UTC).astimezone(SHANGHAI_TZ).date() - timedelta(days=1)
+        end_date = end_utc.replace(tzinfo=UTC).astimezone(SHANGHAI_TZ).date() + timedelta(days=1)
         stmt = select(DailyFailureRecord).where(
             DailyFailureRecord.report_date >= start_date,
             DailyFailureRecord.report_date <= end_date,
         )
         if request.hardware:
-            stmt = stmt.where(DailyFailureRecord.hardware == request.hardware)
+            stmt = stmt.where(func.lower(DailyFailureRecord.hardware) == request.hardware.lower())
         if request.branch and request.branch != "all":
             stmt = stmt.where(DailyFailureRecord.source_branch == request.branch)
-        return list((await self.db.execute(stmt)).scalars().all())
+        records = list((await self.db.execute(stmt)).scalars().all())
+        # 二次过滤：用 started_at / completed_at 精确匹配时间窗口
+        # （report_date 是天粒度的，无法区分同一天内的不同时段）
+        def _in_window(rec) -> bool:
+            ts = rec.started_at or rec.completed_at
+            if ts is None:
+                # 无时间戳时回退用 report_date 判断（保守：保留）
+                rd = rec.report_date
+                if hasattr(rd, "date"):
+                    rd = rd.date() if callable(getattr(rd, "date", None)) else rd
+                rd_bj = rd.replace(tzinfo=SHANGHAI_TZ) if not hasattr(rd, "hour") else rd
+                # 简化：如果无法判断时间，保留该记录
+                return True
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            ts_utc_naive = ts.astimezone(UTC).replace(tzinfo=None)
+            return start_utc <= ts_utc_naive < end_utc
+        return [r for r in records if _in_window(r)]
 
     async def _query_case_runs(self, start, end) -> list[TestRun]:
         stmt = select(TestRun).where(

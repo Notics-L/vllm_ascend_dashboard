@@ -91,12 +91,11 @@ type SortOrder = 'desc' | 'asc'
 
 const HARDWARE_OPTIONS = [
   { label: '全部硬件', value: 'all' },
-  { label: 'Ascend 910B', value: '910B' },
-  { label: 'Ascend 310P', value: '310P' },
-  { label: 'Ascend A2', value: 'A2' },
-  { label: 'Ascend A3', value: 'A3' },
-  { label: 'All in One', value: 'All-in-One' },
-  { label: 'PCIE', value: 'PCIE' },
+  { label: 'A2', value: 'a2' },
+  { label: 'A3', value: 'a3' },
+  { label: 'A3-560T', value: 'a3-560t' },
+  { label: 'A5', value: 'a5' },
+  { label: '310P', value: '310p' },
 ]
 
 const CATEGORY_COLORS: Record<string, string> = {
