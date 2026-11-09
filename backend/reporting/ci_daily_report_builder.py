@@ -443,12 +443,11 @@ class CIDailyReportBuilder:
         run_ids = {rec.run_id for rec in records if rec.run_id}
         run_hw: dict[int, str | None] = {}
         if run_ids:
-            hw_map = dict(
+            run_hw = dict(
                 (await self.db.execute(
                     select(CIResult.run_id, CIResult.hardware).where(CIResult.run_id.in_(list(run_ids)))
                 )).all()
             )
-            run_hw = {rid: hw for rid, hw in hw_map}
 
         def _effective_hw(rec) -> str | None:
             if rec.hardware:
