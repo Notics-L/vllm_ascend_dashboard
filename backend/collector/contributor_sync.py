@@ -15,6 +15,7 @@ contributor_profiles 宽表（每贡献者一行），并保留 ImageBuildPlan �
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -44,8 +45,14 @@ from infrastructure.persistence.models import (
     DailyPR,
     ImageBuildPlan,
 )
-from sqlalchemy import delete, select
+from infrastructure.tasks.background_task import BackgroundTaskTracker
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# ── 日度明细补录常量 ─────────────────────────────────────────────
+DAILY_FLUSH_EVERY = 50   # 每处理 N 个 PR 提交一次 DB（避免 session 长期持有大量未提交对象）
+DAILY_CANCEL_CHECK_EVERY = 20  # 每 N 个 PR 检查一次取消状态
+DAILY_CHECKPOINT_EVERY = 100  # 每处理 N 个 PR 落一次断点（供 cancel/限流后恢复）
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +127,7 @@ class ContributorSyncCollector:
         github_client: GitHubClient,
         db_session: AsyncSession,
         progress_callback=None,
+        cancel_check_func=None,
     ) -> None:
         self.github = github_client
         self.db = db_session
@@ -127,6 +135,7 @@ class ContributorSyncCollector:
         self.repo = github_client.repo
         self.repo_name = f"{self.owner}/{self.repo}"
         self.progress_callback = progress_callback
+        self.cancel_check_func = cancel_check_func
         # 日度明细追踪（本次同步扫到的 PR + 每个 PR 的 commit sha），
         # 用于收尾前清理本仓库 stale 日度数据，保证窗口一致、无重复
         self._daily_pr_numbers: set[int] = set()
@@ -173,16 +182,24 @@ class ContributorSyncCollector:
             pr_numbers_seen: set[int] = set()
 
         interrupted = False
+        cancelled = False
         skipped = 0
 
         try:
             prs = await self._fetch_prs(since, until)
             result.total_prs_scanned = len(prs)
-            logger.info(
-                "Fetched %d PRs for contributor sync (%s)",
-                len(prs),
-                "resuming from checkpoint" if resumed else "full scan",
-            )
+            if not prs and not resumed:
+                logger.warning(
+                    "Fetched 0 PRs for %s (since=%s until=%s) — likely API error, "
+                    "invalid token, or genuinely empty range",
+                    self.repo_name, since.isoformat(), until.isoformat(),
+                )
+            else:
+                logger.info(
+                    "Fetched %d PRs for contributor sync (%s)",
+                    len(prs),
+                    "resuming from checkpoint" if resumed else "full scan",
+                )
             if self.progress_callback:
                 await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
 
@@ -191,6 +208,28 @@ class ContributorSyncCollector:
                 pr_number = pr.get("number")
                 if pr_number is None:
                     continue
+
+                # 定期检查取消状态（20 个 PR 一次，避免高频 DB 查询）
+                if self.cancel_check_func and idx % DAILY_CANCEL_CHECK_EVERY == 0:
+                    try:
+                        if await self.cancel_check_func():
+                            logger.info("Contributor sync cancelled at PR #%s", pr_number)
+                            cancelled = True
+                            try:
+                                await self.db.rollback()
+                            except Exception:
+                                pass
+                            if self.progress_callback:
+                                await self.progress_callback(
+                                    99, f"Cancelled at PR #{pr_number} ({idx}/{total})"
+                                )
+                            if not interrupted:
+                                result.errors.append(
+                                    f"CANCELLED at PR #{pr_number} ({idx}/{total} done)"
+                                )
+                            break
+                    except Exception:
+                        pass
 
                 # 断点续跑：跳过已完成的 PR
                 if resumed and pr_number in pr_numbers_seen:
@@ -253,6 +292,10 @@ class ContributorSyncCollector:
                     f"INTERRUPTED: rate limit at PR #{last_processed_pr}, "
                     f"checkpoint saved ({len(pr_numbers_seen)}/{total} PRs done)"
                 )
+            elif cancelled:
+                logger.warning("Sync cancelled by user at PR #%s", last_processed_pr)
+                result.contributors_synced = 0
+                # 错误已在上面 cancel_check_func 检测时追加
             else:
                 if skipped:
                     logger.info("Skipped %d already-processed PRs from checkpoint", skipped)
@@ -710,7 +753,10 @@ class ContributorSyncCollector:
         errors_count: int,
         abort_reason: str,
     ) -> None:
-        """在独立 session 中保存断点（主 session 可能已 rollback）。"""
+        """在独立 session 中保存断点（主 session 可能已 rollback）。
+
+        仅保存 checkpoint_kind='full_sync'，与 daily_backfill 类型互不干扰。
+        """
         profiles_json = self._serialize_profiles(profiles)
         async with AsyncSessionLocal() as cdb:
             existing = (
@@ -718,6 +764,7 @@ class ContributorSyncCollector:
                     select(ContributorSyncCheckpoint).where(
                         ContributorSyncCheckpoint.repo_name == self.repo_name,
                         ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "full_sync",
                     )
                 )
             ).scalars().first()
@@ -732,9 +779,11 @@ class ContributorSyncCollector:
                 existing.contributors_count = len(profiles)
                 existing.errors_count = errors_count
                 existing.abort_reason = abort_reason[:500]
+                existing.last_updated = datetime.now(UTC)
             else:
                 cdb.add(ContributorSyncCheckpoint(
                     repo_name=self.repo_name,
+                    checkpoint_kind="full_sync",
                     last_processed_pr=last_processed_pr,
                     total_prs=total_prs,
                     since_date=since.date(),
@@ -745,6 +794,7 @@ class ContributorSyncCollector:
                     errors_count=errors_count,
                     abort_reason=abort_reason[:500],
                     status="active",
+                    last_updated=datetime.now(UTC),
                 ))
             await cdb.commit()
         logger.info(
@@ -768,6 +818,7 @@ class ContributorSyncCollector:
                     select(ContributorSyncCheckpoint).where(
                         ContributorSyncCheckpoint.repo_name == self.repo_name,
                         ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "full_sync",
                     )
                 )
             ).scalars().first()
@@ -793,13 +844,14 @@ class ContributorSyncCollector:
             return profiles, pr_done, cp.last_processed_pr
 
     async def _clear_checkpoint(self) -> None:
-        """同步完成后清除 active checkpoint。"""
+        """同步完成后清除 active checkpoint（仅 full_sync 类型）。"""
         async with AsyncSessionLocal() as cdb:
             cps = (
                 await cdb.execute(
                     select(ContributorSyncCheckpoint).where(
                         ContributorSyncCheckpoint.repo_name == self.repo_name,
                         ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "full_sync",
                     )
                 )
             ).scalars().all()
@@ -807,7 +859,7 @@ class ContributorSyncCollector:
                 cdb.delete(cp)
             if cps:
                 await cdb.commit()
-                logger.info("Cleared %d active checkpoint(s) for %s", len(cps), self.repo_name)
+                logger.info("Cleared %d active full_sync checkpoint(s) for %s", len(cps), self.repo_name)
 
     async def _finalize_daily_from_db(self) -> None:
         """从 daily_prs 表重建 _daily_pr_numbers / _daily_commit_shas，
@@ -965,6 +1017,15 @@ class ContributorSyncCollector:
         *,
         commit_on_success: bool = True,
     ) -> None:
+        # 安全保护：0 个 profile 时不做任何 DB 变更，避免清空已有数据
+        if not profiles:
+            logger.warning(
+                "_rebuild_profiles: 0 profiles for %s, skipping to preserve existing data",
+                self.repo_name,
+            )
+            result.contributors_synced = 0
+            return
+
         now = datetime.now(UTC)
         active_cutoff = (now - timedelta(days=90)).date()
 
@@ -1195,6 +1256,7 @@ async def sync_contributors(
     until_date: datetime | None = None,
     repo_name: str | None = None,
     progress_callback=None,
+    cancel_check_func=None,
 ) -> SyncResult:
     """执行贡献者数据同步的主入口（多仓库，并行）。"""
     import asyncio
@@ -1236,11 +1298,27 @@ async def sync_contributors(
                         if progress_callback:
                             global_pct = min(95, int(repo_base_pct + (pct / 100) * repo_pct_range))
                             await progress_callback(global_pct, f"[{repo_key}] {msg}")
-                    collector = ContributorSyncCollector(github_client, db, progress_callback=repo_progress)
+                    collector = ContributorSyncCollector(
+                        github_client, db,
+                        progress_callback=repo_progress,
+                        cancel_check_func=cancel_check_func,
+                    )
                     # collect 不再自己提交，由外层统一 commit，实现 Build Plan + 画像原子化
                     result = await collector.collect(since=since_date, until=until_date, commit_profiles=False)
-                    if result.errors and not result.contributors_synced:
-                        # 被中断/完全失败：直接回滚，保留上一份数据
+                    if result.total_prs_scanned == 0:
+                        # 0 PR：可能是 token 失效 / 网络异常 / 日期范围无 PR，
+                        # 此时 rebuild 已被内部跳过，不应 commit（保留旧数据）
+                        logger.warning(
+                            "Sync %s: 0 PRs fetched (likely API error or empty range), "
+                            "skipping commit to preserve existing data",
+                            repo_key,
+                        )
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                    elif result.errors and not result.contributors_synced:
+                        # 被中断/完全失败/取消：直接回滚，保留上一份数据
                         logger.warning("Sync aborted for %s (no profiles synced), rolling back repo data", f"{owner}/{repo}")
                         try:
                             await db.rollback()
@@ -1294,6 +1372,7 @@ async def backfill_daily_data(
     until_date: datetime | None = None,
     repo_name: str | None = None,
     progress_callback=None,
+    cancel_check_func=None,
 ) -> SyncResult:
     """独立补录日度明细（daily_prs + daily_commits），不碰 contributor_profiles。
 
@@ -1304,8 +1383,13 @@ async def backfill_daily_data(
 
     需要 2 × PR 数 次 API 调用（commits + files），~16K PR ≈ ~5h
     （受 GitHub 5000/h 限额约束，RATE_LIMIT_WAIT_LOOPS=12 允许跨窗口等待）
+
+    新增能力：
+    - 每 DAILY_FLUSH_EVERY 个 PR 提交一次 DB（避免长事务 + 释放 session 资源）
+    - 每 DAILY_CANCEL_CHECK_EVERY 个 PR 检查一次 cancel_check_func
+    - 每 DAILY_CHECKPOINT_EVERY 个 PR 落一次 ContributorSyncCheckpoint
+      (checkpoint_kind='daily_backfill')，cancel / 限流 / 崩溃后可断点续跑
     """
-    import asyncio
 
     token = settings.GITHUB_TOKEN
     if not token:
@@ -1335,13 +1419,96 @@ async def backfill_daily_data(
     start_time = datetime.now(UTC)
     combined = SyncResult()
 
+    async def _load_backfill_checkpoint(repo_key: str) -> list[int] | None:
+        """加载匹配 (repo, since_d, until_d) 的 active daily_backfill checkpoint。"""
+        async with AsyncSessionLocal() as cdb:
+            cp = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == repo_key,
+                        ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "daily_backfill",
+                        ContributorSyncCheckpoint.since_date == since_date.date(),
+                        ContributorSyncCheckpoint.until_date == until_date.date(),
+                    )
+                )
+            ).scalars().first()
+            if cp is None:
+                return None
+            return list(cp.pr_numbers_done or [])
+
+    async def _save_backfill_checkpoint(
+        repo_key: str, pr_numbers_done: set[int], last_pr: int, total: int,
+        errors_count: int, reason: str,
+    ) -> None:
+        async with AsyncSessionLocal() as cdb:
+            existing = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == repo_key,
+                        ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "daily_backfill",
+                        ContributorSyncCheckpoint.since_date == since_date.date(),
+                        ContributorSyncCheckpoint.until_date == until_date.date(),
+                    )
+                )
+            ).scalars().first()
+            if existing:
+                existing.last_processed_pr = last_pr
+                existing.total_prs = total
+                existing.profiles_snapshot = None
+                existing.pr_numbers_done = sorted(pr_numbers_done)
+                existing.contributors_count = 0
+                existing.errors_count = errors_count
+                existing.abort_reason = reason[:500]
+                existing.last_updated = datetime.now(UTC)
+            else:
+                cdb.add(ContributorSyncCheckpoint(
+                    repo_name=repo_key,
+                    checkpoint_kind="daily_backfill",
+                    last_processed_pr=last_pr,
+                    total_prs=total,
+                    since_date=since_date.date(),
+                    until_date=until_date.date(),
+                    pr_numbers_done=sorted(pr_numbers_done),
+                    contributors_count=0,
+                    errors_count=errors_count,
+                    abort_reason=reason[:500],
+                    status="active",
+                    last_updated=datetime.now(UTC),
+                ))
+            await cdb.commit()
+
+    async def _clear_backfill_checkpoint(repo_key: str) -> None:
+        async with AsyncSessionLocal() as cdb:
+            cps = (
+                await cdb.execute(
+                    select(ContributorSyncCheckpoint).where(
+                        ContributorSyncCheckpoint.repo_name == repo_key,
+                        ContributorSyncCheckpoint.status == "active",
+                        ContributorSyncCheckpoint.checkpoint_kind == "daily_backfill",
+                        ContributorSyncCheckpoint.since_date == since_date.date(),
+                        ContributorSyncCheckpoint.until_date == until_date.date(),
+                    )
+                )
+            ).scalars().all()
+            for cp in cps:
+                cdb.delete(cp)
+            if cps:
+                await cdb.commit()
+                logger.info("Cleared daily_backfill checkpoint for %s", repo_key)
+
     async def _backfill_single(owner: str, repo: str) -> SyncResult:
         repo_key = f"{owner}/{repo}"
         result = SyncResult()
         async with GitHubClient(token=token, owner=owner, repo=repo) as github:
             async with AsyncSessionLocal() as db:
-                # 构建一个轻量 collector 实例来复用 _write_daily_pr / _write_daily_commits
-                collector = ContributorSyncCollector(github, db)
+                collector = ContributorSyncCollector(
+                    github, db, progress_callback=None, cancel_check_func=cancel_check_func,
+                )
+                pr_numbers_done: set[int] = set()
+                last_pr = 0
+                cancelled = False
                 try:
                     prs = await github.get_pull_requests_by_updated_range(
                         owner, repo, since_date, until_date, max_items=None
@@ -1352,11 +1519,59 @@ async def backfill_daily_data(
                         await progress_callback(5, f"Fetched {len(prs)} PRs for daily backfill...")
 
                     total = len(prs)
+                    done = 0
+                    # 断点续跑：加载已完成集合
+                    if total > 0:
+                        prev_done = await _load_backfill_checkpoint(repo_key)
+                        if prev_done:
+                            pr_numbers_done.update(prev_done)
+                            done = len(pr_numbers_done)
+                            logger.info(
+                                "Backfill %s: resuming, %d/%d already done",
+                                repo_key, done, total,
+                            )
+                            if progress_callback:
+                                await progress_callback(
+                                    min(95, int(done / max(1, total) * 90) + 5),
+                                    f"Resuming from checkpoint ({done}/{total} done)",
+                                )
+
                     for idx, pr in enumerate(prs, 1):
                         pr_number = pr.get("number")
                         if pr_number is None:
                             continue
-                        if idx % 10 == 0 or idx == total:
+
+                        # 跳过断点已完成的
+                        if pr_number in pr_numbers_done:
+                            continue
+
+                        # 周期检查取消
+                        if cancel_check_func and idx % DAILY_CANCEL_CHECK_EVERY == 0:
+                            try:
+                                if await cancel_check_func():
+                                    logger.info(
+                                        "Backfill %s cancelled at PR #%s (%d/%d done)",
+                                        repo_key, pr_number, done, total,
+                                    )
+                                    cancelled = True
+                                    await db.rollback()
+                                    await _save_backfill_checkpoint(
+                                        repo_key, pr_numbers_done, last_pr,
+                                        total, len(result.errors),
+                                        f"cancelled at PR #{pr_number} after {done} done",
+                                    )
+                                    if progress_callback:
+                                        await progress_callback(
+                                            99, f"Cancelled at PR #{pr_number} ({done}/{total} done)",
+                                        )
+                                    result.errors.append(
+                                        f"CANCELLED at PR #{pr_number} ({done}/{total} done)"
+                                    )
+                                    break
+                            except Exception:
+                                pass
+
+                        if idx % 5 == 0 or idx == total:
                             pct = min(95, int(idx / max(1, total) * 90) + 5)
                             if progress_callback:
                                 await progress_callback(pct, f"Backfill daily: {idx}/{total}")
@@ -1364,6 +1579,8 @@ async def backfill_daily_data(
                         user_info = pr.get("user") or {}
                         author = user_info.get("login") or ""
                         if not author:
+                            pr_numbers_done.add(pr_number)
+                            done += 1
                             continue
 
                         pr_created = collector._parse_datetime(pr.get("created_at"))
@@ -1405,23 +1622,73 @@ async def backfill_daily_data(
                             logger.warning("backfill daily commits PR #%s write skipped: %s", pr_number, e)
 
                         result.commits_classified += len(commits)
+                        pr_numbers_done.add(pr_number)
+                        last_pr = pr_number
+                        done += 1
 
-                    # 提交
-                    await db.commit()
-                    logger.info(
-                        "Backfill %s done: prs=%d commits=%d errors=%d",
-                        repo_key, result.total_prs_scanned,
-                        result.commits_classified, len(result.errors),
-                    )
+                        # 周期性 commit + checkpoint
+                        if done % DAILY_FLUSH_EVERY == 0:
+                            try:
+                                await db.commit()
+                                logger.debug("Backfill %s: flush at %d/%d", repo_key, done, total)
+                            except Exception as e:
+                                logger.warning("Backfill %s: flush at %d failed: %s", repo_key, done, e)
+                                try:
+                                    await db.rollback()
+                                except Exception:
+                                    pass
+                        if done % DAILY_CHECKPOINT_EVERY == 0:
+                            try:
+                                await _save_backfill_checkpoint(
+                                    repo_key, pr_numbers_done, last_pr,
+                                    total, len(result.errors),
+                                    f"periodic at {done}/{total}",
+                                )
+                            except Exception as e:
+                                logger.warning("Backfill %s: checkpoint save at %d failed: %s",
+                                               repo_key, done, e)
+
+                    # 完成后清除断点
+                    if not cancelled:
+                        await db.commit()
+                        await _clear_backfill_checkpoint(repo_key)
+                        logger.info(
+                            "Backfill %s done: prs=%d commits=%d errors=%d (resumed=%d)",
+                            repo_key, result.total_prs_scanned,
+                            result.commits_classified, len(result.errors),
+                            len(pr_numbers_done),
+                        )
+                    else:
+                        result.contributors_synced = 0
+                        # 已 append CANCELLED error
+                    if result.commits_classified == 0 and not pr_numbers_done:
+                        result.errors.append(f"{repo_key}: no PRs in range")
+
                 except GitHubRateLimitError as e:
                     logger.error("Backfill %s interrupted by rate limit: %s", repo_key, e)
-                    await db.rollback()
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
+                    await _save_backfill_checkpoint(
+                        repo_key, pr_numbers_done, last_pr,
+                        result.total_prs_scanned, len(result.errors),
+                        f"rate limit: {e}",
+                    )
                     result.errors.append(f"Rate limit: {e}")
                     if progress_callback:
                         await progress_callback(99, "Rate limited - re-trigger to resume")
                 except Exception as e:
                     logger.error("Backfill %s failed: %s", repo_key, e, exc_info=True)
-                    await db.rollback()
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
+                    await _save_backfill_checkpoint(
+                        repo_key, pr_numbers_done, last_pr,
+                        result.total_prs_scanned, len(result.errors),
+                        f"exception: {e}",
+                    )
                     result.errors.append(f"Backfill failed: {e}")
         return result
 
@@ -1491,10 +1758,29 @@ async def backfill_daily_task_func(params: dict, tracker) -> None:
             except Exception:
                 pass
 
+    async def _cancel_check():
+        """检查 background task 是否被 cancel（供 backfill_daily_data 周期调用）。"""
+        try:
+            async with _SL() as db:
+                row = (
+                    await db.execute(
+                        text(
+                            f"SELECT status FROM {BackgroundTaskTracker.TABLE_NAME} WHERE id = :tid"
+                        ),
+                        {"tid": tracker.task_id},
+                    )
+                ).fetchone()
+            if row:
+                return row[0] in ("cancelled", "failed")
+        except Exception:
+            pass
+        return False
+
     try:
         result = await backfill_daily_data(
             since_date=since_dt, until_date=until_dt,
             repo_name=repo_name, progress_callback=_progress,
+            cancel_check_func=_cancel_check,
         )
     except Exception as e:
         logger.error("backfill_daily_task_func failed: %s", e, exc_info=True)
@@ -1512,12 +1798,12 @@ async def backfill_daily_task_func(params: dict, tracker) -> None:
                 pass
         return
 
-    # 更新 ContributorSyncRecord
+    # 更新 ContributorSyncRecord（cancelled 状态保留，不被覆盖）
     if record_id:
         try:
             async with _SL() as db:
                 rec = await db.get(_CSR, record_id)
-                if rec:
+                if rec and rec.status not in ("cancelled", "failed"):
                     rec.status = "completed" if not result.errors else "failed"
                     rec.contributors_synced = 0
                     rec.commits_classified = result.commits_classified
@@ -1531,8 +1817,15 @@ async def backfill_daily_task_func(params: dict, tracker) -> None:
         except Exception:
             pass
 
-    await tracker.complete(result_metadata={
-        "total_prs": result.total_prs_scanned,
-        "commits": result.commits_classified,
-        "errors": len(result.errors),
-    })
+    # 仅当任务未取消时才标记 background task 完成
+    try:
+        if tracker.is_cancelled():
+            logger.info("backfill_daily_task_func %s skipped complete (cancelled)", tracker.task_id)
+        else:
+            await tracker.complete(result_metadata={
+                "total_prs": result.total_prs_scanned,
+                "commits": result.commits_classified,
+                "errors": len(result.errors),
+            })
+    except Exception as e:
+        logger.warning("backfill tracker.complete failed: %s", e)

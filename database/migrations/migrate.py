@@ -52,6 +52,7 @@ from database.migrations.contributor_metrics_add_commit_count import run as migr
 from database.migrations.contributor_metrics_pr_efficiency import run as migrate_pr_efficiency
 from database.migrations.contributor_board_repo_name import run as migrate_contributor_board_repo_name
 from database.migrations.contributor_sync_checkpoint import run as migrate_contributor_sync_checkpoint
+from database.migrations.contributor_sync_checkpoint_kind import run as migrate_contributor_sync_checkpoint_kind
 from database.migrations.contributor_sync_records import run as migrate_contributor_sync_records
 from database.migrations.image_build_plans_reasoning import run as migrate_image_build_plans_reasoning
 from database.migrations.image_build_plans_files_changed import run as migrate_image_build_plans_files_changed
@@ -101,6 +102,7 @@ async def migrate() -> None:
     pr_efficiency_result = await migrate_pr_efficiency()
     contributor_board_repo_name_result = await migrate_contributor_board_repo_name()
     contributor_sync_checkpoint_result = await migrate_contributor_sync_checkpoint()
+    contributor_sync_checkpoint_kind_result = await migrate_contributor_sync_checkpoint_kind()
     contributor_sync_records_result = await migrate_contributor_sync_records()
     build_plan_reasoning_result = await migrate_image_build_plans_reasoning()
     build_plan_files_changed_result = await migrate_image_build_plans_files_changed()
@@ -126,6 +128,7 @@ async def migrate() -> None:
         pr_efficiency_result,
         contributor_board_repo_name_result,
         contributor_sync_checkpoint_result,
+        contributor_sync_checkpoint_kind_result,
         contributor_sync_records_result,
         build_plan_reasoning_result,
         build_plan_files_changed_result,

@@ -575,6 +575,7 @@ class ContributorBoardService:
     async def trigger_sync(
         self, db, since_date: date | None = None, until_date: date | None = None,
         full_resync: bool = False, repo_name: str | None = None,
+        trigger_source: str = "api",
     ) -> ContributorSyncResponse:
         # 已有 running 任务则拒绝
         running = (
@@ -596,7 +597,7 @@ class ContributorBoardService:
             until_date=until_date,
             progress_percent=0,
             progress_message="任务已创建",
-            trigger_source="api",
+            trigger_source=trigger_source,
             started_at=now,
         )
         db.add(record)
@@ -604,8 +605,11 @@ class ContributorBoardService:
         await db.refresh(record)
         record_id = record.id
 
-        logger.info("Started contributor sync task record_id=%s repo=%s", record_id, repo_name)
-        asyncio.create_task(self._run_sync_task(record_id, since_date, until_date, full_resync, repo_name))
+        logger.info(
+            "Started contributor sync task record_id=%s repo=%s source=%s",
+            record_id, repo_name, trigger_source,
+        )
+        asyncio.create_task(self._run_sync_task(record_id, since_date, until_date, full_resync, repo_name, trigger_source))
 
         return ContributorSyncResponse(
             contributors_synced=0,
@@ -652,7 +656,7 @@ class ContributorBoardService:
         # 通过 BackgroundTaskTracker 注册（可被 cancel 接口取消，重启后可感知）
         from collector.contributor_sync import backfill_daily_task_func
         bg_record_id = record_id
-        await BackgroundTaskTracker.create_and_run(
+        bg_task_id = await BackgroundTaskTracker.create_and_run(
             task_type="contributor_sync",
             task_func=backfill_daily_task_func,
             task_params={
@@ -664,8 +668,19 @@ class ContributorBoardService:
             },
             repo_name=repo_name,
         )
+        # 反向关联到 ContributorSyncRecord（便于 cancel 跨表查找）
+        try:
+            rec = await db.get(ContributorSyncRecord, record_id)
+            if rec:
+                rec.background_task_id = bg_task_id
+                await db.commit()
+        except Exception as e:
+            logger.warning("Could not link bg_task_id=%s to sync record %d: %s", bg_task_id, record_id, e)
 
-        logger.info("Started daily backfill task record_id=%s repo=%s", record_id, repo_name)
+        logger.info(
+            "Started daily backfill task sync_record_id=%d bg_task_id=%s repo=%s",
+            record_id, bg_task_id, repo_name,
+        )
 
         return ContributorSyncResponse(
             contributors_synced=0,
@@ -732,6 +747,7 @@ class ContributorBoardService:
     async def _run_sync_task(
         self, record_id: int, since_date: date | None, until_date: date | None,
         full_resync: bool, repo_name: str | None,
+        trigger_source: str = "api",
     ) -> None:
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
@@ -741,6 +757,19 @@ class ContributorBoardService:
             since_dt = datetime(since_date.year, since_date.month, since_date.day, tzinfo=UTC)
         if until_date:
             until_dt = datetime(until_date.year, until_date.month, until_date.day, tzinfo=UTC)
+
+        async def _cancel_check() -> bool:
+            """检查 ContributorSyncRecord 是否已被取消（供 sync_contributors 周期调用）。
+
+            当 API 端点取消任务时会把 status 写成 "cancelled"，此函数返回 True 以让
+            collector 在下一个 DAILY_CANCEL_CHECK_EVERY 周期内停止处理。
+            """
+            try:
+                async with AsyncSessionLocal() as db2:
+                    rec = await db2.get(ContributorSyncRecord, record_id)
+                    return rec is not None and rec.status == "cancelled"
+            except Exception:
+                return False
 
         try:
             from collector.contributor_sync import sync_contributors
@@ -756,10 +785,11 @@ class ContributorBoardService:
             result = await sync_contributors(
                 since_date=since_dt, until_date=until_dt,
                 repo_name=repo_name, progress_callback=_progress,
+                cancel_check_func=_cancel_check,
             )
             async with AsyncSessionLocal() as db:
                 rec = await db.get(ContributorSyncRecord, record_id)
-                if rec:
+                if rec and rec.status != "cancelled":
                     rec.status = "completed" if not result.errors else "failed"
                     rec.contributors_synced = result.contributors_synced
                     rec.commits_classified = result.commits_classified
@@ -771,12 +801,12 @@ class ContributorBoardService:
                     rec.completed_at = datetime.now(UTC)
                     rec.progress_percent = 100
                     await db.commit()
-            logger.info("Contributor sync task %s finished", record_id)
+            logger.info("Contributor sync task %s finished (source=%s)", record_id, trigger_source)
         except Exception as e:
             logger.error("Contributor sync task %s failed: %s", record_id, e, exc_info=True)
             async with AsyncSessionLocal() as db:
                 rec = await db.get(ContributorSyncRecord, record_id)
-                if rec:
+                if rec and rec.status != "cancelled":
                     rec.status = "failed"
                     rec.errors = [f"Sync task failed: {e}"]
                     rec.completed_at = datetime.now(UTC)
@@ -951,6 +981,7 @@ class ContributorBoardService:
         return ContributorSyncScheduleConfig(
             full_cron=value.get("full_cron", "0 2 * * *"),
             incremental_interval_minutes=value.get("incremental_interval_minutes", 360),
+            skip_when_in_progress=value.get("skip_when_in_progress", True),
             enabled=value.get("enabled", True),
         )
 
@@ -959,6 +990,7 @@ class ContributorBoardService:
         value = {
             "full_cron": request.full_cron or current.full_cron,
             "incremental_interval_minutes": request.incremental_interval_minutes or current.incremental_interval_minutes,
+            "skip_when_in_progress": request.skip_when_in_progress if request.skip_when_in_progress is not None else current.skip_when_in_progress,
             "enabled": request.enabled if request.enabled is not None else current.enabled,
         }
         await self._upsert_setting(db, "sync_schedule", value, "同步定时配置")

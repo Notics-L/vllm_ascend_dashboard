@@ -30,6 +30,7 @@ router = APIRouter()
 
 class GitHubConfigUpdateRequest(BaseModel):
     github_token: str | None = None
+    clear_token: bool = False
 
 
 @router.get("")
@@ -191,12 +192,29 @@ async def update_github_config(
 
     注意：GitHub 项目固定为 vllm-project/vllm-ascend，不可修改
     """
-    from infrastructure.core.github_config import persist_github_runtime_config
+    from infrastructure.core.github_config import (
+        clear_github_runtime_token,
+        load_github_runtime_config,
+        persist_github_runtime_config,
+    )
 
     updates = []
 
+    # ── 清除 token：回退到 .env 启动值 ──
+    do_clear = getattr(payload, "clear_token", False) if payload else False
+    if do_clear:
+        removed = await clear_github_runtime_token()
+        # 清除后重新加载：如果 .env 有 bootstrap token 且 DB 已无 token，
+        # settings.GITHUB_TOKEN 保持当前 .env 值（不会被覆盖）
+        await load_github_runtime_config()
+        updates.append(
+            "GitHub Token 已从系统配置清除（回退到 .env 配置）"
+            if removed
+            else "GitHub Token 已是清除状态"
+        )
+
     requested_token = payload.github_token if payload else github_token
-    if requested_token is not None and len(requested_token.strip()) > 0:
+    if not do_clear and requested_token is not None and len(requested_token.strip()) > 0:
         # 验证 token 格式（GitHub token 通常以 ghp_ 或 github_pat_ 开头）
         token = requested_token.strip()
         if not (token.startswith("ghp_") or token.startswith("github_pat_")) and len(token) < 10:
@@ -214,9 +232,12 @@ async def update_github_config(
             GitHubClient,
         )
 
+        # 在 Docker 网络代理环境下，验证可能因 SSL 证书问题失败，
+        # 此时回退到仅格式校验 + 直接保存（用户可自行确认 token 有效性）
         github_client = GitHubClient(token)
         try:
             await github_client.get_rate_limit_status()
+            verified = True
         except GitHubAuthenticationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -227,12 +248,15 @@ async def update_github_config(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"GitHub Token 验证失败：{exc}",
             ) from exc
+        except Exception as exc:
+            logger.warning("GitHub token pre-verification failed (non-API error): %s", exc)
+            verified = False
         finally:
             await github_client.close()
 
         settings.GITHUB_TOKEN = token
         await persist_github_runtime_config(token=token)
-        updates.append("GitHub Token 已更新")
+        updates.append("GitHub Token 已更新" + ("（未验证）" if not verified else ""))
 
     return {
         "success": True,

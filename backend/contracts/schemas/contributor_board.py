@@ -294,6 +294,11 @@ class ContributorSyncScheduleConfig(BaseModel):
         default=360, ge=30, le=1440,
         description="增量同步间隔（分钟），最小 30，最大 1440（24小时）"
     )
+    skip_when_in_progress: bool = Field(
+        default=True,
+        description="定时触发时若已有任务在跑，则跳过本次触发（避免堆积）。"
+                    "False 时仍会尝试触发，由 trigger_sync 内部拒绝（与历史行为一致）"
+    )
     enabled: bool = Field(
         default=True, description="是否启用定时同步"
     )
@@ -302,6 +307,7 @@ class ContributorSyncScheduleConfig(BaseModel):
 class ContributorSyncScheduleUpdateRequest(BaseModel):
     full_cron: str | None = Field(None, description="全量同步 CRON 表达式（5字段）")
     incremental_interval_minutes: int | None = Field(None, ge=30, le=1440, description="增量同步间隔（分钟）")
+    skip_when_in_progress: bool | None = Field(None, description="定时触发时若已有任务在跑则跳过（默认 True）")
     enabled: bool | None = Field(None, description="是否启用定时同步")
 
 

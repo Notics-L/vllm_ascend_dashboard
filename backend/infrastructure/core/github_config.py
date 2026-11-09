@@ -71,6 +71,30 @@ async def load_github_runtime_config(db: AsyncSession | None = None) -> bool:
         return await load_github_runtime_config(session)
 
 
+async def clear_github_runtime_token() -> bool:
+    """Remove the encrypted token from the control-plane DB.
+
+    Returns True if a token was present and removed.
+    """
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(ProjectDashboardConfig).where(
+                ProjectDashboardConfig.config_key == GITHUB_RUNTIME_CONFIG_KEY
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None or not row.config_value:
+            return False
+        cfg = _as_mapping(row.config_value)
+        if cfg.get("token_encrypted"):
+            cfg.pop("token_encrypted", None)
+            row.config_value = cfg
+            await db.commit()
+            logger.info("Cleared GitHub runtime token from control plane")
+            return True
+    return False
+
+
 async def persist_github_runtime_config(
     *,
     token: str | None = None,

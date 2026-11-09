@@ -81,6 +81,10 @@ class BackgroundTaskTracker:
 
     TABLE_NAME = "background_task_records"
 
+    # 强引用集合：防止 Python GC 在协程完成前回收 asyncio.create_task 返回的 Task，
+    # 这是 "后台任务偶发突然中断" 的常见根因。done_callback 自动清理。
+    _task_refs: set[asyncio.Task] = set()
+
     # ── 表初始化 ──────────────────────────────────────────────
 
     @staticmethod
@@ -224,10 +228,14 @@ class BackgroundTaskTracker:
                 task_id = await BackgroundTaskTracker.create(create_db, task_type, task_params, repo_name)
 
         # 在后台启动任务，不阻塞 HTTP 响应
+        # 保留强引用：asyncio.create_task 返回值若不绑定到长生命周期对象，
+        # 可能被 Python GC 在协程完成前回收，导致 "任务突然中断/未执行"。
         task = asyncio.create_task(
             BackgroundTaskTracker._run_task(task_id, task_func, task_params or {}),
             name=f"bg-task-{task_type}-{task_id}",
         )
+        BackgroundTaskTracker._task_refs.add(task)
+        task.add_done_callback(BackgroundTaskTracker._task_refs.discard)
         _active_tasks[task_id] = task
         # task 执行完毕后自动清理引用
         task.add_done_callback(lambda t: _active_tasks.pop(task_id, None))
@@ -298,20 +306,38 @@ class BackgroundTaskTracker:
             logger.error("Failed to start task %d: %s", task_id, e)
             return
 
+        cancelled = False
         try:
             result = await task_func(task_params, tracker)
 
-            # 如果任务函数没有自行调用 complete/fail，自动标记完成
+            # 如果任务函数没有自行调用 complete/fail，且任务未被取消，自动标记完成
             current = await tracker.get_current_status()
-            if current in (TaskStatus.RUNNING, TaskStatus.PENDING):
+            if current == TaskStatus.CANCELLED:
+                cancelled = True
+            elif current in (TaskStatus.RUNNING, TaskStatus.PENDING):
                 await tracker.complete(result_metadata=result)
 
-        except Exception as e:
-            logger.error("Background task %d failed: %s", task_id, e, exc_info=True)
+        except asyncio.CancelledError:
+            # 被 cancel() 调用 task.cancel() 走到这里，标记为取消而非失败
+            cancelled = True
+            logger.info("Background task %d was cancelled", task_id)
             try:
-                await tracker.fail(str(e))
+                await tracker.mark_cancelled("任务被用户取消")
             except Exception:
                 pass
+        except Exception as e:
+            current = await tracker.get_current_status()
+            if current == TaskStatus.CANCELLED:
+                cancelled = True
+            else:
+                logger.error("Background task %d failed: %s", task_id, e, exc_info=True)
+                try:
+                    await tracker.fail(str(e))
+                except Exception:
+                    pass
+
+        if cancelled:
+            logger.info("Background task %d finished as CANCELLED", task_id)
 
     # ── 实例方法（操作单条任务记录）────────────────────────────
 
@@ -319,16 +345,40 @@ class BackgroundTaskTracker:
         self.task_id = task_id
 
     async def is_cancelled(self) -> bool:
-        """检查任务是否已被取消"""
+        """检查任务是否已被取消（DB status 为 cancelled 或 background task 已 cancel）。"""
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    text(f"SELECT status FROM {self.TABLE_NAME} WHERE id = :id"),
+                    {"id": self.task_id},
+                )
+                row = result.scalar_one_or_none()
+                if row == TaskStatus.CANCELLED:
+                    return True
+        except Exception:
+            pass
+        # Cancelled 也可能在 DB 尚未刷盘前发生
+        task = _active_tasks.get(self.task_id)
+        return bool(task and task.cancelled())
+
+    async def mark_cancelled(self, reason: str | None = None) -> None:
+        """显式把 DB status 标记为 cancelled（用于 _run_task 捕获 CancelledError 后）。"""
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                text(f"SELECT status FROM {self.TABLE_NAME} WHERE id = :id"),
-                {"id": self.task_id},
+            await db.execute(
+                text(f"""
+                    UPDATE {self.TABLE_NAME}
+                    SET status = 'cancelled',
+                        error_message = :reason,
+                        completed_at = COALESCE(completed_at, NOW(3))
+                    WHERE id = :id AND status != 'cancelled'
+                """),
+                {"reason": reason or "任务被用户取消", "id": self.task_id},
             )
-            row = result.scalar_one_or_none()
-            return row == "failed" and _active_tasks.get(self.task_id) is not None
+            await db.commit()
 
     async def update_status(
         self,

@@ -3182,6 +3182,86 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
   const [syncProgressMsg, setSyncProgressMsg] = useState('')
   const [repos, setRepos] = useState<string[]>([])
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollMetaRef = useRef<{
+    recordId: number
+    startedAt: number
+    lastProgress: number
+    stagnantTicks: number
+    inFlight: boolean
+  } | null>(null)
+
+  const stopPoll = useCallback(() => {
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null }
+    pollMetaRef.current = null
+  }, [])
+
+  const tickPoll = useCallback(async () => {
+    const meta = pollMetaRef.current
+    if (!meta) return
+    // 防重复请求：上一次 HTTP 还没返回则跳过本次 tick
+    if (meta.inFlight) return
+
+    // 总超时：60 分钟没有任何 tick 成功视为停滞，停止轮询并提示手动刷新
+    if (Date.now() - meta.startedAt > 60 * 60 * 1000) {
+      stopPoll()
+      message.warning('同步进度轮询超时已停止，请手动刷新查看')
+      return
+    }
+
+    // 动态间隔：早期快、中期中、尾部慢、无进展时拉长
+    let delayMs: number
+    if (meta.stagnantTicks >= 6) delayMs = 30_000
+    else if (meta.lastProgress < 20) delayMs = 3_000
+    else if (meta.lastProgress < 80) delayMs = 5_000
+    else delayMs = 10_000
+
+    const elapsed = Date.now() - meta.startedAt
+    if (elapsed < delayMs) return
+
+    meta.inFlight = true
+    meta.startedAt = Date.now() // 滑动窗口：每次成功 tick 重置计时
+    try {
+      const status = await getSyncStatus(meta.recordId)
+      setCurrentRecord(status)
+      setSyncProgress(status.progress_percent || 0)
+      setSyncProgressMsg(status.progress_message || '')
+
+      if ((status.progress_percent || 0) > meta.lastProgress) {
+        meta.lastProgress = status.progress_percent || 0
+        meta.stagnantTicks = 0
+      } else {
+        meta.stagnantTicks += 1
+      }
+
+      if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+        stopPoll()
+        setSyncLoading(false)
+        message.success(status.status === 'completed' ? '同步完成' : '同步失败')
+        setCurrentRecord(null)
+        setSyncProgress(0)
+        setSyncProgressMsg('')
+        window.dispatchEvent(new Event('settings-updated'))
+        window.dispatchEvent(new Event('sync-history-refresh'))
+      }
+    } catch { /* polling error: 静默重试 */ } finally {
+      meta.inFlight = false
+    }
+  }, [stopPoll])
+
+  const startPollSync = useCallback((recordId: number) => {
+    // 重置元信息：启动时间、上次进度、无进展计数、是否在途请求
+    pollMetaRef.current = {
+      recordId,
+      startedAt: Date.now(),
+      lastProgress: 0,
+      stagnantTicks: 0,
+      inFlight: false,
+    }
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null }
+    // 立即拉一次，避免第一次要等到 interval 第一次 tick
+    void tickPoll()
+    pollTimerRef.current = setInterval(() => { void tickPoll() }, 1000)
+  }, [tickPoll])
 
   useEffect(() => {
     setTargetRepo(selectedRepo)
@@ -3209,32 +3289,9 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
     }
     init()
     return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      stopPoll()
     }
-  }, [])
-
-  const startPollSync = (recordId: number) => {
-    if (pollTimerRef.current) clearInterval(pollTimerRef.current)
-    pollTimerRef.current = setInterval(async () => {
-      try {
-        const status = await getSyncStatus(recordId)
-        setCurrentRecord(status)
-        setSyncProgress(status.progress_percent)
-        setSyncProgressMsg(status.progress_message || '')
-        if (['completed', 'failed', 'cancelled'].includes(status.status)) {
-          if (pollTimerRef.current) clearInterval(pollTimerRef.current)
-          pollTimerRef.current = null
-          setSyncLoading(false)
-          message.success(status.status === 'completed' ? '同步完成' : '同步失败')
-          setCurrentRecord(null)
-          setSyncProgress(0)
-          setSyncProgressMsg('')
-          window.dispatchEvent(new Event('settings-updated'))
-          window.dispatchEvent(new Event('sync-history-refresh'))
-        }
-      } catch { /* polling error */ }
-    }, 2000)
-  }
+  }, [startPollSync, stopPoll])
 
   const handleSync = async () => {
     if (syncLoading) return
@@ -3333,21 +3390,7 @@ function ManualSyncPanel({ selectedRepo }: { selectedRepo?: string }) {
           message.success(`日度明细补录已启动，任务 ID: ${res.record_id}`)
           setSyncLoading(true)
           setCurrentRecord({ id: res.record_id, status: 'running', progress_percent: 5, progress_message: '日度明细补录中...' } as any)
-          pollTimerRef.current = setInterval(async () => {
-            try {
-              const s = await getSyncStatus(res.record_id)
-              setSyncProgress(s.progress_percent || 0)
-              setSyncProgressMsg(s.progress_message || '')
-              if (s.status !== 'running' && s.status !== 'pending') {
-                if (pollTimerRef.current) clearInterval(pollTimerRef.current)
-                pollTimerRef.current = null
-                setSyncLoading(false)
-                setCurrentRecord(null)
-                message.success(s.status === 'completed' ? '日度明细补录完成' : `补录状态: ${s.status}`)
-                window.dispatchEvent(new Event('sync-history-refresh'))
-              }
-            } catch { /* ignore */ }
-          }, 5000)
+          startPollSync(res.record_id)
         } catch (err: unknown) {
           const msg = typeof err === 'object' && err && 'detail' in err ? (err as { detail: string }).detail : '启动补录失败'
           message.error(msg)

@@ -426,24 +426,36 @@ async def cancel_sync(
     )
     await db.commit()
 
-    # 通过 task_params 中的 sync_record_id 查找并取消 background task
-    try:
-        bg_result = await db.execute(
-            text(f"""
-                SELECT id FROM {BackgroundTaskTracker.TABLE_NAME}
-                WHERE task_type = 'contributor_sync'
-                  AND status IN ('running', 'pending')
-                  AND JSON_EXTRACT(task_params, '$.sync_record_id') = :sync_id
-            """),
-            {"sync_id": record_id},
-        )
-        bg_row = bg_result.fetchone()
-        if bg_row:
-            bg_task_id = bg_row[0]
+    # 取消对应的 background task：
+    # 1. 优先使用 contributor_sync_records.background_task_id（新版直接关联）
+    # 2. 回退到 task_params.sync_record_id（兼容旧数据 / 未关联成功的情况）
+    bg_task_id = getattr(sync_record, "background_task_id", None)
+    if not bg_task_id:
+        try:
+            bg_result = await db.execute(
+                text(f"""
+                    SELECT id FROM {BackgroundTaskTracker.TABLE_NAME}
+                    WHERE task_type = 'contributor_sync'
+                      AND status IN ('running', 'pending', 'cancelled')
+                      AND JSON_EXTRACT(task_params, '$.sync_record_id') = :sync_id
+                    ORDER BY id DESC
+                """),
+                {"sync_id": record_id},
+            )
+            bg_row = bg_result.fetchone()
+            if bg_row:
+                bg_task_id = bg_row[0]
+        except Exception as e:
+            logger.warning("Failed to look up background task for sync %d: %s", record_id, e)
+
+    if bg_task_id:
+        try:
             await BackgroundTaskTracker.cancel(bg_task_id)
             logger.info("Cancelled background task %d for sync record %d", bg_task_id, record_id)
-    except Exception as e:
-        logger.warning("Failed to cancel background task for sync %d: %s", record_id, e)
+        except Exception as e:
+            logger.warning("Failed to cancel background task %s for sync %d: %s", bg_task_id, record_id, e)
+    else:
+        logger.info("No background task found for sync record %d (可能从未启动)", record_id)
 
     return {"success": True, "message": "任务已取消"}
 

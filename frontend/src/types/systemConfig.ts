@@ -98,4 +98,5 @@ export interface AppConfigUpdate {
 
 export interface GitHubConfigUpdate {
   github_token?: string
+  clear_token?: boolean
 }

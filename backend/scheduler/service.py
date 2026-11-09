@@ -1549,15 +1549,35 @@ class DataSyncScheduler:
         """每日贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
         from contributor_board.service import ContributorBoardService
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         try:
             logger.info("Starting scheduled contributor sync")
             async with AsyncSessionLocal() as db:
                 service = ContributorBoardService()
 
-                # 查询最近一次成功同步的时间，只同步之后的新增数据
                 from infrastructure.persistence.models import ContributorSyncRecord
+                # skip_when_in_progress：默认 True，若已有 running/pending 任务则跳过
+                cfg = await service.get_sync_schedule(db)
+                if cfg.enabled is False:
+                    logger.info("Scheduled contributor sync skipped: schedule disabled")
+                    return
+                if cfg.skip_when_in_progress:
+                    running = (
+                        await db.execute(
+                            select(func.count(ContributorSyncRecord.id)).where(
+                                ContributorSyncRecord.status.in_(["running", "pending"])
+                            )
+                        )
+                    ).scalar_one()
+                    if int(running) > 0:
+                        logger.info(
+                            "Scheduled contributor full sync skipped: %d task(s) in progress",
+                            int(running),
+                        )
+                        return
+
+                # 查询最近一次成功同步的时间，只同步之后的新增数据
                 stmt = (
                     select(ContributorSyncRecord)
                     .where(
@@ -1597,15 +1617,35 @@ class DataSyncScheduler:
         """增量贡献者同步任务 — 只同步上次成功同步以来的新增数据"""
         from contributor_board.service import ContributorBoardService
         from infrastructure.db.base import SessionLocal as AsyncSessionLocal
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         try:
             logger.info("Starting scheduled contributor incremental sync")
             async with AsyncSessionLocal() as db:
                 service = ContributorBoardService()
 
-                # 查询最近一次成功同步的时间
                 from infrastructure.persistence.models import ContributorSyncRecord
+                # skip_when_in_progress：默认 True，若已有 running/pending 任务则跳过
+                cfg = await service.get_sync_schedule(db)
+                if cfg.enabled is False:
+                    logger.info("Scheduled contributor incremental sync skipped: schedule disabled")
+                    return
+                if cfg.skip_when_in_progress:
+                    running = (
+                        await db.execute(
+                            select(func.count(ContributorSyncRecord.id)).where(
+                                ContributorSyncRecord.status.in_(["running", "pending"])
+                            )
+                        )
+                    ).scalar_one()
+                    if int(running) > 0:
+                        logger.info(
+                            "Scheduled contributor incremental sync skipped: %d task(s) in progress",
+                            int(running),
+                        )
+                        return
+
+                # 查询最近一次成功同步的时间
                 stmt = (
                     select(ContributorSyncRecord)
                     .where(

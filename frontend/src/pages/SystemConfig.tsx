@@ -691,18 +691,32 @@ function SystemConfig() {
 
   // 更新 GitHub 配置
   const handleUpdateGitHubConfig = (values: Record<string, string | null | undefined>) => {
-    const updateData: Record<string, string> = {}
+    const updateData: Record<string, string | boolean> = {}
     if (values.github_token !== undefined && values.github_token !== null && values.github_token.trim()) {
       updateData.github_token = values.github_token.trim()
     }
-
     updateGitHubMutation.mutate(updateData, {
       onSuccess: (data: { message: string }) => {
         message.success(data.message)
         setIsGitHubConfigModalOpen(false)
+        queryClient.invalidateQueries({ queryKey: ['system-config'] })
       },
       onError: (error: any) => {
         message.error(error.response?.data?.detail || '更新失败')
+      },
+    })
+  }
+
+  // 清除 GitHub Token（回退到 .env 启动值）
+  const handleClearGitHubToken = () => {
+    updateGitHubMutation.mutate({ clear_token: true }, {
+      onSuccess: (data: { message: string }) => {
+        message.success(data.message)
+        setIsGitHubConfigModalOpen(false)
+        queryClient.invalidateQueries({ queryKey: ['system-config'] })
+      },
+      onError: (error: any) => {
+        message.error(error.response?.data?.detail || '清除失败')
       },
     })
   }
@@ -2108,37 +2122,67 @@ function SystemConfig() {
         footer={null}
         width={500}
       >
-        <Form
-          form={gitHubConfigForm}
-          layout="vertical"
-          onFinish={handleUpdateGitHubConfig}
-        >
-          <Form.Item
-            name="github_token"
-            label="GitHub Token"
-            rules={[
-              { required: true, message: '请输入 GitHub Token' },
-              { min: 10, message: 'GitHub Token 长度至少 10 个字符' },
-            ]}
-            extra="GitHub Token 用于访问 GitHub API，格式：ghp_xxxxxxxxxxxx"
+          <Form
+            form={gitHubConfigForm}
+            layout="vertical"
+            onFinish={handleUpdateGitHubConfig}
           >
-            <Input.Password placeholder="请输入新的 GitHub Token" />
-          </Form.Item>
+            <Alert
+              type={config?.github_config?.token_configured ? 'success' : 'warning'}
+              showIcon
+              message={config?.github_config?.token_configured ? '当前已配置 GitHub Token' : '当前未配置 GitHub Token（使用 .env 启动值）'}
+              style={{ marginBottom: 16 }}
+            />
+            <Form.Item
+              name="github_token"
+              label="GitHub Token"
+              rules={[
+                { required: false },
+                {
+                  validator: (_, value) => {
+                    if (value && value.trim() && value.trim().length < 10) {
+                      return Promise.reject(new Error('GitHub Token 长度至少 10 个字符'))
+                    }
+                    return Promise.resolve()
+                  },
+                },
+              ]}
+              extra="输入新 Token 进行替换，留空则不修改。格式：ghp_xxxxxxxxxxxx"
+            >
+              <Input.Password placeholder={config?.github_config?.token_configured ? '请输入新的 GitHub Token（留空保持不变）' : '请输入 GitHub Token'} />
+            </Form.Item>
 
-          <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
-            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-              <Button onClick={() => {
-                setIsGitHubConfigModalOpen(false)
-                gitHubConfigForm.resetFields()
-              }}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit" loading={updateGitHubMutation.isPending}>
-                保存
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+            <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <Space>
+                  {config?.github_config?.token_configured && (
+                    <Popconfirm
+                      title="清除 Token"
+                      description="清除后回退到 .env 启动值，确认清除？"
+                      onConfirm={handleClearGitHubToken}
+                      okText="确认清除"
+                      cancelText="取消"
+                    >
+                      <Button danger size="small">
+                        清除 Token
+                      </Button>
+                    </Popconfirm>
+                  )}
+                </Space>
+                <Space>
+                  <Button onClick={() => {
+                    setIsGitHubConfigModalOpen(false)
+                    gitHubConfigForm.resetFields()
+                  }}>
+                    取消
+                  </Button>
+                  <Button type="primary" htmlType="submit" loading={updateGitHubMutation.isPending}>
+                    保存
+                  </Button>
+                </Space>
+              </Space>
+            </Form.Item>
+          </Form>
       </Modal>
 
       {/* 项目动态配置编辑弹窗 */}
