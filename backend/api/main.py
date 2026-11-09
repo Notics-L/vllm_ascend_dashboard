@@ -525,6 +525,42 @@ async def lifespan(app: FastAPI):
     # opening a second DB session for every HTTP response.
     await start_usage_tracking_worker()
 
+    # 回收重启前遗留的 running 贡献者同步记录（进程被杀后 status 永久卡 running）
+    try:
+        from infrastructure.db.base import engine as _eng
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy import text as _text
+
+        async with AsyncSession(bind=_eng) as _db:
+            rows = await _db.execute(_text("""
+                SELECT id, progress_message FROM contributor_sync_records
+                WHERE status = 'running' AND sync_type = 'daily_backfill'
+            """))
+            for row in rows.fetchall():
+                logger.warning(
+                    "Auto-recovering stuck daily_backfill record %d (msg=%s) → failed",
+                    row[0], (row[1] or "")[:60],
+                )
+            await _db.execute(_text("""
+                UPDATE contributor_sync_records
+                SET status = 'failed',
+                    error_message = '服务器重启导致任务中断，请重新触发',
+                    completed_at = NOW()
+                WHERE status = 'running' AND sync_type = 'daily_backfill'
+            """))
+            await _db.commit()
+
+            # 同步回收 background_task_records 中的孤儿记录
+            await _db.execute(_text("""
+                UPDATE background_task_records
+                SET status = 'cancelled', error_message = '服务器重启导致任务中断',
+                    completed_at = NOW()
+                WHERE status = 'running' AND task_type = 'contributor_sync'
+            """))
+            await _db.commit()
+    except Exception as e:
+        logger.warning("Stale task recovery failed (non-fatal): %s", e)
+
     yield
 
     logger.info("Shutting down application...")

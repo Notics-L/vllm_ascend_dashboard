@@ -67,6 +67,7 @@ from infrastructure.persistence.models import (
     DailyPR,
     ImageBuildPlan,
 )
+from infrastructure.tasks.background_task import BackgroundTaskTracker
 from sqlalchemy import and_, delete, func, or_, select
 
 logger = logging.getLogger(__name__)
@@ -648,8 +649,23 @@ class ContributorBoardService:
         await db.refresh(record)
         record_id = record.id
 
+        # 通过 BackgroundTaskTracker 注册（可被 cancel 接口取消，重启后可感知）
+        from collector.contributor_sync import backfill_daily_task_func
+        bg_record_id = record_id
+        await BackgroundTaskTracker.create_and_run(
+            task_type="contributor_sync",
+            task_func=backfill_daily_task_func,
+            task_params={
+                "sync_record_id": bg_record_id,
+                "sync_type": "daily_backfill",
+                "since_date": since_date.isoformat() if since_date else None,
+                "until_date": until_date.isoformat() if until_date else None,
+                "repo_name": repo_name,
+            },
+            repo_name=repo_name,
+        )
+
         logger.info("Started daily backfill task record_id=%s repo=%s", record_id, repo_name)
-        asyncio.create_task(self._run_daily_backfill_task(record_id, since_date, until_date, repo_name))
 
         return ContributorSyncResponse(
             contributors_synced=0,

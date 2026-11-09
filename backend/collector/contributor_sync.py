@@ -1455,3 +1455,84 @@ async def backfill_daily_data(
         len(combined.errors), combined.duration_seconds,
     )
     return combined
+
+
+# ── BackgroundTaskTracker 兼容包装 ─────────────────────────────
+
+async def backfill_daily_task_func(params: dict, tracker) -> None:
+    """BackgroundTaskTracker 包装：执行 daily backfill 并同步更新 ContributorSyncRecord。
+
+    签名匹配 BackgroundTaskTracker.start() 的 task_func 要求：
+        async def task_func(params: dict, tracker: BackgroundTaskTracker)
+    """
+    from datetime import date as _date, datetime as _dt, UTC as _UTC
+    from infrastructure.db.base import SessionLocal as _SL
+    from infrastructure.persistence.models import ContributorSyncRecord as _CSR
+
+    record_id = params.get("sync_record_id")
+    since_s = params.get("since_date")
+    until_s = params.get("until_date")
+    repo_name = params.get("repo_name")
+
+    since_dt = _dt.fromisoformat(since_s) if since_s else None
+    until_dt = _dt.fromisoformat(until_s) if until_s else None
+
+    async def _progress(pct: int, msg: str):
+        # 更新 background_task_records（tracker）+ contributor_sync_records（业务）
+        await tracker.update_status("running", msg, float(pct))
+        if record_id:
+            try:
+                async with _SL() as db:
+                    rec = await db.get(_CSR, record_id)
+                    if rec:
+                        rec.progress_percent = pct
+                        rec.progress_message = msg
+                        await db.commit()
+            except Exception:
+                pass
+
+    try:
+        result = await backfill_daily_data(
+            since_date=since_dt, until_date=until_dt,
+            repo_name=repo_name, progress_callback=_progress,
+        )
+    except Exception as e:
+        logger.error("backfill_daily_task_func failed: %s", e, exc_info=True)
+        await tracker.fail(str(e))
+        if record_id:
+            try:
+                async with _SL() as db:
+                    rec = await db.get(_CSR, record_id)
+                    if rec:
+                        rec.status = "failed"
+                        rec.errors = [f"Daily backfill failed: {e}"]
+                        rec.completed_at = _dt.now(_UTC)
+                        await db.commit()
+            except Exception:
+                pass
+        return
+
+    # 更新 ContributorSyncRecord
+    if record_id:
+        try:
+            async with _SL() as db:
+                rec = await db.get(_CSR, record_id)
+                if rec:
+                    rec.status = "completed" if not result.errors else "failed"
+                    rec.contributors_synced = 0
+                    rec.commits_classified = result.commits_classified
+                    rec.total_prs_scanned = result.total_prs_scanned
+                    rec.errors = result.errors or []
+                    rec.duration_seconds = result.duration_seconds
+                    rec.synced_at = result.synced_at
+                    rec.completed_at = _dt.now(_UTC)
+                    rec.progress_percent = 100
+                    await db.commit()
+        except Exception:
+            pass
+
+    await tracker.complete(result_metadata={
+        "total_prs": result.total_prs_scanned,
+        "commits": result.commits_classified,
+        "errors": len(result.errors),
+    })
