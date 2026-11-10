@@ -2603,6 +2603,7 @@ async def get_comprehensive_report(
     end: str | None = Query(default=None, description="窗口结束，北京时间 'YYYY-MM-DD HH:MM'；缺省默认当日 09:00"),
     hardware: str | None = Query(default=None, description="硬件过滤（如 910B），缺省全部"),
     branch: str | None = Query(default=None, description="分支过滤（如 main/release），缺省全部"),
+    collect_raw_logs: bool = Query(default=False, description="自动抓取 GitHub 原始日志并解析报错线索（失败项较多时较慢）"),
 ):
     """聚合指定时间窗口内的 CI 综合报错数据。
 
@@ -2623,6 +2624,8 @@ async def get_comprehensive_report(
         request = ReportRequest(start_utc=start_utc, end_utc=end_utc, hardware=hardware, branch=branch)
         builder = CIDailyReportBuilder(db)
         report = await builder.build_report(request)
+        if collect_raw_logs:
+            report = await builder.collect_raw_logs(report)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as e:

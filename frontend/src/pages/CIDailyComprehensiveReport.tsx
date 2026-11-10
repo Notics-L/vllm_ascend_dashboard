@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Descriptions,
@@ -90,6 +91,7 @@ type FilterState = {
   end: string | null
   hardware: string | null
   branch: string | null
+  collectRawLogs: boolean
 }
 type SortOrder = 'desc' | 'asc'
 
@@ -126,12 +128,14 @@ function CIDailyComprehensiveReport() {
     end: null,
     hardware: null,
     branch: null,
+    collectRawLogs: false,
   })
   const [applied, setApplied] = useState<FilterState & { key: number }>({
     start: null,
     end: null,
     hardware: null,
     branch: null,
+    collectRawLogs: false,
     key: 0,
   })
   const [range, setRange] = useState<{ start: dayjs.Dayjs; end: dayjs.Dayjs }>(() => defaultWindow())
@@ -249,7 +253,7 @@ function CIDailyComprehensiveReport() {
         end: applied.end,
         hardware: hw,
         branch: br,
-        collectRawLogs: !!rawLogsReport,
+        collectRawLogs: rawLogsReport ? true : applied.collectRawLogs,
       })
       message.success(`${format === 'pdf' ? 'PDF' : 'Excel'} 报告导出成功`)
     } catch (e) {
@@ -654,6 +658,12 @@ function CIDailyComprehensiveReport() {
             style={{ width: 130 }}
             onChange={(v) => setFilters((f) => ({ ...f, branch: v === 'all' ? null : v }))}
           />
+          <Checkbox
+            checked={filters.collectRawLogs}
+            onChange={(e) => setFilters((f) => ({ ...f, collectRawLogs: e.target.checked }))}
+          >
+            加载原始日志
+          </Checkbox>
           <Button type="primary" onClick={() => { applyFilters(); setPickerOpen(false) }}>应用</Button>
         </Space>
         <div style={{ marginTop: 8 }}>
@@ -661,6 +671,7 @@ function CIDailyComprehensiveReport() {
             已应用：{applied.start || '默认昨日20:00'} ~ {applied.end || '默认今日09:00'}
             {applied.hardware ? ` · ${applied.hardware}` : ''}
             {applied.branch ? ` · ${applied.branch}` : ''}
+            {applied.collectRawLogs ? ' · 含原始日志' : ''}
           </Text>
         </div>
       </Card>

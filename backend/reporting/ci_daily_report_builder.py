@@ -46,7 +46,7 @@ DEFAULT_WINDOW_START_HOUR = 20
 DEFAULT_WINDOW_END_HOUR = 9
 
 # "Original error clue line" length cap.
-ERROR_LINE_MAX_LEN = 240
+ERROR_LINE_MAX_LEN = 500
 # Top-N slowest failed jobs.
 SLOW_TOP_N = 10
 # Daily trend lookback (days before the window end date).
@@ -231,6 +231,9 @@ def _extract_error_line(log_text: str | None) -> str | None:
             'echo "::error::', "::error::upload failed", "process completed with exit code",
         )):
             continue
+        # Skip source-code definition lines (not actual runtime log output)
+        if re.match(r"^(\s*(def|class)\s|\w+\s*=\s*f?[\"']|\s*(import|from)\s)", line):
+            continue
         score = 0
         if any(marker in lowered for marker in (
             "the following aisbench case failed",
@@ -255,6 +258,48 @@ def _extract_error_line(log_text: str | None) -> str | None:
     if len(summary) > ERROR_LINE_MAX_LEN:
         summary = f"{summary[:ERROR_LINE_MAX_LEN - 3]}..."
     return summary
+
+
+# Keyword-based auto-classification heuristics (fallback when problem_category is missing)
+_INFRA_KEYWORDS = (
+    "out of memory", "oomkilled", "segmentation fault", "core dumped",
+    "fatal error", "fatal python error", "no space left", "disk quota",
+    "connection reset", "connection refused", "timeout", "timed out",
+    "npu driver", "driver error", "cann error", "runtime error: cuda",
+    "hardware error", "device not found", "npu not available",
+)
+_TEST_KEYWORDS = (
+    "aisbench case failed", "test case failed", "test failed",
+    "accuracy verification failed", "performance verification failed",
+    "result mismatch", "expected", "assertion", "tolerance",
+    "case result", "validation failed", "check failed",
+)
+_CODE_KEYWORDS = (
+    "assertionerror", "typeerror", "valueerror", "keyerror",
+    "indexerror", "attributeerror", "importerror", "modulenotfounderror",
+    "nameerror", "syntaxerror", "runtimeerror", "zerodivisionerror",
+    "fileNotFoundError", "permissionerror", "traceback (most recent call last)",
+)
+
+
+def _infer_problem_category(error_text: str | None, failed_step: str | None) -> str | None:
+    """Infer a rough problem_category from error text/step name when missing.
+
+    Returns one of "基础设施"/"测试用例"/"开发代码" or None if no confidence.
+    """
+    text = ((error_text or "") + " " + (failed_step or "")).lower()
+    if not text.strip():
+        return None
+    # Infrastructure: hardware / OOM / driver / timeout
+    if any(kw in text for kw in _INFRA_KEYWORDS):
+        return "基础设施"
+    # Test case: benchmark / verification / assertion against expected
+    if any(kw in text for kw in _TEST_KEYWORDS):
+        return "测试用例"
+    # Code: Python exceptions / tracebacks
+    if any(kw in text for kw in _CODE_KEYWORDS):
+        return "开发代码"
+    return None
 
 
 def _format_problem_line(category: str | None, error_line: str | None) -> str:
@@ -703,6 +748,11 @@ class CIDailyReportBuilder:
 
     def _failure_item(self, **kwargs: Any) -> dict[str, Any]:
         category = kwargs.get("category")
+        if not category:
+            category = _infer_problem_category(
+                kwargs.get("error_line") or (kwargs.get("analysis").root_cause_summary if kwargs.get("analysis") else None),
+                kwargs.get("failed_step"),
+            )
         error_line = kwargs.get("error_line")
         analysis = kwargs.get("analysis")
         started_at: datetime | None = kwargs.get("started_at")
@@ -952,6 +1002,9 @@ class CIDailyReportBuilder:
                     "##[warning]", "##[notice]",
                 )
             ):
+                continue
+            # Skip source-code definition lines (not actual runtime log output)
+            if re.match(r"^(\s*(def|class)\s|\w+\s*=\s*f?[\"']|\s*(import|from)\s)", line):
                 continue
             score = 0
             if "the following aisbench case failed" in lowered:

@@ -774,12 +774,14 @@ export function buildComprehensiveReportQueryString(params?: {
   end?: string | null
   hardware?: string | null
   branch?: string | null
+  collectRawLogs?: boolean
 }): string {
   const query = new URLSearchParams()
   if (params?.start) query.set('start', params.start)
   if (params?.end) query.set('end', params.end)
   if (params?.hardware && params.hardware !== 'all') query.set('hardware', params.hardware)
   if (params?.branch && params.branch !== 'all') query.set('branch', params.branch)
+  if (params?.collectRawLogs) query.set('collect_raw_logs', 'true')
   const qs = query.toString()
   return qs ? `?${qs}` : ''
 }
@@ -789,10 +791,11 @@ export const getComprehensiveReport = async (params?: {
   end?: string | null
   hardware?: string | null
   branch?: string | null
+  collectRawLogs?: boolean
 }): Promise<ComprehensiveReport> => {
   const response = await api.get<ComprehensiveReport>(
     `/ci/reports/comprehensive${buildComprehensiveReportQueryString(params)}`,
-    { timeout: 90000 },
+    { timeout: params?.collectRawLogs ? 300000 : 90000 },
   )
   return response.data
 }

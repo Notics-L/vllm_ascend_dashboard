@@ -275,6 +275,7 @@ export const useComprehensiveReport = (params?: {
   end?: string | null
   hardware?: string | null
   branch?: string | null
+  collectRawLogs?: boolean
 }, enabled = true) => {
   return useQuery({
     queryKey: ['ci-comprehensive-report', params],
