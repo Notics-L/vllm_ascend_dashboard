@@ -760,7 +760,7 @@ function CIDailyComprehensiveReport() {
           </div>
         ) : (
           <Table<ComprehensiveReportFailure>
-            rowKey={(r, idx) => `wf-${r.workflow_name || ''}-run-${r.run_id}-job-${r.job_id ?? ''}-${r.id ?? ''}-${idx}`}
+            rowKey={(r) => `wf-${r.workflow_name || ''}-run-${r.run_id}-job-${r.job_id ?? 'none'}-${r.id ?? 'run'}`}
             size="small"
             columns={failureColumns}
             dataSource={sortedFailures as ComprehensiveReportFailure[]}
