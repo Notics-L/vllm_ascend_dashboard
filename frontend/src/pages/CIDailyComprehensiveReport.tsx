@@ -355,38 +355,35 @@ function CIDailyComprehensiveReport() {
       {
         title: '时间',
         dataIndex: 'report_datetime',
-        width: 155,
-        fixed: 'left' as const,
+        ellipsis: { showTitle: true },
         sorter: (a: ComprehensiveReportFailure, b: ComprehensiveReportFailure) =>
           (a.started_at || '').localeCompare(b.started_at || ''),
         render: (v: string, r) => (
-          <span style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{v || r.report_date}</span>
+          <span style={{ whiteSpace: 'nowrap', fontSize: 12 }} title={v || r.report_date}>
+            {v ? v.slice(5, 16) : (r.report_date || '')}
+          </span>
         ),
       },
       {
         title: '分支',
         dataIndex: 'source_branch',
-        width: 140,
         ellipsis: { showTitle: true },
         render: (v: string) => <Tag color="blue">{v}</Tag>,
       },
       {
         title: 'Workflow',
         dataIndex: 'workflow_name',
-        width: 160,
         ellipsis: { showTitle: true },
         render: (v: string, r) => r.children ? <strong>{v}</strong> : v,
       },
       {
         title: 'Job / 批次',
         dataIndex: 'job_name',
-        width: 220,
         ellipsis: { showTitle: true },
       },
       {
         title: '模型',
         dataIndex: 'model_name',
-        width: 160,
         ellipsis: { showTitle: true },
         render: (v: string | null, r) =>
           v || <Text type="secondary">{r.test_model ? r.test_model.replace(/\.ya?ml$/i, '') : '-'}</Text>,
@@ -394,27 +391,23 @@ function CIDailyComprehensiveReport() {
       {
         title: '测试内容',
         dataIndex: 'test_yaml',
-        width: 160,
         ellipsis: { showTitle: true },
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
         title: '模型FO',
         dataIndex: 'model_fo',
-        width: 100,
         ellipsis: { showTitle: true },
         render: (v: string | null | undefined) => v ? <Tag color="purple">{v}</Tag> : <Text type="secondary">-</Text>,
       },
       {
         title: '硬件',
         dataIndex: 'hardware',
-        width: 80,
         render: (v: string) => <Tag>{v}</Tag>,
       },
       {
         title: '结论',
         dataIndex: 'conclusion',
-        width: 85,
         render: (_: string | null, r) => {
           const zh = r.conclusion_zh || CONCLUSION_ZH[(r.conclusion || '').toLowerCase()]
           const color = (r.conclusion || '').toLowerCase() === 'failure' ? 'red' : 'default'
@@ -424,16 +417,13 @@ function CIDailyComprehensiveReport() {
       {
         title: '责任人',
         dataIndex: 'owner',
-        width: 90,
         ellipsis: { showTitle: true },
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
         title: '失败 Steps',
         dataIndex: 'failed_steps',
-        width: 130,
         render: (_: string[] | null | undefined, r) => {
-          // parent 行（有 children）：显示聚合数
           if (r.children?.length && r.children.length > 0) {
             return (
               <Tag color="red" icon={<span>•</span>}>
@@ -457,13 +447,10 @@ function CIDailyComprehensiveReport() {
       {
         title: '耗时',
         dataIndex: 'duration_text',
-        width: 75,
-        render: (v: string) => <span style={{ fontSize: 12 }}>{v}</span>,
       },
       {
         title: '范畴',
         dataIndex: 'problem_category',
-        width: 95,
         render: (v: string | null) => (
           <Tag color={CATEGORY_COLORS[v || ''] || 'orange'}>{v || '未定界'}</Tag>
         ),
@@ -471,7 +458,6 @@ function CIDailyComprehensiveReport() {
       {
         title: 'AI分析',
         dataIndex: 'analysis_status',
-        width: 110,
         render: (_: string | null, r) => {
           const st = r.analysis_status
           const color = AI_STATUS_COLORS[st || ''] || 'default'
@@ -491,7 +477,6 @@ function CIDailyComprehensiveReport() {
       {
         title: '报错线索',
         dataIndex: 'error_line',
-        width: 200,
         render: (_: string | null, r) => {
           const hasLines = (r.raw_log_lines?.length || 0) > 0 || !!(r.error_line || '').trim()
           if (!hasLines) return <Text type="secondary">-</Text>
@@ -509,7 +494,6 @@ function CIDailyComprehensiveReport() {
       {
         title: '处理',
         dataIndex: 'processing_status',
-        width: 80,
         render: (v: string) => (
           <Tag color={v === '未处理' ? 'volcano' : 'green'}>{v}</Tag>
         ),
@@ -517,8 +501,6 @@ function CIDailyComprehensiveReport() {
       {
         title: '操作',
         key: 'actions',
-        width: 130,
-        fixed: 'right' as const,
         render: (_: unknown, r) => (
           <Space size={4}>
             <Button size="small" type="link" icon={<ExpandOutlined />}
@@ -762,10 +744,9 @@ function CIDailyComprehensiveReport() {
         ) : (
           <>
             <style>{`
+              .cmp-fail-table .ant-table-row-level-0 td { font-weight: 600; background: #fafafa; }
               .cmp-fail-table .ant-table-row-level-1 td:first-child { padding-left: 40px !important; }
               .cmp-fail-table .ant-table-row-level-2 td:first-child { padding-left: 64px !important; }
-              .cmp-fail-table .ant-table-row-level-1 .ant-table-row-indent { padding-left: 20px !important; }
-              .cmp-fail-table .ant-table-row-level-2 .ant-table-row-indent { padding-left: 30px !important; }
             `}</style>
             <Table<ComprehensiveReportFailure>
               className="cmp-fail-table"
@@ -773,7 +754,7 @@ function CIDailyComprehensiveReport() {
               size="small"
               columns={failureColumns}
               dataSource={sortedFailures as ComprehensiveReportFailure[]}
-              scroll={{ x: 2200 }}
+              scroll={{ x: 'max-content' }}
               pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 组` }}
               indentSize={24}
               defaultExpandAllRows={false}
@@ -790,18 +771,37 @@ function CIDailyComprehensiveReport() {
               const dist: Record<string, number> = key === 'analysis_status'
                 ? (summary?.analysis_distribution ?? {})
                 : ((summary as unknown as Record<string, Record<string, number> | undefined>)?.[key] ?? {})
-              const data = Object.entries(dist).map(([name, value], i) => ({ name, value, fill: CHART_PALETTE[i % CHART_PALETTE.length] }))
+              // 模型名截断：取最后一段 + 最长 18 字符
+              const truncateName = (name: string) => {
+                if (key !== 'failure_by_model' && key !== 'failure_by_category') return name
+                const last = name.split('/').pop() || name
+                return last.length > 18 ? last.slice(0, 16) + '…' : last
+              }
+              const data = Object.entries(dist).map(([name, value], i) => ({
+                name: truncateName(name),
+                fullName: name,
+                value,
+                fill: CHART_PALETTE[i % CHART_PALETTE.length],
+              }))
+              // 固定高度，数据多时内部滚动
+              const isModel = key === 'failure_by_model'
+              const maxH = isModel ? 320 : 280
+              const minH = 180
+              const chartH = Math.min(maxH, Math.max(minH, data.length * 28 + 40))
               const titleMap: Record<string, string> = { failure_by_category: '问题范畴', failure_by_branch: '分支', failure_by_hardware: '硬件', failure_by_model: '模型/用例', analysis_status: 'AI 分析状态' }
               return (
                 <Col xs={24} md={12} key={key}>
-                  <div style={{ height: Math.max(240, data.length * 36 + 60) }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={data} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                  <div style={{ height: chartH, overflowY: isModel ? 'auto' : 'hidden', overflowX: 'hidden' }}>
+                    <ResponsiveContainer width="100%" height={chartH}>
+                      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, left: 4, bottom: 4 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
                         <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} />
-                        <RechartsTooltip formatter={(v: number) => [`${v} 次`, '']} />
-                        <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={20}>
+                        <YAxis type="category" dataKey="name" width={isModel ? 130 : 110} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                        <RechartsTooltip
+                          formatter={(v: number, _n, entry) => [`${v} 次`, (entry?.payload as any)?.fullName || '']}
+                          labelFormatter={() => ''}
+                        />
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={16}>
                           {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
                         </Bar>
                       </BarChart>
