@@ -35,6 +35,10 @@ import {
   ExpandOutlined,
   LinkOutlined,
 } from '@ant-design/icons'
+import {
+  Bar, BarChart, CartesianGrid, Cell,
+  ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis,
+} from 'recharts'
 
 import { FailureAnalysisDetailModal } from '../components/FailureAnalysisDetailModal'
 import { useJobFailureAnalysis } from '../hooks/useFailureAnalysis'
@@ -104,6 +108,11 @@ const CATEGORY_COLORS: Record<string, string> = {
   开发代码: '#2563eb',
   其他: '#6b7280',
 }
+
+const CHART_PALETTE = [
+  '#1890ff', '#dc2626', '#f59e0b', '#2fc25b', '#8b5cf6',
+  '#06b6d4', '#ec4899', '#84cc16', '#6366f1', '#f97316',
+]
 
 function defaultWindow(): { start: dayjs.Dayjs; end: dayjs.Dayjs } {
   const end = dayjs().hour(9).minute(0).second(0).millisecond(0)
@@ -277,33 +286,72 @@ function CIDailyComprehensiveReport() {
       const db = b.started_at || b.report_datetime || ''
       return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
     })
-    // 按 (workflow_name, job_name, run_id) 分组 → 树形 parent/child
-    const groupMap = new Map<string, ComprehensiveReportFailure[]>()
+
+    // 三级聚合：workflow → run(批次) → job
+    // L1: 按 workflow_name 分组
+    const wfMap = new Map<string, ComprehensiveReportFailure[]>()
     for (const item of sorted) {
-      const key = [item.workflow_name, item.job_name, item.run_id].join('|')
-      const arr = groupMap.get(key)
+      const key = item.workflow_name || '未知 Workflow'
+      const arr = wfMap.get(key)
       if (arr) arr.push(item)
-      else groupMap.set(key, [item])
+      else wfMap.set(key, [item])
     }
+
     const tree: ComprehensiveReportFailure[] = []
-    for (const [, group] of groupMap) {
-      if (group.length === 1) {
-        tree.push(group[0])
-      } else {
-        // parent = 第一条，children = 全部子 step
-        const parent: ComprehensiveReportFailure = {
-          ...group[0],
-          failed_steps: group.map((g) => g.failed_step || g.job_name || 'unknown').filter(Boolean),
-          children: [...group],
+    for (const [wfName, wfItems] of wfMap) {
+      // L2: workflow 内按 run_id 分组（批次）
+      const runMap = new Map<number, ComprehensiveReportFailure[]>()
+      for (const item of wfItems) {
+        const rk = item.run_id || -1
+        const arr = runMap.get(rk)
+        if (arr) arr.push(item)
+        else runMap.set(rk, [item])
+      }
+
+      const runNodes: ComprehensiveReportFailure[] = []
+      for (const [runId, runItems] of runMap) {
+        if (runItems.length === 1) {
+          // 单 job：直接作为 run 级节点
+          runNodes.push(runItems[0])
+        } else {
+          // 多 job：run 级 parent + job children
+          const first = runItems[0]
+          const parent: ComprehensiveReportFailure = {
+            ...first,
+            job_name: `Run #${runId} (${runItems.length} jobs)`,
+            duration_seconds: runItems.reduce((s, r) => s + (r.duration_seconds ?? 0), 0),
+            children: runItems.map((r) => ({ ...r, children: undefined })),
+          }
+          runNodes.push(parent)
         }
-        tree.push(parent)
+      }
+
+      // run 节点按时间排序
+      runNodes.sort((a, b) => {
+        const da = a.started_at || a.report_datetime || ''
+        const db = b.started_at || b.report_datetime || ''
+        return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
+      })
+
+      if (runNodes.length === 1 && !runNodes[0].children) {
+        // 单 run 单 job：直接平铺
+        tree.push(runNodes[0])
+      } else {
+        // L1: workflow parent + run children
+        const wfParent: ComprehensiveReportFailure = {
+          ...runNodes[0],
+          job_name: `${wfName} (${runNodes.length} runs)`,
+          duration_seconds: runNodes.reduce((s, r) => s + (r.duration_seconds ?? 0), 0),
+          children: runNodes.map((r) => ({ ...r })),
+        }
+        tree.push(wfParent)
       }
     }
-    // 按 parent 时间排序
+
     tree.sort((a, b) => {
-      const da = a.started_at || a.report_datetime || ''
-      const db = b.started_at || b.report_datetime || ''
-      return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
+      const da = a.workflow_name || ''
+      const db = b.workflow_name || ''
+      return da.localeCompare(db)
     })
     return tree
   }, [activeReport, sortOrder])
@@ -331,13 +379,14 @@ function CIDailyComprehensiveReport() {
       {
         title: 'Workflow',
         dataIndex: 'workflow_name',
-        width: 130,
+        width: 160,
         ellipsis: { showTitle: true },
+        render: (v: string, r) => r.children ? <strong>{v}</strong> : v,
       },
       {
-        title: 'Job',
+        title: 'Job / 批次',
         dataIndex: 'job_name',
-        width: 180,
+        width: 220,
         ellipsis: { showTitle: true },
       },
       {
@@ -498,7 +547,14 @@ function CIDailyComprehensiveReport() {
     'failure_by_model',
     'analysis_status',
   ]
-  const distributionCharts = chartKeys.filter((k) => charts[k])
+  const distributionCharts = chartKeys.filter((k) => {
+    const dist: Record<string, number> | undefined = k === 'analysis_status'
+      ? summary?.analysis_distribution
+      : (summary as Record<string, number | Record<string, number> | undefined> | undefined)?.[k] as Record<string, number> | undefined
+    return dist && Object.keys(dist).length > 0
+  })
+
+
 
   if (isLoading) {
     return (
@@ -704,28 +760,48 @@ function CIDailyComprehensiveReport() {
           </div>
         ) : (
           <Table<ComprehensiveReportFailure>
-            rowKey={(r, idx) => `${r.run_id}-${r.job_id ?? 'run'}-${r.id ?? ''}-${idx}`}
+            rowKey={(r, idx) => `wf-${r.workflow_name || ''}-run-${r.run_id}-job-${r.job_id ?? ''}-${r.id ?? ''}-${idx}`}
             size="small"
             columns={failureColumns}
             dataSource={sortedFailures as ComprehensiveReportFailure[]}
-            scroll={{ x: 2000 }}
-            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+            scroll={{ x: 2200 }}
+            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 组` }}
             defaultExpandAllRows={false}
           />
         )}
       </Card>
 
-      {/* 失败维度分布图表 */}
+      {/* 失败维度分布图表（Recharts 交互式） */}
       {distributionCharts.length > 0 && (
         <Card size="small" title="失败维度分布" style={{ marginBottom: 20 }}>
           <Row gutter={[16, 16]}>
-            {distributionCharts.map((key) => (
-              <Col xs={24} md={12} key={key}>
-                <div style={{ textAlign: 'center' }}>
-                  <img alt={key} src={charts[key]} style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }} />
-                </div>
-              </Col>
-            ))}
+            {distributionCharts.map((key) => {
+              const dist: Record<string, number> = key === 'analysis_status'
+                ? (summary?.analysis_distribution ?? {})
+                : ((summary as unknown as Record<string, Record<string, number> | undefined>)?.[key] ?? {})
+              const data = Object.entries(dist).map(([name, value], i) => ({ name, value, fill: CHART_PALETTE[i % CHART_PALETTE.length] }))
+              const titleMap: Record<string, string> = { failure_by_category: '问题范畴', failure_by_branch: '分支', failure_by_hardware: '硬件', failure_by_model: '模型/用例', analysis_status: 'AI 分析状态' }
+              return (
+                <Col xs={24} md={12} key={key}>
+                  <div style={{ height: Math.max(240, data.length * 36 + 60) }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={data} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} />
+                        <RechartsTooltip formatter={(v: number) => [`${v} 次`, '']} />
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={20}>
+                          {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{ textAlign: 'center', fontWeight: 500, marginTop: 4 }}>
+                    {titleMap[key] || key}
+                  </div>
+                </Col>
+              )
+            })}
           </Row>
         </Card>
       )}
