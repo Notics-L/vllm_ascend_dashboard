@@ -190,9 +190,7 @@ class CIDailyReportExcel:
             ]
             for idx, v in enumerate(row, 1):
                 cell = ws.cell(row=r, column=idx, value=v)
-                # 换行
-                if idx in WRAP_COLS:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                cell.alignment = Alignment(vertical="center", **(dict(wrap_text=True) if idx in WRAP_COLS else {}))
                 # 结论颜色
                 if idx == CONCLUSION_COL and v in CONCLUSION_COLORS:
                     cell.fill = PatternFill("solid", fgColor=CONCLUSION_COLORS[v])
@@ -246,7 +244,8 @@ class CIDailyReportExcel:
 
         for r, row in enumerate(rows, header_row + 1):
             for idx, v in enumerate(row, 1):
-                ws.cell(row=r, column=idx, value=v)
+                cell = ws.cell(row=r, column=idx, value=v)
+                cell.alignment = Alignment(vertical="center")
 
         for idx in (1, 2, 3):
             ws.column_dimensions[get_column_letter(idx)].width = 20
@@ -287,6 +286,7 @@ class CIDailyReportExcel:
             ]
             for idx, v in enumerate(row, 1):
                 cell = ws.cell(row=r, column=idx, value=v)
+                cell.alignment = Alignment(vertical="center")
                 # GitHub 列超链接
                 if idx == 13 and v and str(v).startswith("http"):
                     cell.hyperlink = str(v)

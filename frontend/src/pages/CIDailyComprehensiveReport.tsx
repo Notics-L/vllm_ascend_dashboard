@@ -287,8 +287,10 @@ function CIDailyComprehensiveReport() {
       return sortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db)
     })
 
+    let keyCounter = 0
+    const nextKey = () => `t${keyCounter++}`
+
     // 三级聚合：workflow → run(批次) → job
-    // L1: 按 workflow_name 分组
     const wfMap = new Map<string, ComprehensiveReportFailure[]>()
     for (const item of sorted) {
       const key = item.workflow_name || '未知 Workflow'
@@ -297,9 +299,10 @@ function CIDailyComprehensiveReport() {
       else wfMap.set(key, [item])
     }
 
-    const tree: ComprehensiveReportFailure[] = []
+    type TreeNode = ComprehensiveReportFailure & { _key: string }
+
+    const tree: TreeNode[] = []
     for (const [wfName, wfItems] of wfMap) {
-      // L2: workflow 内按 run_id 分组（批次）
       const runMap = new Map<number, ComprehensiveReportFailure[]>()
       for (const item of wfItems) {
         const rk = item.run_id || -1
@@ -308,25 +311,22 @@ function CIDailyComprehensiveReport() {
         else runMap.set(rk, [item])
       }
 
-      const runNodes: ComprehensiveReportFailure[] = []
+      const runNodes: TreeNode[] = []
       for (const [runId, runItems] of runMap) {
         if (runItems.length === 1) {
-          // 单 job：直接作为 run 级节点
-          runNodes.push(runItems[0])
+          runNodes.push({ ...runItems[0], _key: nextKey() })
         } else {
-          // 多 job：run 级 parent + job children
-          const first = runItems[0]
-          const parent: ComprehensiveReportFailure = {
-            ...first,
+          const jobChildren: TreeNode[] = runItems.map((r) => ({ ...r, _key: nextKey(), children: undefined }))
+          runNodes.push({
+            ...runItems[0],
+            _key: nextKey(),
             job_name: `Run #${runId} (${runItems.length} jobs)`,
             duration_seconds: runItems.reduce((s, r) => s + (r.duration_seconds ?? 0), 0),
-            children: runItems.map((r) => ({ ...r, children: undefined })),
-          }
-          runNodes.push(parent)
+            children: jobChildren,
+          })
         }
       }
 
-      // run 节点按时间排序
       runNodes.sort((a, b) => {
         const da = a.started_at || a.report_datetime || ''
         const db = b.started_at || b.report_datetime || ''
@@ -334,25 +334,19 @@ function CIDailyComprehensiveReport() {
       })
 
       if (runNodes.length === 1 && !runNodes[0].children) {
-        // 单 run 单 job：直接平铺
         tree.push(runNodes[0])
       } else {
-        // L1: workflow parent + run children
-        const wfParent: ComprehensiveReportFailure = {
+        tree.push({
           ...runNodes[0],
+          _key: nextKey(),
           job_name: `${wfName} (${runNodes.length} runs)`,
           duration_seconds: runNodes.reduce((s, r) => s + (r.duration_seconds ?? 0), 0),
-          children: runNodes.map((r) => ({ ...r })),
-        }
-        tree.push(wfParent)
+          children: runNodes,
+        })
       }
     }
 
-    tree.sort((a, b) => {
-      const da = a.workflow_name || ''
-      const db = b.workflow_name || ''
-      return da.localeCompare(db)
-    })
+    tree.sort((a, b) => (a.workflow_name || '').localeCompare(b.workflow_name || ''))
     return tree
   }, [activeReport, sortOrder])
 
@@ -759,15 +753,25 @@ function CIDailyComprehensiveReport() {
             <Text type="secondary">窗口内无失败记录</Text>
           </div>
         ) : (
-          <Table<ComprehensiveReportFailure>
-            rowKey={(r) => `wf-${r.workflow_name || ''}-run-${r.run_id}-job-${r.job_id ?? 'none'}-${r.id ?? 'run'}`}
-            size="small"
-            columns={failureColumns}
-            dataSource={sortedFailures as ComprehensiveReportFailure[]}
-            scroll={{ x: 2200 }}
-            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 组` }}
-            defaultExpandAllRows={false}
-          />
+          <>
+            <style>{`
+              .cmp-fail-table .ant-table-row-level-1 td:first-child { padding-left: 40px !important; }
+              .cmp-fail-table .ant-table-row-level-2 td:first-child { padding-left: 64px !important; }
+              .cmp-fail-table .ant-table-row-level-1 .ant-table-row-indent { padding-left: 20px !important; }
+              .cmp-fail-table .ant-table-row-level-2 .ant-table-row-indent { padding-left: 30px !important; }
+            `}</style>
+            <Table<ComprehensiveReportFailure>
+              className="cmp-fail-table"
+              rowKey={(r) => (r as any)._key || String(r.run_id)}
+              size="small"
+              columns={failureColumns}
+              dataSource={sortedFailures as ComprehensiveReportFailure[]}
+              scroll={{ x: 2200 }}
+              pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 组` }}
+              indentSize={24}
+              defaultExpandAllRows={false}
+            />
+          </>
         )}
       </Card>
 
