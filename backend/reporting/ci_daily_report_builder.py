@@ -649,6 +649,11 @@ class CIDailyReportBuilder:
             if job.job_id and (job.run_id, job.job_id) in seen_run_job:
                 continue
             run = run_by_id.get(job.run_id)
+            # 硬件过滤：仅保留归属当前硬件过滤范围的 job
+            if request.hardware:
+                job_hw = (job.hardware or (run.hardware if run else None) or "").lower()
+                if job_hw != request.hardware.lower():
+                    continue
             analysis = analyses.get(job.job_id) if job.job_id else None
             case = case_detail.get((job.run_id, job.job_id)) or case_detail.get((job.run_id, -1))
             error_line = self._error_line_for(analysis, None, case)
