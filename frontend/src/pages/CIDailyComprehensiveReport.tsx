@@ -399,6 +399,13 @@ function CIDailyComprehensiveReport() {
         render: (v: string | null) => v || <Text type="secondary">-</Text>,
       },
       {
+        title: '模型FO',
+        dataIndex: 'model_fo',
+        width: 100,
+        ellipsis: { showTitle: true },
+        render: (v: string | null | undefined) => v ? <Tag color="purple">{v}</Tag> : <Text type="secondary">-</Text>,
+      },
+      {
         title: '硬件',
         dataIndex: 'hardware',
         width: 80,
