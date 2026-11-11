@@ -609,7 +609,30 @@ class ContributorBoardService:
             "Started contributor sync task record_id=%s repo=%s source=%s",
             record_id, repo_name, trigger_source,
         )
-        asyncio.create_task(self._run_sync_task(record_id, since_date, until_date, full_resync, repo_name, trigger_source))
+
+        # 通过 BackgroundTaskTracker 注册，获得强引用 + 可取消能力
+        from collector.contributor_sync import sync_full_task_func
+        bg_task_id = await BackgroundTaskTracker.create_and_run(
+            task_type="contributor_sync",
+            task_func=sync_full_task_func,
+            task_params={
+                "sync_record_id": record_id,
+                "sync_type": "full" if full_resync else "incremental",
+                "since_date": since_date.isoformat() if since_date else None,
+                "until_date": until_date.isoformat() if until_date else None,
+                "repo_name": repo_name,
+                "trigger_source": trigger_source,
+            },
+            repo_name=repo_name,
+        )
+        # 反向关联到 ContributorSyncRecord（便于 cancel 跨表查找）
+        try:
+            rec = await db.get(ContributorSyncRecord, record_id)
+            if rec:
+                rec.background_task_id = bg_task_id
+                await db.commit()
+        except Exception as e:
+            logger.warning("Could not link bg_task_id=%s to sync record %d: %s", bg_task_id, record_id, e)
 
         return ContributorSyncResponse(
             contributors_synced=0,

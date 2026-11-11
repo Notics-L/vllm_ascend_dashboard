@@ -81,7 +81,7 @@ class GitHubClient:
             headers=self._get_headers(),
             timeout=httpx.Timeout(30.0, connect=10.0, read=60.0, write=30.0),
             follow_redirects=True,
-            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+            limits=httpx.Limits(max_keepalive_connections=50, max_connections=100),
             verify=not settings.DEBUG,
         )
 
@@ -1005,6 +1005,44 @@ class GitHubClient:
         )
         return results[:limit] if limit is not None else results
 
+    async def get_pr_details_concurrent(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        并发拉取单个 PR 的 reviews / commits / files（3 路并行）。
+
+        替代串行依次调用的方式，将单 PR 的网络等待时间从
+        3 × T 降为约 1 × T（T 为单次请求耗时）。
+
+        Returns:
+            (reviews, commits, files) — 任何一路失败不影响其他路，
+            失败的路返回空列表。
+        """
+        async def _safe_coro(coro, err_label: str) -> Any:
+            try:
+                return await coro
+            except GitHubRateLimitError:
+                raise
+            except Exception as e:
+                logger.warning("%s PR #%s failed: %s", err_label, pr_number, e)
+                return []
+
+        reviews_task = _safe_coro(self.get_pr_reviews(owner, repo, pr_number), "reviews")
+        commits_task = _safe_coro(self.get_pr_commits(owner, repo, pr_number), "commits")
+        files_task = _safe_coro(self.get_pr_files(owner, repo, pr_number), "files")
+
+        reviews, commits, files = await asyncio.gather(
+            reviews_task, commits_task, files_task
+        )
+        return (
+            reviews if isinstance(reviews, list) else [],
+            commits if isinstance(commits, list) else [],
+            files if isinstance(files, list) else [],
+        )
+
     async def get_pr_commits(
         self,
         owner: str,
@@ -1024,7 +1062,6 @@ class GitHubClient:
         """
         url = f"/repos/{owner}/{repo}/pulls/{pr_number}/commits"
         params = {"per_page": 100}
-        logger.info(f"Fetching commits for PR #{pr_number}")
         result = await self._request("GET", url, params=params)
         return result
 
@@ -1104,7 +1141,6 @@ class GitHubClient:
         """
         url = f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
         params = {"per_page": 100}
-        logger.info(f"Fetching reviews for PR #{pr_number}")
 
         all_reviews = []
         page = 1
@@ -1124,7 +1160,6 @@ class GitHubClient:
 
             page += 1
 
-        logger.info(f"Total {len(all_reviews)} reviews fetched for PR #{pr_number}")
         return all_reviews
 
     async def get_pr_files(
@@ -1146,7 +1181,6 @@ class GitHubClient:
         """
         url = f"/repos/{owner}/{repo}/pulls/{pr_number}/files"
         params = {"per_page": 100}
-        logger.info(f"Fetching files for PR #{pr_number}")
 
         all_files = []
         page = 1
@@ -1166,7 +1200,6 @@ class GitHubClient:
 
             page += 1
 
-        logger.info(f"Total {len(all_files)} files fetched for PR #{pr_number}")
         return all_files
 
     async def get_check_runs_for_sha(

@@ -341,6 +341,14 @@ class ContributorSyncCollector:
 
     # ── 私有方法：处理单个 PR ─────────────────────────────────────
 
+    async def _fetch_pr_details(
+        self, pr_number: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """并发拉取单个 PR 的 reviews / commits / files（3 路并行）。"""
+        return await self.github.get_pr_details_concurrent(
+            self.owner, self.repo, pr_number
+        )
+
     async def _process_pr(
         self,
         pr: dict[str, Any],
@@ -360,28 +368,8 @@ class ContributorSyncCollector:
         pr_state = pr.get("state", "closed")
         is_merged = bool(pr.get("merged_at")) or (pr_state == "closed" and bool(pr.get("merged")))
 
-        # 拉取 reviews / commits / files
-        reviews: list[dict[str, Any]] = []
-        commits: list[dict[str, Any]] = []
-        pr_files: list[dict[str, Any]] = []
-        try:
-            reviews = await self.github.get_pr_reviews(self.owner, self.repo, pr_number)
-        except GitHubRateLimitError:
-            raise
-        except Exception as e:
-            logger.warning("reviews PR #%s failed: %s", pr_number, e)
-        try:
-            commits = await self.github.get_pr_commits(self.owner, self.repo, pr_number)
-        except GitHubRateLimitError:
-            raise
-        except Exception as e:
-            logger.warning("commits PR #%s failed: %s", pr_number, e)
-        try:
-            pr_files = await self.github.get_pr_files(self.owner, self.repo, pr_number)
-        except GitHubRateLimitError:
-            raise
-        except Exception as e:
-            logger.warning("files PR #%s failed: %s", pr_number, e)
+        # 并发拉取 reviews / commits / files（优先使用批量预取缓存）
+        reviews, commits, pr_files = await self._fetch_pr_details(pr_number)
 
         # 文件统计（用去重后的路径集，避免多 commit cherry-pick 重复计数）
         code_paths: set[str] = set()
@@ -1363,6 +1351,108 @@ async def sync_contributors(
         combined.build_plans_created, len(combined.errors),
     )
     return combined
+
+
+async def sync_full_task_func(params: dict, tracker) -> dict:
+    """全量贡献者同步的 BackgroundTaskTracker 任务函数。
+
+    由 service.trigger_sync() 通过 BackgroundTaskTracker.create_and_run 调用，
+    直接调用 sync_contributors 并同步更新 ContributorSyncRecord + background_task_records。
+    """
+    from infrastructure.db.base import SessionLocal as _SL
+    from infrastructure.persistence.models import ContributorSyncRecord as _CSR
+
+    record_id = params.get("sync_record_id")
+    since_s = params.get("since_date")
+    until_s = params.get("until_date")
+    repo_name = params.get("repo_name")
+
+    since_dt = datetime.fromisoformat(since_s) if since_s else None
+    until_dt = datetime.fromisoformat(until_s) if until_s else None
+
+    async def _progress(pct: int, msg: str):
+        await tracker.update_status("running", msg, float(pct))
+        if record_id:
+            try:
+                async with _SL() as db:
+                    rec = await db.get(_CSR, record_id)
+                    if rec:
+                        rec.progress_percent = pct
+                        rec.progress_message = msg
+                        await db.commit()
+            except Exception:
+                pass
+
+    async def _cancel_check() -> bool:
+        try:
+            async with _SL() as db:
+                row = (
+                    await db.execute(
+                        text(
+                            f"SELECT status FROM {BackgroundTaskTracker.TABLE_NAME} WHERE id = :tid"
+                        ),
+                        {"tid": tracker.task_id},
+                    )
+                ).fetchone()
+            if row:
+                return row[0] in ("cancelled", "failed")
+        except Exception:
+            pass
+        return False
+
+    try:
+        result = await sync_contributors(
+            since_date=since_dt, until_date=until_dt,
+            repo_name=repo_name, progress_callback=_progress,
+            cancel_check_func=_cancel_check,
+        )
+    except Exception as e:
+        logger.error("sync_full_task_func failed: %s", e, exc_info=True)
+        await tracker.fail(str(e))
+        if record_id:
+            try:
+                async with _SL() as db:
+                    rec = await db.get(_CSR, record_id)
+                    if rec:
+                        rec.status = "failed"
+                        rec.errors = [f"Sync failed: {e}"]
+                        rec.completed_at = datetime.now(UTC)
+                        await db.commit()
+            except Exception:
+                pass
+        return {"error": str(e)}
+
+    # 更新 ContributorSyncRecord 为完成/部分成功
+    if record_id:
+        try:
+            async with _SL() as db:
+                rec = await db.get(_CSR, record_id)
+                if rec and rec.status != "cancelled":
+                    rec.status = "completed" if not result.errors else "failed"
+                    rec.contributors_synced = result.contributors_synced
+                    rec.commits_classified = result.commits_classified
+                    rec.build_plans_created = result.build_plans_created
+                    rec.total_prs_scanned = result.total_prs_scanned
+                    rec.errors = result.errors or []
+                    rec.duration_seconds = result.duration_seconds
+                    rec.synced_at = result.synced_at
+                    rec.completed_at = datetime.now(UTC)
+                    rec.progress_percent = 100
+                    await db.commit()
+        except Exception:
+            pass
+
+    if not await tracker.is_cancelled():
+        await tracker.complete(result_metadata={
+            "contributors": result.contributors_synced,
+            "prs": result.total_prs_scanned,
+            "errors": len(result.errors),
+        })
+    return {
+        "contributors_synced": result.contributors_synced,
+        "total_prs": result.total_prs_scanned,
+        "errors": len(result.errors),
+    }
 
 
 # ── 独立日度明细补录 ─────────────────────────────────────────────
