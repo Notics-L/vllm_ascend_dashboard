@@ -3625,12 +3625,18 @@ function SyncHistoryTab() {
     }
   }
 
+  const toSyncDateParam = (value: string | null | undefined) => {
+    if (!value || value === '-') return undefined
+    const formatted = formatTimezone(value, 'YYYY-MM-DD')
+    return dayjs(formatted).isValid() ? formatted : undefined
+  }
+
   const handleRetry = async (r: SyncRecord) => {
     if (retryingId) return
     setRetryingId(r.id)
     try {
-      const sinceDate = formatTimezone(r.since_date, 'YYYY-MM-DD') || undefined
-      const untilDate = formatTimezone(r.until_date, 'YYYY-MM-DD') || undefined
+      const sinceDate = toSyncDateParam(r.since_date)
+      const untilDate = toSyncDateParam(r.until_date)
       const fullResync = r.sync_type === 'full'
       const result = await syncContributors({
         fullResync,

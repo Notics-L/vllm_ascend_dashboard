@@ -814,14 +814,24 @@ class ContributorSyncCollector:
                 return None
 
             # 校验时间窗口是否一致
+            # until 允许 checkpoint 保存了原"至今"结束日期，新的"至今"请求可以续跑；
+            # 但显式修改了结束日期时必须丢弃旧 checkpoint，避免窗口扩大后残留状态。
             cp_since: date = cp.since_date
             cp_until: date | None = cp.until_date
             since_d: date = since.date()
             until_d: date = until.date()
-            if cp_since != since_d or cp_until != until_d:
+            if cp_since != since_d:
                 logger.info(
-                    "Checkpoint window mismatch (%s~%s vs current %s~%s), discarding",
-                    cp_since, cp_until, since_d, until_d,
+                    "Checkpoint since mismatch (%s vs current %s), discarding",
+                    cp_since, since_d,
+                )
+                cdb.delete(cp)
+                await cdb.commit()
+                return None
+            if cp_until is not None and cp_until != until_d:
+                logger.info(
+                    "Checkpoint until mismatch (%s vs current %s), discarding",
+                    cp_until, until_d,
                 )
                 cdb.delete(cp)
                 await cdb.commit()
