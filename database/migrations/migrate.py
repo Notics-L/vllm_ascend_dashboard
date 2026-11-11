@@ -62,6 +62,7 @@ from database.migrations.contributor_ai_report import run as migrate_contributor
 from database.migrations.contributor_board_refactor import run as migrate_contributor_board_refactor
 from database.migrations.release_analysis_task_columns import run as migrate_release_analysis_task_columns
 from database.migrations.release_build_groups_columns import run as migrate_release_build_groups_columns
+from database.migrations.release_third_party_repository_url import run as migrate_release_third_party_repository_url
 from infrastructure.db.base import SessionLocal, engine
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -111,13 +112,14 @@ async def migrate() -> None:
     contributor_refactor_result = await migrate_contributor_board_refactor()
     release_task_result = await migrate_release_analysis_task_columns()
     release_groups_result = await migrate_release_build_groups_columns()
+    release_tp_url_result = await migrate_release_third_party_repository_url()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s",
         users_after,
         permission_result,
         test_board_result,
@@ -137,6 +139,7 @@ async def migrate() -> None:
         contributor_refactor_result,
         release_task_result,
         release_groups_result,
+        release_tp_url_result,
     )
 
 
