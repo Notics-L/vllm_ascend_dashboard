@@ -219,6 +219,17 @@ class CIResultBase(BaseModel):
     hardware: str | None = None
 
 
+class CIRunJobStats(BaseModel):
+    """Workflow Run 的 Job 统计，用于列表紧凑展示。"""
+    total: int = 0
+    executed: int = 0
+    skipped: int = 0
+    success: int = 0
+    failure: int = 0
+    in_progress: int = 0
+    cancelled: int = 0
+
+
 class CIResultResponse(CIResultBase):
     """CI 结果响应 Schema"""
     model_config = ConfigDict(from_attributes=True)
@@ -227,6 +238,7 @@ class CIResultResponse(CIResultBase):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_seconds: int | None = None
+    job_stats: CIRunJobStats | None = None
     created_at: datetime
 
     @computed_field

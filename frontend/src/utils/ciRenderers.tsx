@@ -1,10 +1,14 @@
-import { Tag } from 'antd'
+import { Space, Tag, Tooltip } from 'antd'
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ClockCircleOutlined,
+  MinusCircleOutlined,
+  PlayCircleOutlined,
   SyncOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons'
+import type { CIRunJobStats } from '../services/ci'
 
 /**
  * Render status tag for CI workflow/job status - Stripe Design System
@@ -92,5 +96,29 @@ export const renderHardwareTag = (hardware: string | null) => {
     <Tag color={color} className="stripe-hardware-tag">
       {hardware}
     </Tag>
+  )
+}
+
+export const renderRunJobStats = (stats?: CIRunJobStats | null) => {
+  if (!stats) return <span className="stripe-ci-empty">-</span>
+  const items = [
+    { key: 'total', value: stats.total, color: '#262626', icon: <AppstoreOutlined />, label: '总 Job 数' },
+    { key: 'executed', value: stats.executed, color: '#1890ff', icon: <PlayCircleOutlined />, label: '实际执行数' },
+    { key: 'skipped', value: stats.skipped, color: '#8c8c8c', icon: <MinusCircleOutlined />, label: '已跳过数' },
+    { key: 'success', value: stats.success, color: '#52c41a', icon: <CheckCircleOutlined />, label: '成功数' },
+    { key: 'failure', value: stats.failure, color: '#ff4d4f', icon: <CloseCircleOutlined />, label: '失败数' },
+    { key: 'running', value: stats.in_progress, color: '#1890ff', icon: <SyncOutlined spin={stats.in_progress > 0} />, label: '进行中数' },
+    { key: 'cancelled', value: stats.cancelled, color: '#faad14', icon: <ClockCircleOutlined />, label: '已取消数' },
+  ]
+  return (
+    <Space size={4} wrap>
+      {items.map((item) => (
+        <Tooltip key={item.key} title={`${item.label}：${item.value}`}>
+          <Tag color={item.color} icon={item.icon} style={{ marginInlineEnd: 0, cursor: 'default' }}>
+            <span style={{ paddingInlineStart: 6, fontVariantNumeric: 'tabular-nums' }} aria-label={String(item.value)}>{String(item.value)}</span>
+          </Tag>
+        </Tooltip>
+      ))}
+    </Space>
   )
 }

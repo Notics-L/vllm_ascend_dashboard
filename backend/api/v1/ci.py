@@ -26,6 +26,7 @@ from contracts.schemas import (
     CIDailyReport,
     CIJobDetailResponse,
     CIJobResponse,
+    CIRunJobStats,
     CIResultResponse,
     CIStats,
     CISyncResponse,
@@ -944,7 +945,44 @@ async def list_runs(
     stmt = stmt.order_by(run_belonging_time.desc()).limit(limit)
 
     result = await db.execute(stmt)
-    return result.scalars().all()
+    runs = list(result.scalars().all())
+    if not runs:
+        return []
+
+    run_ids = [run.run_id for run in runs]
+    job_stats_rows = (await db.execute(
+        select(
+            CIJob.run_id,
+            func.count(CIJob.id).label("total"),
+            func.sum(case((CIJob.conclusion.is_(None), 0), (CIJob.conclusion == "skipped", 0), else_=1)).label("executed"),
+            func.sum(case((CIJob.conclusion == "skipped", 1), else_=0)).label("skipped"),
+            func.sum(case((CIJob.conclusion == "success", 1), else_=0)).label("success"),
+            func.sum(case((CIJob.conclusion == "failure", 1), else_=0)).label("failure"),
+            func.sum(case((CIJob.status == "in_progress", 1), else_=0)).label("in_progress"),
+            func.sum(case((CIJob.conclusion == "cancelled", 1), else_=0)).label("cancelled"),
+        )
+        .where(CIJob.run_id.in_(run_ids))
+        .group_by(CIJob.run_id)
+    )).all()
+    job_stats_by_run = {
+        row[0]: CIRunJobStats(
+            total=int(row[1] or 0),
+            executed=int(row[2] or 0),
+            skipped=int(row[3] or 0),
+            success=int(row[4] or 0),
+            failure=int(row[5] or 0),
+            in_progress=int(row[6] or 0),
+            cancelled=int(row[7] or 0),
+        )
+        for row in job_stats_rows
+    }
+
+    def _to_run_response(run: CIResult) -> CIResultResponse:
+        response = CIResultResponse.model_validate(run)
+        response.job_stats = job_stats_by_run.get(run.run_id)
+        return response
+
+    return [_to_run_response(run) for run in runs]
 
 
 @router.get("/workflows/latest", response_model=list[WorkflowLatestResult])

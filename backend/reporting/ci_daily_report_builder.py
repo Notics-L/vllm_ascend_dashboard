@@ -811,6 +811,7 @@ class CIDailyReportBuilder:
             # AI 分析详情 Modal 需要 analysisId（JobFailureAnalysis.id）
             "analysis_id": analysis.id if analysis else None,
             "analysis_phase": analysis.analysis_phase if analysis else None,
+            "analysis_share_token": analysis.share_token if analysis else None,
             "root_cause_summary": analysis.root_cause_summary if analysis else None,
             "improvement_measures": analysis.improvement_measures_summary if analysis else None,
             "related_pr": kwargs.get("related_pr"),

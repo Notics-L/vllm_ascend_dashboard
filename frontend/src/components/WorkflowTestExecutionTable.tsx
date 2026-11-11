@@ -15,10 +15,10 @@ import {
 import { EyeOutlined, GithubOutlined, ReloadOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import { useRuns, useWorkflows } from '../hooks/useCI'
-import type { CIResult } from '../services/ci'
+import type { CIResult, CIRunJobStats } from '../services/ci'
 import {
   formatDuration,
-  renderConclusionTag,
+  renderRunJobStats,
   renderHardwareTag,
   renderStatusTag,
 } from '../utils/ciRenderers'
@@ -192,6 +192,21 @@ function WorkflowTestExecutionTable({ enabled }: WorkflowTestExecutionTableProps
     })
   }, [dateRange, eventFilter, hardwareFilter, logSearch, resultFilter, runs, statusFilter, workflowFilter])
 
+  const actionColumn = {
+      title: '操作',
+      key: 'action',
+      width: 150,
+      fixed: 'left' as const,
+      render: (_: unknown, record: CIResult) => (
+        <Space>
+          <Button type="link" icon={<EyeOutlined />} onClick={() => navigate(`/ci/runs/${record.run_id}`)} style={{ padding: 0 }}>
+            查看详情
+          </Button>
+          {record.github_html_url && <a href={record.github_html_url} target="_blank" rel="noopener noreferrer"><GithubOutlined /></a>}
+        </Space>
+      ),
+    }
+
   const columns = [
     {
       title: 'Workflow',
@@ -203,12 +218,7 @@ function WorkflowTestExecutionTable({ enabled }: WorkflowTestExecutionTableProps
       onFilter: (value: boolean | React.Key, record: CIResult) => record.workflow_name === value,
       render: (value: string) => <Tag color="blue">{value || '-'}</Tag>,
     },
-    {
-      title: 'Run',
-      key: 'run',
-      width: 130,
-      render: (_: unknown, record: CIResult) => <Text strong>#{record.run_number || record.run_id}</Text>,
-    },
+    actionColumn,
     {
       title: '触发方式',
       dataIndex: 'event',
@@ -241,25 +251,15 @@ function WorkflowTestExecutionTable({ enabled }: WorkflowTestExecutionTableProps
     },
     {
       title: '结果',
-      dataIndex: 'conclusion',
+      dataIndex: 'job_stats',
       key: 'conclusion',
-      width: 100,
+      width: 220,
       filters: RESULT_FILTERS,
       filteredValue: resultFilter,
       onFilter: (value: boolean | React.Key, record: CIResult) => record.conclusion === value,
-      render: renderConclusionTag,
+      render: (_: CIRunJobStats | null | undefined, record: CIResult) => renderRunJobStats(record.job_stats),
     },
     { title: '时长', dataIndex: 'duration_seconds', key: 'duration_seconds', width: 100, render: formatDuration },
-    {
-      title: '所属日期',
-      key: 'belonging_date',
-      width: 125,
-      sorter: (a: CIResult, b: CIResult) => new Date(getRunBelongingTime(b) || 0).getTime() - new Date(getRunBelongingTime(a) || 0).getTime(),
-      render: (_: unknown, record: CIResult) => {
-        const belongingTime = getRunBelongingTime(record)
-        return belongingTime ? formatTimezone(belongingTime, 'YYYY-MM-DD') : '-'
-      },
-    },
     {
       title: '开始时间',
       dataIndex: 'started_at',
@@ -285,19 +285,6 @@ function WorkflowTestExecutionTable({ enabled }: WorkflowTestExecutionTableProps
           <Text type="secondary" style={{ fontSize: 12 }}>{fromTimezoneNow(completedAt)}</Text>
         </Space>
       ) : '-',
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 150,
-      render: (_: unknown, record: CIResult) => (
-        <Space>
-          <Button type="link" icon={<EyeOutlined />} onClick={() => navigate(`/ci/runs/${record.run_id}`)} style={{ padding: 0 }}>
-            查看详情
-          </Button>
-          {record.github_html_url && <a href={record.github_html_url} target="_blank" rel="noopener noreferrer"><GithubOutlined /></a>}
-        </Space>
-      ),
     },
   ]
 
@@ -353,8 +340,8 @@ function WorkflowTestExecutionTable({ enabled }: WorkflowTestExecutionTableProps
         </Space>
       )}
     >
-      <Tooltip title="列表按 Workflow Run 展示；点击“查看详情”后再查看该次运行的具体 Jobs。">
-        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>当前为 Workflow 级别运行记录，具体用例请进入运行详情查看。</Text>
+      <Tooltip title="列表按 Workflow Run 展示；“结果”列展示该次运行内 Jobs 的统计，点击“查看详情”可进入具体 Job 列表。">
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>当前为 Workflow 级别运行记录，“结果”列展示 Jobs 统计，具体条目请进入运行详情查看。</Text>
       </Tooltip>
       <Table
         columns={columns}

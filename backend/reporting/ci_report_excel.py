@@ -61,9 +61,15 @@ class CIDailyReportExcel:
 
     def render(self) -> bytes:
         wb = Workbook()
+        self._build_team_summary_sheet(wb)
         self._build_failures_sheet(wb)
         self._build_distribution_sheet(wb)
         self._build_runs_sheet(wb)
+        # 调整 sheet 顺序：团队汇总放最前（Excel 打开默认落在第一个 sheet）
+        if '团队汇总（可粘贴）' in wb.sheetnames:
+            order = ['团队汇总（可粘贴）'] + [n for n in wb.sheetnames if n != '团队汇总（可粘贴）']
+            wb._sheets = [wb[n] for n in order]
+            wb.active = 0
 
         buf = BytesIO()
         wb.save(buf)
@@ -122,6 +128,119 @@ class CIDailyReportExcel:
         if isinstance(value, float):
             return round(value, 2)
         return value
+
+    # ------------------------------------------------------------------
+    # Sheet 0: 团队汇总（列对齐团队汇总工作簿，可直接复制粘贴）
+    # ------------------------------------------------------------------
+
+    # 团队《工作簿1.xlsx》列序前加一列「分支」，便于区分 main / release 等
+    _TEAM_SUMMARY_COLUMNS = [
+        "分支",
+        "测试内容（yaml）",
+        "模型",
+        "覆盖机型",
+        "日志链接",
+        "模型FO",
+        "进展（当天无进展，就填问题单）",
+        "问题描述",
+        "AI分析报告（仅供参考）",
+    ]
+
+    def _build_team_summary_sheet(self, wb: Workbook) -> None:
+        failures = self.report.get("failures", [])
+        # 用 create_sheet 而不是 active，避免后续 sheet 改名时覆盖 active
+        ws = wb.create_sheet("团队汇总（可粘贴）")
+
+        header_row = self._headers(ws, "团队每日汇总（列序对齐工作簿，可直接复制粘贴）", self._TEAM_SUMMARY_COLUMNS)
+
+        data_rows: list[list[Any]] = []
+        for f in failures:
+            # 0. 分支（source_branch）
+            branch = self._fmt(f.get("source_branch")) or "main"
+            # 1. 测试内容（yaml）= workflow (/branch, model, machine, yaml, path) / model
+            team_test_content = self._build_team_test_content(f)
+            # 2. 模型（优先 model_name，回退 test_model）
+            model_name = self._fmt(f.get("model_name")) or self._fmt(f.get("test_model")) or ""
+            # 3. 覆盖机型（硬件）
+            hardware = self._fmt(f.get("hardware")) or ""
+            # 4. 日志链接（github_url）
+            log_url = str(self._fmt(f.get("github_url")) or "")
+            # 5. 模型FO = 责任人（owner）
+            owner = self._fmt(f.get("owner")) or "—"
+            # 6. 进展（当天无进展，就填问题单）= 处理状态
+            progress = self._fmt(f.get("processing_status")) or "未处理"
+            # 7. 问题描述 = AI 根因摘要（最贴近团队问题描述列）
+            issue_desc = self._fmt(f.get("root_cause_summary")) or self._fmt(f.get("error_line")) or "—"
+            # 8. AI 分析报告（仅供参考）= 分享链接，无 token 时留空
+            ai_report_link = self._build_ai_report_link(f)
+
+            data_rows.append([
+                branch,
+                team_test_content,
+                model_name,
+                hardware,
+                log_url,
+                owner,
+                progress,
+                issue_desc,
+                ai_report_link,
+            ])
+
+        WRAP_COLS = {2, 5, 8, 9}  # 1-based: 测试内容(2) / 日志链接(5) / 问题描述(8) / AI报告(9)
+        HYPERLINK_COLS = {5, 9}   # 日志链接 + AI 报告链接
+
+        for r, row in enumerate(data_rows, header_row + 1):
+            for idx, v in enumerate(row, 1):
+                cell = ws.cell(row=r, column=idx, value=v)
+                cell.alignment = Alignment(vertical="center", **(dict(wrap_text=True) if idx in WRAP_COLS else {}))
+                if idx in HYPERLINK_COLS and v and str(v).startswith("http"):
+                    cell.hyperlink = str(v)
+                    cell.font = Font(color="2563EB", underline="single")
+                # 分支列高亮显示 main / release 等关键信息
+                if idx == 1 and v and str(v).strip():
+                    cell.font = Font(bold=True, color="1F2937")
+
+        # 列宽
+        widths = {1: 14, 2: 60, 3: 28, 4: 14, 5: 55, 6: 14, 7: 30, 8: 60, 9: 55}
+        for idx, w in widths.items():
+            ws.column_dimensions[get_column_letter(idx)].width = w
+
+        self._add_table(ws, header_row, len(self._TEAM_SUMMARY_COLUMNS), len(data_rows))
+
+    @staticmethod
+    def _build_team_test_content(f: dict) -> str:
+        """组合成团队《测试内容（yaml）》样式：
+        {workflow_name} ({branch}, {model}, {hardware}, {yaml}, {path}) / {model}
+        字段缺失时省略对应片段，保持可读性。
+        """
+        wf = f.get("workflow_name") or ""
+        branch = f.get("source_branch") or ""
+        model = f.get("model_name") or f.get("test_model") or ""
+        hw = f.get("hardware") or ""
+        yaml = f.get("test_yaml") or ""
+
+        parts = [p for p in (branch, model, hw, yaml) if p]
+        core = ", ".join(parts)
+        if core:
+            return f"{wf} ({core}) / {model}" if model else f"{wf} ({core})"
+        return wf
+
+    @staticmethod
+    def _build_ai_report_link(f: dict) -> str:
+        """AI 分析分享链接，仅对已完成分析的 job 返回绝对 URL。"""
+        token = f.get("analysis_share_token")
+        if not token:
+            return ""
+        # 优先使用 settings.AI_REPORT_BASE_URL 之类的配置；
+        # 否则 fallback 到 settings.CORS_ORIGINS[0]（生产/开发前端 origin）
+        try:
+            from infrastructure.core.config import settings
+            base = getattr(settings, "AI_REPORT_BASE_URL", "") or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "")
+        except Exception:
+            base = ""
+        if not base:
+            base = "http://123.57.0.174"
+        return f"{base.rstrip('/')}/share/{token}"
 
     # ------------------------------------------------------------------
     # Sheet 1: 失败详情（核心）

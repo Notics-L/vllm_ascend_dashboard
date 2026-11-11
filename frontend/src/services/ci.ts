@@ -3,6 +3,16 @@ import { longTimeoutApiClient } from './api'
 
 // ============ Types ============
 
+export interface CIRunJobStats {
+  total: number
+  executed: number
+  skipped: number
+  success: number
+  failure: number
+  in_progress: number
+  cancelled: number
+}
+
 export interface CIResult {
   id: number
   workflow_name: string
@@ -18,6 +28,7 @@ export interface CIResult {
   started_at: string | null
   completed_at: string | null
   duration_seconds: number | null
+  job_stats?: CIRunJobStats | null
   created_at: string
   github_html_url?: string
 }
