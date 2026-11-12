@@ -34,6 +34,7 @@ from infrastructure.persistence.models import (
     CIResult,
     DailyFailureRecord,
     JobFailureAnalysis,
+    ModelFoMaster,
     TestRun,
 )
 
@@ -358,6 +359,8 @@ def _parse_model_and_yaml(test_model: str | None) -> tuple[str | None, str | Non
     if not test_model:
         return (None, None)
     name = test_model.strip()
+    if not name:
+        return (None, None)
     lower = name.lower()
     if lower.endswith(".yaml"):
         model = name[:-5]
@@ -553,6 +556,55 @@ class CIDailyReportBuilder:
         result = await self.db.execute(stmt)
         return [r for r in result.all() if (r[0], r[1]) in pairs]
 
+    async def _query_model_fo_master(
+        self,
+        test_yamls: set[str],
+        model_names: set[str],
+    ) -> dict[str, str]:
+        """批量查 ModelFoMaster（模型-FO 映射主库）。
+
+        返回 {key: model_fo}，key 同时包含 `yaml:{test_yaml}` 与
+        `model:{model_name}` 两种索引，便于 fallback 时按优先级取值。
+        仅取 enabled 记录。
+        """
+        test_yamls = {t for t in test_yamls if t}
+        model_names = {m for m in model_names if m}
+        if not test_yamls and not model_names:
+            return {}
+        stmt = select(ModelFoMaster.test_yaml, ModelFoMaster.model_name, ModelFoMaster.model_fo).where(
+            ModelFoMaster.enabled.is_(True),
+            or_(
+                ModelFoMaster.test_yaml.in_(list(test_yamls)) if test_yamls else false(),
+                func.lower(ModelFoMaster.model_name).in_([m.lower() for m in model_names]) if model_names else false(),
+            ),
+        )
+        rows = (await self.db.execute(stmt)).all()
+        mapping: dict[str, str] = {}
+        for test_yaml, model_name, model_fo in rows:
+            if test_yaml and model_fo:
+                mapping.setdefault(f"yaml:{test_yaml}", model_fo)
+            if model_name and model_fo:
+                mapping.setdefault(f"model:{model_name.lower()}", model_fo)
+        return mapping
+
+    @staticmethod
+    def _lookup_model_fo(
+        master_map: dict[str, str],
+        test_yaml: str | None,
+        model_name: str | None,
+    ) -> str | None:
+        """按 test_yaml 精确 → model_name 小写 顺序查 ModelFoMaster。
+
+        master_map 的 key 形如 `yaml:{test_yaml}` / `model:{model_name 小写}`，
+        命中判断必须带同一前缀。
+        """
+        yaml_key = f"yaml:{test_yaml}" if test_yaml else ""
+        if test_yaml and yaml_key in master_map:
+            return master_map[yaml_key]
+        if model_name:
+            return master_map.get(f"model:{model_name.lower()}")
+        return None
+
     async def _case_detail_map(self, case_runs) -> dict[tuple[int, int], dict[str, Any]]:
         """Map (ci_run_id, ci_job_id) -> {test_name, hardware, model...} for
         case-level failure detail. A failed job may correspond to one or more
@@ -627,6 +679,52 @@ class CIDailyReportBuilder:
             for (wf, jn, owner, _email) in owners:
                 owner_map[(wf, jn)] = owner
 
+        # 模型-FO 主库：收集所有 failure 的 test_yaml / model_name，批量查一次
+        master_test_yamls: set[str] = set()
+        master_model_names: set[str] = set()
+        for rec in failure_records:
+            mn, ty = _parse_model_and_yaml(rec.test_model)
+            if mn:
+                master_model_names.add(mn)
+            if ty:
+                master_test_yamls.add(ty)
+        for job in jobs:
+            m_job, t_job = _parse_model_and_yaml(job.test_model if hasattr(job, "test_model") else None)
+            if m_job:
+                master_model_names.add(m_job)
+            if t_job:
+                master_test_yamls.add(t_job)
+        # case detail 里的 test_name 也可能携带 yaml
+        for _key, case in case_detail.items():
+            mn_c, ty_c = _parse_model_and_yaml(case.get("test_name"))
+            if mn_c:
+                master_model_names.add(mn_c)
+            if ty_c:
+                master_test_yamls.add(ty_c)
+        master_map: dict[str, str] = {}
+        if master_test_yamls or master_model_names:
+            master_map = await self._query_model_fo_master(master_test_yamls, master_model_names)
+
+        def _resolve_owner(
+            wf: str,
+            jn: str,
+            model_fo_direct: str | None,
+            test_model: str | None,
+        ) -> str | None:
+            """owner / 模型FO fallback 链：
+            1) DailyFailureRecord.model_fo（人工维护）
+            2) JobOwner.owner（workflow+job 维度）
+            3) ModelFoMaster 按 test_yaml / model_name 匹配
+            """
+            if model_fo_direct:
+                return model_fo_direct
+            owner = owner_map.get((wf, jn))
+            if owner:
+                return owner
+            mn, ty = _parse_model_and_yaml(test_model)
+            fo = self._lookup_model_fo(master_map, ty, mn)
+            return fo or owner
+
         items: list[dict[str, Any]] = []
         seen_run_job: set[tuple[int, int | None]] = set()
         seen_run: set[int] = set()
@@ -654,6 +752,9 @@ class CIDailyReportBuilder:
             failed_step = _extract_first_failed_step(job.steps_data if job else None)
 
             model_name = rec.test_model or (case or {}).get("test_name")
+            owner = _resolve_owner(
+                rec.workflow_name, rec.job_name, rec.model_fo, model_name,
+            )
             items.append(self._failure_item(
                 id=rec.id,
                 report_date=str(rec.report_date),
@@ -704,8 +805,9 @@ class CIDailyReportBuilder:
             error_line = self._error_line_for(analysis, None, case)
             category = analysis.problem_category if analysis else None
             branch = (run.branch if run else "main") or "main"
-            # 责任人：无 DailyFailureRecord，直接取 JobOwner
-            owner = owner_map.get((job.workflow_name, job.job_name))
+            # 责任人：无 DailyFailureRecord，fallback 链 JobOwner → ModelFoMaster
+            job_test_model = case.get("test_name") if case else None
+            owner = _resolve_owner(job.workflow_name, job.job_name, None, job_test_model)
             # 失败关键步骤：从 CIJob.steps_data 提取首个失败 step
             failed_step = _extract_first_failed_step(job.steps_data)
             # Avoid duplicating an already-covered failed run.

@@ -15,11 +15,11 @@ from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile, status
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import case, false, func, or_, select, text
 
 from api.deps import CurrentAdminUser, CurrentSuperAdminUser, CurrentUser, DbSession
 from contracts.schemas import (
@@ -39,6 +39,11 @@ from contracts.schemas import (
     FailureAnalysisKnowledgeGraphResponse,
     FailureAnalysisListResponse,
     FailureAnalysisResponse,
+    ModelFoMasterCreate,
+    ModelFoMasterImportResult,
+    ModelFoMasterImportRowError,
+    ModelFoMasterResponse,
+    ModelFoMasterUpdate,
     NightlyGanttResponse,
     NightlyTestCaseCreate,
     NightlyTestCaseResponse,
@@ -53,6 +58,7 @@ from infrastructure.persistence.models import (
     JobFailureAnalysis,
     JobLogSummary,
     JobOwner,
+    ModelFoMaster,
     NightlyTestCase,
     WorkflowConfig,
 )
@@ -62,6 +68,7 @@ from infrastructure.persistence.run_attempts import (
     is_current_run_attempt,
 )
 from tooling.ci_filters import build_workflow_time_filter
+from reporting.ci_daily_report_builder import _parse_model_and_yaml
 from tooling.ci_version_snapshot import (
     get_version_snapshot,
     parse_ci_version_snapshot,
@@ -666,6 +673,114 @@ def _nightly_snapshot_matches_job(snapshot: NightlyTestCase, job: CIJob) -> bool
         or snapshot.job_name in job_name
         or bool(snapshot.test_model and snapshot.test_model in job_name)
     )
+
+
+async def _build_job_model_fo_map(db: DbSession, jobs: list[CIJob]) -> dict[int, str]:
+    """批量解析 CIJob 的 model_fo，按 job.id 索引。
+
+    fallback 链：
+    1) NightlyTestCase 快照（workflow_name + job_name 匹配，取 model_fo）
+    2) ModelFoMaster 主库（按快照 test_model 拆出的 yaml / model_name 匹配）
+
+    一次性查询（IN），避免 N+1。
+    """
+    if not jobs:
+        return {}
+
+    # 1) 批量查 NightlyTestCase 快照：按出现过的 (workflow_name, job_name) 去重查询
+    wf_names = {job.workflow_name for job in jobs if job.workflow_name}
+    jn_names = {job.job_name for job in jobs if job.job_name}
+    snapshot_by_wf_job: dict[tuple[str, str], NightlyTestCase] = {}
+    if wf_names and jn_names:
+        snaps = list((await db.execute(
+            select(NightlyTestCase).where(
+                NightlyTestCase.workflow_name.in_(list(wf_names)),
+                NightlyTestCase.job_name.in_(list(jn_names)),
+                NightlyTestCase.enabled.is_(True),
+            )
+        )).scalars().all())
+        # 每个 (wf, job) 取最新一条
+        for snap in snaps:
+            snapshot_by_wf_job[(snap.workflow_name, snap.job_name)] = snap
+
+    # 汇总需要回查 ModelFoMaster 的测试内容
+    master_test_yamls: set[str] = set()
+    master_model_names: set[str] = set()
+    snapshot_test_model: dict[int, str | None] = {}  # job.id -> snapshot.test_model
+    for job in jobs:
+        snap = snapshot_by_wf_job.get((job.workflow_name, job.job_name))
+        if snap and snap.test_model:
+            snapshot_test_model[job.id] = snap.test_model
+            mn, ty = _parse_model_and_yaml(snap.test_model)
+            if mn:
+                master_model_names.add(mn)
+            if ty:
+                master_test_yamls.add(ty)
+
+    master_map: dict[str, str] = {}
+    if master_test_yamls or master_model_names:
+        master_map = await _query_model_fo_master_for_jobs(db, master_test_yamls, master_model_names)
+
+    result: dict[int, str] = {}
+    for job in jobs:
+        snap = snapshot_by_wf_job.get((job.workflow_name, job.job_name))
+        # 1) 快照自带 model_fo
+        if snap and snap.model_fo:
+            result[job.id] = snap.model_fo
+            continue
+        # 2) ModelFoMaster 主库
+        test_model = snapshot_test_model.get(job.id)
+        if test_model:
+            mn, ty = _parse_model_and_yaml(test_model)
+            fo = _lookup_master_model_fo(master_map, ty, mn)
+            if fo:
+                result[job.id] = fo
+    return result
+
+
+async def _query_model_fo_master_for_jobs(
+    db: DbSession,
+    test_yamls: set[str],
+    model_names: set[str],
+) -> dict[str, str]:
+    """按 test_yaml / model_name 批量查 ModelFoMaster，返回 {key: model_fo}。"""
+    test_yamls = {t for t in test_yamls if t}
+    model_names = {m for m in model_names if m}
+    if not test_yamls and not model_names:
+        return {}
+    stmt = select(ModelFoMaster.test_yaml, ModelFoMaster.model_name, ModelFoMaster.model_fo).where(
+        ModelFoMaster.enabled.is_(True),
+        or_(
+            ModelFoMaster.test_yaml.in_(list(test_yamls)) if test_yamls else false(),
+            func.lower(ModelFoMaster.model_name).in_([m.lower() for m in model_names]) if model_names else false(),
+        ),
+    )
+    rows = (await db.execute(stmt)).all()
+    mapping: dict[str, str] = {}
+    for test_yaml, model_name, model_fo in rows:
+        if test_yaml and model_fo:
+            mapping.setdefault(f"yaml:{test_yaml}", model_fo)
+        if model_name and model_fo:
+            mapping.setdefault(f"model:{model_name.lower()}", model_fo)
+    return mapping
+
+
+def _lookup_master_model_fo(
+    master_map: dict[str, str],
+    test_yaml: str | None,
+    model_name: str | None,
+) -> str | None:
+    """按 test_yaml 精确 → model_name 小写 顺序查 ModelFoMaster。
+
+    master_map 的 key 形如 `yaml:{test_yaml}` / `model:{model_name 小写}`，
+    命中判断必须带同一前缀。
+    """
+    yaml_key = f"yaml:{test_yaml}" if test_yaml else ""
+    if test_yaml and yaml_key in master_map:
+        return master_map[yaml_key]
+    if model_name:
+        return master_map.get(f"model:{model_name.lower()}")
+    return None
 
 
 def _format_nightly_export_time(value: datetime | None) -> str:
@@ -1419,6 +1534,7 @@ async def list_jobs_by_run(
     jobs = result.scalars().all()
     current_attempt = extract_run_attempt(run.data) if run else None
     jobs = filter_current_run_attempt(jobs, current_attempt)
+    job_fo_map = await _build_job_model_fo_map(db, jobs)
 
     response = []
     for job in jobs:
@@ -1452,6 +1568,7 @@ async def list_jobs_by_run(
             duration_seconds=job.duration_seconds,
             runner_labels=runner_labels,
             steps_summary=steps_summary,
+            model_fo=job_fo_map.get(job.id),
             created_at=job.created_at,
         ))
 
@@ -1512,6 +1629,7 @@ async def list_jobs(
             for job in jobs
             if is_current_run_attempt(job.data, run_attempts.get(job.run_id))
         ]
+    job_fo_map = await _build_job_model_fo_map(db, jobs)
 
     response = []
     for job in jobs:
@@ -1544,6 +1662,7 @@ async def list_jobs(
             duration_seconds=job.duration_seconds,
             runner_labels=runner_labels,
             steps_summary=steps_summary,
+            model_fo=job_fo_map.get(job.id),
             created_at=job.created_at,
         ))
 
@@ -4221,3 +4340,287 @@ async def sync_test_cases_from_yaml(
         "created": total_created,
         "updated": total_updated,
     }
+
+
+# ============ 模型-FO 映射主库（ModelFoMaster）============
+# 团队维护的「Suite / 节点类型 / yaml / 模型 / 机型 / 模型FO」六元组。
+# 通过 Excel 批量导入或单条 CRUD 维护，CI 模块（每日综合报告 / Job 详情 /
+# 失败记录）在 owner / model_fo 缺失时按本表 fallback 查询。
+
+_MODEL_FO_MASTER_IMPORT_HEADERS = [
+    "Suite",
+    "节点类型",
+    "测试内容（yaml/路径）",
+    "模型",
+    "覆盖机型",
+    "模型FO",
+]
+
+
+def _parse_model_fo_master_xlsx(content: bytes) -> list[dict[str, Any]]:
+    """解析团队 Excel（前 6 列：Suite/节点类型/测试内容(yaml)/模型/覆盖机型/模型FO）。
+
+    返回每行 dict；表头不符时抛 ValueError。空行跳过。
+    """
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    if ws is None:
+        raise ValueError("Excel 缺少有效工作表")
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        raise ValueError("Excel 为空")
+
+    # 校验表头：取每格 str 去空格后与基准表头比对（顺序必须一致）
+    normalized = [
+        (str(h).strip() if h is not None else "") for h in header_row[:6]
+    ]
+    if normalized != _MODEL_FO_MASTER_IMPORT_HEADERS:
+        raise ValueError(
+            f"表头不符，期望：{_MODEL_FO_MASTER_IMPORT_HEADERS}，实际：{normalized}"
+        )
+
+    data_rows: list[dict[str, Any]] = []
+    for row in rows_iter:
+        if row is None:
+            continue
+        # 全空行跳过
+        if all(v is None or (isinstance(v, str) and not v.strip()) for v in row[:6]):
+            continue
+        values = [
+            (str(v).strip() if v is not None else None) for v in row[:6]
+        ]
+        data_rows.append({
+            "suite": values[0],
+            "node_type": values[1],
+            "test_yaml": values[2],
+            "model_name": values[3],
+            "coverage_hardware": values[4] or None,
+            "model_fo": values[5],
+        })
+    wb.close()
+    return data_rows
+
+
+@router.get("/model-fo-mappings", response_model=list[ModelFoMasterResponse])
+async def list_model_fo_mappings(
+    db: DbSession,
+    current_user: CurrentUser,
+    suite: str | None = Query(None, max_length=50),
+    node_type: str | None = Query(None, max_length=50),
+    model_name: str | None = Query(None, max_length=200),
+    test_yaml: str | None = Query(None, max_length=300),
+    only_enabled: bool = Query(True),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """模型-FO 映射主库列表，支持多维度筛选。"""
+    stmt = select(ModelFoMaster)
+    if suite:
+        stmt = stmt.where(ModelFoMaster.suite == suite)
+    if node_type:
+        stmt = stmt.where(ModelFoMaster.node_type == node_type)
+    if model_name:
+        stmt = stmt.where(func.lower(ModelFoMaster.model_name).like(f"%{model_name.lower()}%"))
+    if test_yaml:
+        stmt = stmt.where(func.lower(ModelFoMaster.test_yaml).like(f"%{test_yaml.lower()}%"))
+    if only_enabled:
+        stmt = stmt.where(ModelFoMaster.enabled.is_(True))
+    stmt = stmt.order_by(ModelFoMaster.suite, ModelFoMaster.node_type, ModelFoMaster.test_yaml).limit(limit)
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+@router.post("/model-fo-mappings", response_model=ModelFoMasterResponse, status_code=status.HTTP_201_CREATED)
+async def create_model_fo_mapping(
+    db: DbSession,
+    current_user: CurrentAdminUser,
+    data: ModelFoMasterCreate,
+):
+    """单条新增。已存在相同 (suite, node_type, test_yaml) 时返回 409。"""
+    existing = (await db.execute(
+        select(ModelFoMaster).where(
+            ModelFoMaster.suite == data.suite,
+            ModelFoMaster.node_type == data.node_type,
+            ModelFoMaster.test_yaml == data.test_yaml,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            detail=f"已存在相同 (suite, node_type, test_yaml) 记录 id={existing.id}")
+    record = ModelFoMaster(**data.model_dump())
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+@router.put("/model-fo-mappings/{mapping_id}", response_model=ModelFoMasterResponse)
+async def update_model_fo_mapping(
+    db: DbSession,
+    current_user: CurrentAdminUser,
+    mapping_id: int,
+    data: ModelFoMasterUpdate,
+):
+    """单条修改。"""
+    record = (await db.execute(
+        select(ModelFoMaster).where(ModelFoMaster.id == mapping_id)
+    )).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
+
+    updates = data.model_dump(exclude_unset=True, exclude_none=True)
+    # 三元组变更时检查唯一性
+    if any(k in updates for k in ("suite", "node_type", "test_yaml")):
+        new_suite = updates.get("suite", record.suite)
+        new_node = updates.get("node_type", record.node_type)
+        new_yaml = updates.get("test_yaml", record.test_yaml)
+        conflict = (await db.execute(
+            select(ModelFoMaster).where(
+                ModelFoMaster.suite == new_suite,
+                ModelFoMaster.node_type == new_node,
+                ModelFoMaster.test_yaml == new_yaml,
+                ModelFoMaster.id != mapping_id,
+            )
+        )).scalar_one_or_none()
+        if conflict:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                detail=f"已存在相同三元组记录 id={conflict.id}")
+    for k, v in updates.items():
+        setattr(record, k, v)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+@router.delete("/model-fo-mappings/{mapping_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_model_fo_mapping(
+    db: DbSession,
+    current_user: CurrentAdminUser,
+    mapping_id: int,
+):
+    """单条删除（物理）。如需保留记录请改 enabled=false。"""
+    record = (await db.execute(
+        select(ModelFoMaster).where(ModelFoMaster.id == mapping_id)
+    )).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="记录不存在")
+    await db.delete(record)
+    await db.commit()
+
+
+@router.post("/model-fo-mappings/import", response_model=ModelFoMasterImportResult)
+async def import_model_fo_mappings(
+    db: DbSession,
+    current_user: CurrentAdminUser,
+    file: UploadFile = File(...),
+):
+    """批量导入团队 Excel（Suite/节点类型/yaml/模型/机型/模型FO 六列）。
+
+    按 (suite, node_type, test_yaml) 三元组 upsert：存在则更新，不存在则新增。
+    行级错误（缺必填/格式错）收集到 errors，不阻断其它行。
+    """
+    content = await file.read()
+    try:
+        data_rows = _parse_model_fo_master_xlsx(content)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+    imported = 0
+    skipped = 0
+    errors: list[ModelFoMasterImportRowError] = []
+    # Excel 数据行从第 2 行起（第 1 行是表头）
+    for idx, row in enumerate(data_rows, start=2):
+        # 必填校验：suite / node_type / test_yaml / model_name
+        # model_fo 允许暂缺（后续可手动录入），不作为拒绝条件
+        missing = [k for k in ("suite", "node_type", "test_yaml", "model_name")
+                   if not row.get(k) or not str(row.get(k)).strip()]
+        if missing:
+            errors.append(ModelFoMasterImportRowError(row=idx, reason=f"缺失字段：{', '.join(missing)}"))
+            continue
+        suite = row["suite"].strip()
+        node_type = row["node_type"].strip()
+        test_yaml = row["test_yaml"].strip()
+        model_name = row["model_name"].strip()
+        coverage_hardware = (row.get("coverage_hardware") or "").strip() or None
+        model_fo = (row.get("model_fo") or "").strip() or None
+
+        existing = (await db.execute(
+            select(ModelFoMaster).where(
+                ModelFoMaster.suite == suite,
+                ModelFoMaster.node_type == node_type,
+                ModelFoMaster.test_yaml == test_yaml,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            existing.model_name = model_name
+            # 导入值为空时保留已手动录入的 FO / 机型，避免覆盖
+            if coverage_hardware is not None:
+                existing.coverage_hardware = coverage_hardware
+            if model_fo is not None:
+                existing.model_fo = model_fo
+            existing.enabled = True
+        else:
+            db.add(ModelFoMaster(
+                suite=suite,
+                node_type=node_type,
+                test_yaml=test_yaml,
+                model_name=model_name,
+                coverage_hardware=coverage_hardware,
+                model_fo=model_fo,
+                enabled=True,
+            ))
+        imported += 1
+
+    # 空行计入 skipped（这里行都已过滤空行，所以 skipped 通常 0）
+    await db.commit()
+    return ModelFoMasterImportResult(
+        imported=imported,
+        skipped=skipped,
+        errors=errors,
+        total_rows=len(data_rows),
+    )
+
+
+@router.get("/model-fo-mappings/import-template")
+async def download_model_fo_master_import_template():
+    """下载 Excel 导入模板（表头 + 2 行示例）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "模型FO主库"
+    for c, h in enumerate(_MODEL_FO_MASTER_IMPORT_HEADERS, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1E40AF")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    # 示例行
+    samples = [
+        ("A2", "单机", "Qwen3-30B-A3B-BF16-A2.yaml", "qwen3-30b-a3b-bf16-a2-performance",
+         "A2单机 linux-aarch64-a2b3-8", "示例FO 00000000"),
+        ("A3", "单机", "MiniMax-M3-BF16-A3.yaml", "minimax-m3-bf16-a3",
+         "A3单机 linux-aarch64-a3-800i-16", "示例FO 11111111"),
+    ]
+    for r, row in enumerate(samples, 2):
+        for c, v in enumerate(row, 1):
+            ws.cell(row=r, column=c, value=v).alignment = Alignment(vertical="center", wrap_text=True)
+    for i, w in enumerate([12, 12, 35, 35, 30, 22], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=model_fo_master_template.xlsx"},
+    )
+
+
+@router.get("/model-fo-mappings/distinct-suites", response_model=list[str])
+async def list_model_fo_master_suites(db: DbSession, current_user: CurrentUser):
+    """Suite 去重列表（供前端筛选下拉）。"""
+    rows = (await db.execute(
+        select(ModelFoMaster.suite).where(ModelFoMaster.enabled.is_(True)).distinct()
+    )).scalars().all()
+    return sorted([s for s in rows if s])

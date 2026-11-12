@@ -10,7 +10,14 @@ backend_dir = str(Path(__file__).resolve().parents[1] / "backend")
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-from infrastructure.persistence.models import CIResult, PullRequest, WorkflowConfig  # noqa: E402
+from infrastructure.persistence.models import (  # noqa: E402
+    CIResult,
+    CIJob,
+    ModelFoMaster,
+    NightlyTestCase,
+    PullRequest,
+    WorkflowConfig,
+)
 from infrastructure.persistence.models.test_board import (  # noqa: E402
     TestCase,
     TestRun,
@@ -26,6 +33,21 @@ async def db_session():
     await reset_tables(engine, [
         PullRequest.__table__, CIResult.__table__, WorkflowConfig.__table__,
         TestCase.__table__, TestRun.__table__, TestSuiteSnapshot.__table__,
+    ])
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def master_session():
+    """Isolated MySQL session for ModelFoMaster (six-tuple) tests."""
+    engine = create_test_engine()
+    await reset_tables(engine, [
+        ModelFoMaster.__table__, NightlyTestCase.__table__, CIJob.__table__,
     ])
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

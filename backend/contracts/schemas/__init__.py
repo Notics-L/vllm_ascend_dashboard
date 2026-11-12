@@ -276,6 +276,7 @@ class CIJobResponse(CIJobBase):
     vllm_ascend_commit_date: str | None = None
     vllm_ascend_commit_message: str | None = None
     version_evidence_status: str | None = None
+    model_fo: str | None = None
     created_at: datetime
 
     @computed_field
@@ -467,6 +468,57 @@ class NightlyTestCaseResponse(NightlyTestCaseBase):
         if isinstance(value, date):
             return value.isoformat()
         return value
+
+
+# ============ ModelFoMaster Schemas（模型-FO 映射主库）============
+
+class ModelFoMasterBase(BaseModel):
+    """模型-FO 映射主库基础字段"""
+    suite: str = Field(..., min_length=1, max_length=50)
+    node_type: str = Field(..., min_length=1, max_length=50)
+    test_yaml: str = Field(..., min_length=1, max_length=300)
+    model_name: str = Field(..., min_length=1, max_length=200)
+    coverage_hardware: str | None = Field(None, max_length=200)
+    model_fo: str | None = Field(None, max_length=100)
+    enabled: bool = True
+
+
+class ModelFoMasterCreate(ModelFoMasterBase):
+    """新增"""
+    pass
+
+
+class ModelFoMasterUpdate(BaseModel):
+    """更新（所有字段可选）"""
+    suite: str | None = Field(None, min_length=1, max_length=50)
+    node_type: str | None = Field(None, min_length=1, max_length=50)
+    test_yaml: str | None = Field(None, min_length=1, max_length=300)
+    model_name: str | None = Field(None, min_length=1, max_length=200)
+    coverage_hardware: str | None = Field(None, max_length=200)
+    model_fo: str | None = Field(None, min_length=1, max_length=100)
+    enabled: bool | None = None
+
+
+class ModelFoMasterResponse(ModelFoMasterBase):
+    """响应"""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class ModelFoMasterImportRowError(BaseModel):
+    """导入时单行错误"""
+    row: int
+    reason: str
+
+
+class ModelFoMasterImportResult(BaseModel):
+    """导入结果"""
+    imported: int
+    skipped: int
+    errors: list[ModelFoMasterImportRowError] = Field(default_factory=list)
+    total_rows: int = 0
 
 
 # ============ Model Schemas ============

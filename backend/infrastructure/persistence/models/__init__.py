@@ -29,7 +29,7 @@ Base = declarative_base()
 __all__ = [
     "Base", "User", "ModelConfig", "ModelReport", "CIResult", "CIJob",
     "DailyFailureRecord",
-    "WorkflowConfig", "PerformanceData", "JobOwner", "NightlyTestCase", "ModelFoMapping",
+    "WorkflowConfig", "PerformanceData", "JobOwner", "NightlyTestCase", "ModelFoMapping", "ModelFoMaster",
     "ModelSyncConfig", "ProjectDashboardConfig", "KubernetesClusterConfig",
     "DailyPR", "DailyIssue", "DailyCommit", "DailySummary", "LLMProviderConfig",
     "DailyReportHistory", "ResourceNpuMetrics", "JobFailureAnalysis",
@@ -397,6 +397,35 @@ class ModelFoMapping(Base):
     model_fo = Column(String(100), nullable=False)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class ModelFoMaster(Base):
+    """模型-FO 映射主库。
+
+    由团队通过 Excel 批量导入维护，承载 Suite / 节点类型 / yaml / 模型 /
+    覆盖机型 / 模型FO 六元组。CI 模块（每日综合报告 / Job 详情 / 失败记录）
+    在 owner / model_fo 缺失时按本表 fallback 查询。
+
+    唯一约束：(suite, node_type, test_yaml)。model_name 允许重复
+    （同一模型可出现在多个 suite / 节点 / yaml 下）。
+    """
+    __tablename__ = "model_fo_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    suite = Column(String(50), nullable=False, index=True)
+    node_type = Column(String(50), nullable=False, index=True)
+    test_yaml = Column(String(300), nullable=False, index=True)
+    model_name = Column(String(200), nullable=False, index=True)
+    coverage_hardware = Column(String(200))
+    model_fo = Column(String(100), nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))
+    updated_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint("suite", "node_type", "test_yaml",
+                         name="uq_model_fo_master_suite_node_yaml"),
+    )
 
 
 class ModelSyncConfig(Base):

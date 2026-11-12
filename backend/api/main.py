@@ -185,6 +185,33 @@ async def legacy_schema_upgrade_test_case_columns():
         logger.warning(f"test_cases column migration skipped (non-fatal): {e}")
 
 
+async def legacy_schema_upgrade_model_fo_master_columns():
+    """Allow model_fo_master.model_fo to be NULL (FO 可后续手动补录)."""
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            def _get_nullable(sync_session):
+                row = sync_session.execute(text(
+                    "SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_fo_master' "
+                    "AND COLUMN_NAME = 'model_fo'"
+                )).fetchone()
+                return row[0] if row else None
+
+            is_nullable = await db.run_sync(_get_nullable)
+            if is_nullable == "NO":
+                logger.info("Altering model_fo_master.model_fo to allow NULL")
+                await db.execute(text(
+                    "ALTER TABLE model_fo_master MODIFY COLUMN model_fo VARCHAR(100) NULL"
+                ))
+                await db.commit()
+    except Exception as e:
+        logger.warning(f"model_fo_master column migration skipped (non-fatal): {e}")
+
+
 async def legacy_schema_upgrade_third_party_columns():
     """Ensure release_third_party_versions table has repository_url column."""
     try:
@@ -503,6 +530,7 @@ async def lifespan(app: FastAPI):
 
     await legacy_schema_upgrade_third_party_columns()
     await legacy_schema_upgrade_contributor_metrics_columns()
+    await legacy_schema_upgrade_model_fo_master_columns()
 
     try:
         from infrastructure.core.app_runtime_config import load_app_runtime_config
