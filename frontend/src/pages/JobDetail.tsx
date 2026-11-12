@@ -178,6 +178,9 @@ function JobDetail() {
           <Descriptions.Item label="Runner">
             {job.runner_name || (job.runner_labels && job.runner_labels.length > 0 ? job.runner_labels.join(', ') : '-')}
           </Descriptions.Item>
+          {job.model_fo ? (
+            <Descriptions.Item label="模型 FO">{job.model_fo}</Descriptions.Item>
+          ) : null}
 
           <Descriptions.Item label="状态">
             {renderStatusTag(job.status)}

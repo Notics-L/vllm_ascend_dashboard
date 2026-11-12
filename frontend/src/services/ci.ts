@@ -53,6 +53,7 @@ export interface CIJob {
   vllm_ascend_commit_date?: string | null
   vllm_ascend_commit_message?: string | null
   version_evidence_status?: string | null
+  model_fo?: string | null
   created_at: string
   github_job_url?: string
 }
@@ -595,6 +596,100 @@ export const updateNightlyTestCase = async (id: number, data: NightlyTestCaseUpd
 
 export const deleteNightlyTestCase = async (id: number): Promise<void> => {
   await api.delete(`/ci/nightly-test-cases/${id}`)
+}
+
+// ============ ModelFoMaster（模型-FO 映射主库）============
+
+export interface ModelFoMaster {
+  id: number
+  suite: string
+  node_type: string
+  test_yaml: string
+  model_name: string
+  coverage_hardware: string | null
+  model_fo: string | null
+  enabled: boolean
+  created_at: string
+  updated_at: string | null
+}
+
+export interface ModelFoMasterCreate {
+  suite: string
+  node_type: string
+  test_yaml: string
+  model_name: string
+  coverage_hardware?: string | null
+  model_fo?: string | null
+  enabled?: boolean
+}
+
+export interface ModelFoMasterUpdate {
+  suite?: string | null
+  node_type?: string | null
+  test_yaml?: string | null
+  model_name?: string | null
+  coverage_hardware?: string | null
+  model_fo?: string | null
+  enabled?: boolean | null
+}
+
+export interface ModelFoMasterImportRowError {
+  row: number
+  reason: string
+}
+
+export interface ModelFoMasterImportResult {
+  imported: number
+  skipped: number
+  errors: ModelFoMasterImportRowError[]
+  total_rows: number
+}
+
+export const getModelFoMasters = async (params?: {
+  suite?: string
+  node_type?: string
+  model_name?: string
+  test_yaml?: string
+  only_enabled?: boolean
+  limit?: number
+}): Promise<ModelFoMaster[]> => {
+  const response = await api.get<ModelFoMaster[]>('/ci/model-fo-mappings', { params })
+  return response.data
+}
+
+export const createModelFoMaster = async (data: ModelFoMasterCreate): Promise<ModelFoMaster> => {
+  const response = await api.post<ModelFoMaster>('/ci/model-fo-mappings', data)
+  return response.data
+}
+
+export const updateModelFoMaster = async (id: number, data: ModelFoMasterUpdate): Promise<ModelFoMaster> => {
+  const response = await api.put<ModelFoMaster>(`/ci/model-fo-mappings/${id}`, data)
+  return response.data
+}
+
+export const deleteModelFoMaster = async (id: number): Promise<void> => {
+  await api.delete(`/ci/model-fo-mappings/${id}`)
+}
+
+export const importModelFoMasters = async (file: File): Promise<ModelFoMasterImportResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await api.post<ModelFoMasterImportResult>('/ci/model-fo-mappings/import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data
+}
+
+export const downloadModelFoMasterTemplate = async (): Promise<Blob> => {
+  const response = await api.get<Blob>('/ci/model-fo-mappings/import-template', {
+    responseType: 'blob',
+  })
+  return response.data
+}
+
+export const getModelFoMasterSuites = async (): Promise<string[]> => {
+  const response = await api.get<string[]>('/ci/model-fo-mappings/distinct-suites')
+  return response.data
 }
 
 // ============ Nightly Gantt ============

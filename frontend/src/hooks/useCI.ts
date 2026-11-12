@@ -284,3 +284,73 @@ export const useComprehensiveReport = (params?: {
     staleTime: 60 * 1000,
   })
 }
+
+// ============ 模型-FO 映射主库（ModelFoMaster）============
+
+export const useModelFoMasters = (params?: {
+  suite?: string
+  node_type?: string
+  model_name?: string
+  test_yaml?: string
+  only_enabled?: boolean
+  limit?: number
+}) => {
+  return useQuery({
+    queryKey: ['model-fo-masters', params],
+    queryFn: () => ciApi.getModelFoMasters(params),
+    staleTime: 60 * 1000,
+  })
+}
+
+export const useModelFoMasterSuites = () => {
+  return useQuery({
+    queryKey: ['model-fo-masters-suites'],
+    queryFn: () => ciApi.getModelFoMasterSuites(),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export const useCreateModelFoMaster = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (data: ciApi.ModelFoMasterCreate) => ciApi.createModelFoMaster(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters'] })
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters-suites'] })
+    },
+  })
+}
+
+export const useUpdateModelFoMaster = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: ciApi.ModelFoMasterUpdate }) =>
+      ciApi.updateModelFoMaster(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters'] })
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters-suites'] })
+    },
+  })
+}
+
+export const useDeleteModelFoMaster = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => ciApi.deleteModelFoMaster(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters'] })
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters-suites'] })
+    },
+  })
+}
+
+export const useImportModelFoMasters = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (file: File) => ciApi.importModelFoMasters(file),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters'] })
+      queryClient.invalidateQueries({ queryKey: ['model-fo-masters-suites'] })
+    },
+  })
+}
