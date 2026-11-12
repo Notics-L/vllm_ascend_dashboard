@@ -1065,31 +1065,38 @@ async def list_runs(
         return []
 
     run_ids = [run.run_id for run in runs]
-    job_stats_rows = (await db.execute(
-        select(
-            CIJob.run_id,
-            func.count(CIJob.id).label("total"),
-            func.sum(case((CIJob.conclusion.is_(None), 0), (CIJob.conclusion == "skipped", 0), else_=1)).label("executed"),
-            func.sum(case((CIJob.conclusion == "skipped", 1), else_=0)).label("skipped"),
-            func.sum(case((CIJob.conclusion == "success", 1), else_=0)).label("success"),
-            func.sum(case((CIJob.conclusion == "failure", 1), else_=0)).label("failure"),
-            func.sum(case((CIJob.status == "in_progress", 1), else_=0)).label("in_progress"),
-            func.sum(case((CIJob.conclusion == "cancelled", 1), else_=0)).label("cancelled"),
-        )
+    # 与 /runs/{run_id}/jobs 详情保持同一口径：只统计当前 GitHub run_attempt 的 job，
+    # 避免重跑后把旧 attempt 的 job 也计入（否则列表统计会翻倍、与详情不一致）。
+    job_rows = (await db.execute(
+        select(CIJob.run_id, CIJob.status, CIJob.conclusion, CIJob.data)
         .where(CIJob.run_id.in_(run_ids))
-        .group_by(CIJob.run_id)
     )).all()
-    job_stats_by_run = {
-        row[0]: CIRunJobStats(
-            total=int(row[1] or 0),
-            executed=int(row[2] or 0),
-            skipped=int(row[3] or 0),
-            success=int(row[4] or 0),
-            failure=int(row[5] or 0),
-            in_progress=int(row[6] or 0),
-            cancelled=int(row[7] or 0),
+    attempt_by_run = {run.run_id: extract_run_attempt(run.data) for run in runs}
+    counters: dict[int, dict[str, int]] = {}
+    for row in job_rows:
+        if not is_current_run_attempt(row.data, attempt_by_run.get(row.run_id)):
+            continue
+        c = counters.setdefault(
+            row.run_id,
+            {"total": 0, "executed": 0, "skipped": 0, "success": 0,
+             "failure": 0, "in_progress": 0, "cancelled": 0},
         )
-        for row in job_stats_rows
+        c["total"] += 1
+        conclusion = row.conclusion
+        if conclusion is not None and conclusion != "skipped":
+            c["executed"] += 1
+        if conclusion == "skipped":
+            c["skipped"] += 1
+        elif conclusion == "success":
+            c["success"] += 1
+        elif conclusion == "failure":
+            c["failure"] += 1
+        elif conclusion == "cancelled":
+            c["cancelled"] += 1
+        if row.status == "in_progress":
+            c["in_progress"] += 1
+    job_stats_by_run = {
+        run_id: CIRunJobStats(**vals) for run_id, vals in counters.items()
     }
 
     def _to_run_response(run: CIResult) -> CIResultResponse:

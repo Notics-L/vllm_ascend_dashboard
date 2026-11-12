@@ -169,8 +169,9 @@ class CIDailyReportExcel:
             owner = self._fmt(f.get("owner")) or "—"
             # 6. 进展（当天无进展，就填问题单）= 处理状态
             progress = self._fmt(f.get("processing_status")) or "未处理"
-            # 7. 问题描述 = AI 根因摘要（最贴近团队问题描述列）
-            issue_desc = self._fmt(f.get("root_cause_summary")) or self._fmt(f.get("error_line")) or "—"
+            # 7. 问题描述：优先 AI 根因摘要；若 AI 失败/未分析（degraded / raw_log_collected）
+            #    则补上「拉取 GitHub 原始日志」解析出的 raw_log_lines，避免导出成占位文本。
+            issue_desc = self._build_issue_desc(f)
             # 8. AI 分析报告（仅供参考）= 分享链接，无 token 时留空
             ai_report_link = self._build_ai_report_link(f)
 
@@ -224,6 +225,26 @@ class CIDailyReportExcel:
         if core:
             return f"{wf} ({core}) / {model}" if model else f"{wf} ({core})"
         return wf
+
+    @staticmethod
+    def _build_issue_desc(f: dict) -> str:
+        """团队「问题描述」列文本。
+
+        AI 分析成功时用根因摘要；AI 失败 / 未分析但已拉取 GitHub 原始日志时，
+        用 raw_log_lines（真实报错细节）替换占位式的 error_line，确保导出的
+        Excel 带上原始错误详情。
+        """
+        root = (f.get("root_cause_summary") or "").strip()
+        status = f.get("analysis_status")
+        raw_lines = [str(x).strip() for x in (f.get("raw_log_lines") or []) if str(x).strip()]
+        ai_ok = bool(root) and status not in ("failed", "degraded", "raw_log_collected")
+
+        if ai_ok:
+            return root
+        if raw_lines:
+            # 保留 AI 摘要（若有）后再附原始日志行
+            return "\n".join(([root] if root else []) + raw_lines)
+        return root or (f.get("error_line") or "").strip() or "—"
 
     @staticmethod
     def _build_ai_report_link(f: dict) -> str:
