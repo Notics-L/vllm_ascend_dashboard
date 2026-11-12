@@ -703,7 +703,9 @@ class CICollector:
                 event=run.get("event"),
                 branch=run.get("head_branch"),
                 head_sha=run.get("head_sha"),
-                started_at=self._parse_datetime(run.get("created_at")),
+                # 与 duration_seconds 同源：优先 run_started_at（重跑后为最新 attempt 的开始），
+                # 否则回退 created_at，避免「开始时间(首次触发)」与「时长(最近 attempt)」口径不一致。
+                started_at=self._parse_datetime(run.get("run_started_at") or run.get("created_at")),
                 completed_at=self._parse_datetime(run.get("updated_at")),
                 duration_seconds=self._calculate_duration(run),
                 hardware=hardware,
@@ -762,6 +764,13 @@ class CICollector:
             new_head_sha = run.get("head_sha")
             if existing.head_sha is None and new_head_sha is not None:
                 existing.head_sha = new_head_sha
+                needs_update = True
+
+            # 重跑后 run_started_at 会更新为最新 attempt 的开始时间，同步刷新 started_at，
+            # 保证开始时间与 duration_seconds 口径一致。
+            new_started_at = self._parse_datetime(run.get("run_started_at") or run.get("created_at"))
+            if existing.started_at != new_started_at and new_started_at is not None:
+                existing.started_at = new_started_at
                 needs_update = True
 
             new_completed_at = self._parse_datetime(run.get("updated_at"))
