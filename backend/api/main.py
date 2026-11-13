@@ -561,20 +561,26 @@ async def lifespan(app: FastAPI):
 
         async with AsyncSession(bind=_eng) as _db:
             rows = await _db.execute(_text("""
-                SELECT id, progress_message FROM contributor_sync_records
-                WHERE status = 'running' AND sync_type = 'daily_backfill'
+                SELECT id, sync_type, progress_message FROM contributor_sync_records
+                WHERE status IN ('running', 'pending')
+                  AND COALESCE(trigger_source, '') NOT LIKE 'scheduled_%'
             """))
             for row in rows.fetchall():
                 logger.warning(
-                    "Auto-recovering stuck daily_backfill record %d (msg=%s) → failed",
-                    row[0], (row[1] or "")[:60],
+                    "Auto-recovering stuck contributor sync record %d (type=%s msg=%s) → failed",
+                    row[0], row[1], (row[2] or "")[:60],
                 )
+            # 进程被杀/重启后，内存中的同步任务已不存在，但记录会永久停留在
+            # running/pending，导致后续手动触发被拒、定时任务被 skip_when_in_progress
+            # 一直跳过。启动时回收 API 进程发起的遗留同步记录（定时任务由
+            # scheduler 进程负责回收，避免误伤仍在运行的定时同步）。
             await _db.execute(_text("""
                 UPDATE contributor_sync_records
                 SET status = 'failed',
-                    error_message = '服务器重启导致任务中断，请重新触发',
+                    error_message = '服务器重启导致任务中断，请重新触发（已完成进度可通过断点续跑）',
                     completed_at = NOW()
-                WHERE status = 'running' AND sync_type = 'daily_backfill'
+                WHERE status IN ('running', 'pending')
+                  AND COALESCE(trigger_source, '') NOT LIKE 'scheduled_%'
             """))
             await _db.commit()
 
@@ -583,7 +589,7 @@ async def lifespan(app: FastAPI):
                 UPDATE background_task_records
                 SET status = 'cancelled', error_message = '服务器重启导致任务中断',
                     completed_at = NOW()
-                WHERE status = 'running' AND task_type = 'contributor_sync'
+                WHERE status IN ('running', 'pending') AND task_type = 'contributor_sync'
             """))
             await _db.commit()
     except Exception as e:

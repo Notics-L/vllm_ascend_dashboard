@@ -184,6 +184,7 @@ class ContributorSyncCollector:
         interrupted = False
         cancelled = False
         skipped = 0
+        processed_since_flush = 0
 
         try:
             prs = await self._fetch_prs(since, until)
@@ -204,6 +205,38 @@ class ContributorSyncCollector:
                 await self.progress_callback(5, f"Fetched {len(prs)} PRs, processing...")
 
             total = len(prs)
+
+            async def _flush_and_checkpoint(reason: str) -> None:
+                """提交当前批次并写入与已提交数据对齐的断点。
+
+                全量同步原先只在结束时 commit，导致一个事务里堆积数万条
+                PR/commit 行；SQLAlchemy 的 autoflush 会在每次查询前把整个
+                pending 队列刷一遍，数据处理到中途后呈 O(n²) 退化，表现为
+                进度长时间停住。这里按批次提交，既避免长事务，也让断点与
+                已落库的日度数据保持一致，取消/限流后可安全续跑。
+                """
+                nonlocal processed_since_flush
+                try:
+                    await self.db.commit()
+                except Exception as flush_exc:
+                    logger.warning("Contributor sync flush failed: %s", flush_exc)
+                    try:
+                        await self.db.rollback()
+                    except Exception:
+                        pass
+                    return
+                processed_since_flush = 0
+                try:
+                    await self._save_checkpoint(
+                        profiles, pr_numbers_seen,
+                        last_processed_pr, total,
+                        since, until,
+                        len(result.errors),
+                        reason,
+                    )
+                except Exception as ckpt_exc:
+                    logger.error("Failed to save checkpoint: %s", ckpt_exc)
+
             for idx, pr in enumerate(prs, 1):
                 pr_number = pr.get("number")
                 if pr_number is None:
@@ -215,10 +248,11 @@ class ContributorSyncCollector:
                         if await self.cancel_check_func():
                             logger.info("Contributor sync cancelled at PR #%s", pr_number)
                             cancelled = True
-                            try:
-                                await self.db.rollback()
-                            except Exception:
-                                pass
+                            # 先提交本批次已处理完的数据再落断点，保证再次触发时
+                            # 能从当前位置续跑，而不是从头开始。
+                            await _flush_and_checkpoint(
+                                f"cancelled at PR #{pr_number} ({idx}/{total})"
+                            )
                             if self.progress_callback:
                                 await self.progress_callback(
                                     99, f"Cancelled at PR #{pr_number} ({idx}/{total})"
@@ -243,40 +277,30 @@ class ContributorSyncCollector:
                 try:
                     await self._process_pr(pr, pr_number, profiles, pr_numbers_seen, result)
                     last_processed_pr = pr_number
+                    processed_since_flush += 1
+                    if processed_since_flush >= DAILY_FLUSH_EVERY:
+                        await _flush_and_checkpoint(f"periodic at {idx}/{total}")
                 except GitHubRateLimitError as e:
                     # 限流（客户端层已等待 RESET 窗口仍失败）：
-                    # 保存断点 + 回滚未提交的 DB 变更，重新触发时从断点续跑
+                    # 当前 PR 尚未写入，先移出已完成集合，再提交此前成功的 PR
+                    # 并保存断点，重新触发时从断点续跑。
+                    pr_numbers_seen.discard(pr_number)
                     logger.error(
                         "Rate limited at PR #%s, saving checkpoint and aborting: %s",
                         pr_number, e,
                     )
                     result.errors.append(f"Rate limit at PR #{pr_number}: {e}")
-                    try:
-                        await self.db.rollback()
-                    except Exception:
-                        pass
-                    try:
-                        await self._save_checkpoint(
-                            profiles, pr_numbers_seen,
-                            last_processed_pr, total,
-                            since, until,
-                            len(result.errors),
-                            str(e),
-                        )
-                    except Exception as ckpt_exc:
-                        logger.error("Failed to save checkpoint: %s", ckpt_exc)
+                    await _flush_and_checkpoint(f"rate limit at PR #{pr_number}")
                     interrupted = True
                     break
                 except GitHubAPIError as e:
+                    pr_numbers_seen.discard(pr_number)
                     logger.error("API error PR #%s: %s", pr_number, e)
                     result.errors.append(f"API error PR #{pr_number}: {e}")
                 except Exception as e:
+                    pr_numbers_seen.discard(pr_number)
                     logger.error("Unexpected error PR #%s: %s", pr_number, e, exc_info=True)
                     result.errors.append(f"PR #{pr_number}: {e}")
-                    try:
-                        await self.db.rollback()
-                    except Exception:
-                        pass
                     continue
 
             if interrupted:
@@ -299,6 +323,16 @@ class ContributorSyncCollector:
             else:
                 if skipped:
                     logger.info("Skipped %d already-processed PRs from checkpoint", skipped)
+                # 先把最后一批日度明细落库，避免画像重建期间长事务继续膨胀
+                try:
+                    await self.db.commit()
+                except Exception as flush_exc:
+                    logger.warning("Final daily flush failed: %s", flush_exc)
+                    try:
+                        await self.db.rollback()
+                    except Exception:
+                        pass
+                processed_since_flush = 0
                 # 全量重建：在同一事务内清空并写入，commit 才一次性生效（原子化）
                 # commit_profiles=False 时，由调用方统一 commit（便于外层原子控制）
                 await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
@@ -815,7 +849,7 @@ class ContributorSyncCollector:
 
             # 校验时间窗口是否一致
             # until 允许 checkpoint 保存了原"至今"结束日期，新的"至今"请求可以续跑；
-            # 但显式修改了结束日期时必须丢弃旧 checkpoint，避免窗口扩大后残留状态。
+            # 只有当前结束日期早于断点（窗口缩小）时才丢弃，避免残留状态。
             cp_since: date = cp.since_date
             cp_until: date | None = cp.until_date
             since_d: date = since.date()
@@ -828,9 +862,9 @@ class ContributorSyncCollector:
                 cdb.delete(cp)
                 await cdb.commit()
                 return None
-            if cp_until is not None and cp_until != until_d:
+            if cp_until is not None and cp_until > until_d:
                 logger.info(
-                    "Checkpoint until mismatch (%s vs current %s), discarding",
+                    "Checkpoint until is ahead of current window (%s vs %s), discarding",
                     cp_until, until_d,
                 )
                 cdb.delete(cp)
@@ -1291,6 +1325,7 @@ async def sync_contributors(
         result = SyncResult(errors=[f"Repo {repo_key}: skipped"])
         try:
             async with GitHubClient(token=token, owner=owner, repo=repo) as github_client:
+                github_client.cancel_check_func = cancel_check_func
                 async with AsyncSessionLocal() as db:
                     async def repo_progress(pct: int, msg: str):
                         if progress_callback:
@@ -1381,17 +1416,20 @@ async def sync_full_task_func(params: dict, tracker) -> dict:
     until_dt = datetime.fromisoformat(until_s) if until_s else None
 
     async def _progress(pct: int, msg: str):
-        await tracker.update_status("running", msg, float(pct))
+        # 用户已取消时不再回写 running/进度，避免把取消状态覆盖回去
         if record_id:
             try:
                 async with _SL() as db:
                     rec = await db.get(_CSR, record_id)
+                    if rec and rec.status == "cancelled":
+                        return
                     if rec:
                         rec.progress_percent = pct
                         rec.progress_message = msg
                         await db.commit()
             except Exception:
                 pass
+        await tracker.update_status("running", msg, float(pct))
 
     async def _cancel_check() -> bool:
         try:

@@ -74,6 +74,8 @@ class GitHubClient:
         self.rate_limit_reset: datetime | None = None
         # 限流等待计数：累计"续等重置窗口"次数，达到 RATE_LIMIT_WAIT_LOOPS 即优雅放弃
         self.rate_wait_loops = 0
+        # 可选取消检查回调：限流等待期间周期性调用，支持用户在长等待中取消任务
+        self.cancel_check_func = None
 
         # 创建 HTTP 客户端
         self.client = httpx.AsyncClient(
@@ -249,7 +251,19 @@ class GitHubClient:
             self.rate_wait_loops + 1, self.RATE_LIMIT_WAIT_LOOPS,
         )
         self.rate_wait_loops += 1
-        await asyncio.sleep(wait_secs)
+        # 分片等待，期间检查取消状态；否则用户在限流窗口内取消后仍要干等数十分钟
+        remaining = wait_secs
+        while remaining > 0:
+            if self.cancel_check_func is not None:
+                try:
+                    if await self.cancel_check_func():
+                        logger.info("Cancelled while waiting for GitHub rate limit reset")
+                        return False
+                except Exception:
+                    pass
+            step = min(5.0, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
 
         # 等待结束：重置配额，允许后续请求
         self.rate_limit_remaining = 5000

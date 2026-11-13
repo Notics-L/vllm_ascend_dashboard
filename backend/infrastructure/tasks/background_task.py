@@ -244,10 +244,14 @@ class BackgroundTaskTracker:
         return task_id
 
     @staticmethod
-    async def cancel(task_id: int) -> bool:
+    async def cancel(task_id: int, hard: bool = True) -> bool:
         """
         取消/终止一个正在运行的后台任务。
-        方法：取消 asyncio.Task + 数据库状态设为 failed + 错误信息记录取消原因。
+
+        Args:
+            task_id: 后台任务 ID
+            hard: True 直接 cancel asyncio.Task（立即中断，可能来不及保存断点）；
+                  False 仅写库标记 cancelled，由任务自身在检查点优雅退出并保存断点。
 
         Returns:
             True 如果成功取消，False 如果任务不存在或已不在运行中
@@ -269,11 +273,14 @@ class BackgroundTaskTracker:
                 logger.warning("cancel: task %d status=%s cannot cancel", task_id, current_status)
                 return False
 
-        # 取消 asyncio task
-        task = _active_tasks.get(task_id)
-        if task and not task.done():
-            task.cancel()
-            logger.info("Cancelled asyncio task %d", task_id)
+        # 取消 asyncio task（hard 模式）；soft 模式由任务自身检测 DB 状态后保存断点退出
+        if hard:
+            task = _active_tasks.get(task_id)
+            if task and not task.done():
+                task.cancel()
+                logger.info("Cancelled asyncio task %d", task_id)
+        else:
+            logger.info("Soft-cancel requested for background task %d", task_id)
 
         # 更新数据库状态
         async with AsyncSessionLocal() as db:

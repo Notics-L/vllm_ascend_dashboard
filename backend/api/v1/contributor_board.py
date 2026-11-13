@@ -450,7 +450,7 @@ async def cancel_sync(
 
     if bg_task_id:
         try:
-            await BackgroundTaskTracker.cancel(bg_task_id)
+            await BackgroundTaskTracker.cancel(bg_task_id, hard=False)
             logger.info("Cancelled background task %d for sync record %d", bg_task_id, record_id)
         except Exception as e:
             logger.warning("Failed to cancel background task %s for sync %d: %s", bg_task_id, record_id, e)

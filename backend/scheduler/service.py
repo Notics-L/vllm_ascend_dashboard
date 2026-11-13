@@ -1858,10 +1858,45 @@ async def start_scheduler_async() -> None:
     from infrastructure.core.github_config import load_github_runtime_config
 
     await load_github_runtime_config()
+    await _recover_stale_scheduled_syncs()
     scheduler = get_scheduler()
     scheduler.start()
     await scheduler.apply_db_config_overrides()
     await scheduler.write_heartbeat()
+
+
+async def _recover_stale_scheduled_syncs() -> None:
+    """回收上一个 scheduler 进程遗留的定时同步记录。
+
+    定时同步的 BackgroundTask 运行在 scheduler 进程内。进程重启后记录会
+    永久停留在 running/pending，触发 ``skip_when_in_progress`` 导致后续
+    定时任务全部被跳过。此处仅回收 scheduled_* 来源的记录，不影响 API
+    进程正在执行的手动同步。
+    """
+    from infrastructure.db.base import SessionLocal as AsyncSessionLocal
+    from sqlalchemy import text as _text
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(_text("""
+                UPDATE contributor_sync_records
+                SET status = 'failed',
+                    error_message = '调度进程重启导致任务中断，请重新触发（已完成进度可通过断点续跑）',
+                    completed_at = NOW()
+                WHERE status IN ('running', 'pending')
+                  AND trigger_source LIKE 'scheduled_%'
+            """))
+            await db.execute(_text("""
+                UPDATE background_task_records
+                SET status = 'cancelled', error_message = '调度进程重启导致任务中断',
+                    completed_at = NOW()
+                WHERE status IN ('running', 'pending')
+                  AND task_type = 'contributor_sync'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(task_params, '$.trigger_source')) LIKE 'scheduled_%'
+            """))
+            await db.commit()
+    except Exception as e:
+        logger.warning("Recover stale scheduled syncs failed (non-fatal): %s", e)
 
 
 async def stop_scheduler_async() -> None:
