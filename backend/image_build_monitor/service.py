@@ -123,7 +123,7 @@ class ImageBuildMonitorService:
                     select(ImageBuildAlert.target_id, func.count(ImageBuildAlert.id))
                     .where(
                         ImageBuildAlert.target_id.in_(target_ids),
-                        ImageBuildAlert.status != "resolved",
+                        ImageBuildAlert.status == "open",
                     )
                     .group_by(ImageBuildAlert.target_id)
                 )
@@ -494,7 +494,7 @@ class ImageBuildMonitorService:
                     await self.db.execute(
                         select(func.count(ImageBuildAlert.id)).where(
                             ImageBuildAlert.target_id == target.id,
-                            ImageBuildAlert.status != "resolved",
+                            ImageBuildAlert.status == "open",
                         )
                     )
                 ).scalar_one()
@@ -519,8 +519,7 @@ class ImageBuildMonitorService:
             "runs_total": run_count,
             "failed_runs": failed_count,
             "alerts_total": len(alert_rows),
-            "open_alerts": by_status.get("open", 0)
-            + by_status.get("acknowledged", 0),
+            "open_alerts": by_status.get("open", 0),
             "by_type": by_type,
             "by_status": by_status,
             "target_health": target_health,
