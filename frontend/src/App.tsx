@@ -13,6 +13,16 @@ import WorkflowActions from './pages/WorkflowActions'
 import JobDetail from './pages/JobDetail'
 import JobRuns from './pages/JobRuns'
 import CIDailyReport from './pages/CIDailyReport'
+import DailyPipelineOverview from './pages/daily-pipeline/overview'
+import DailyPipelineTrigger from './pages/daily-pipeline/trigger'
+import DailyPipelineCollection from './pages/daily-pipeline/collection'
+import DailyPipelineIssueTracking from './pages/daily-pipeline/issue-tracking'
+import IssueProgressPage from './pages/daily-pipeline/issue-tracking/IssueProgressPage'
+import DailyPipelineProcessingProgress from './pages/daily-pipeline/processing-progress'
+import CollectionDetailPage from './pages/daily-pipeline/collection/CollectionDetailPage'
+import DailyPipelineCases from './pages/daily-pipeline/cases'
+import DailyCaseConfig from './pages/daily-pipeline/cases/DailyCaseConfig'
+import DailyCaseEdit from './pages/daily-pipeline/cases/DailyCaseEdit'
 import Admin from './pages/Admin'
 import Models from './pages/Models'
 import ModelDetail from './pages/ModelDetail'
@@ -197,6 +207,20 @@ function App() {
               <Route path="ci" element={<CIBoard />} />
               <Route path="workflow-actions" element={<WorkflowActions />} />
               <Route path="image-build-monitor" element={<ImageBuildMonitor />} />
+              <Route path="daily-pipeline">
+                <Route index element={<Navigate to="overview" replace />} />
+                <Route path="overview" element={<DailyPipelineOverview />} />
+                <Route path="trigger" element={<DailyPipelineTrigger />} />
+                <Route path="collection" element={<DailyPipelineCollection />} />
+                <Route path="issue-tracking" element={<DailyPipelineIssueTracking />} />
+                <Route path="issue-tracking/issues/:issueNumber/progress" element={<IssueProgressPage />} />
+                <Route path="issue-tracking/cases/:failureId/progress" element={<DailyPipelineProcessingProgress />} />
+                <Route path="processing-progress" element={<DailyPipelineProcessingProgress />} />
+                <Route path="collection/runs/:runId" element={<CollectionDetailPage />} />
+                <Route path="cases" element={<DailyPipelineCases />} />
+                <Route path="cases/new" element={<DailyCaseConfig />} />
+                <Route path="cases/:caseId/edit" element={<DailyCaseEdit />} />
+              </Route>
               {/* Project Dashboard */}
               <Route path="project" element={<ProjectBoard />} />
               {/* Contributor Board - super_admin only */}

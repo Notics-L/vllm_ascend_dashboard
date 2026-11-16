@@ -1,0 +1,54 @@
+.daily-table-refresh-layout {
+  padding-bottom: 16px;
+}
+
+.daily-table-refresh-layout > .ant-table-wrapper,
+.daily-cases-pro-table .daily-table-refresh-layout > .ant-table-wrapper {
+  padding-block-end: 0;
+}
+
+.daily-table-refresh-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 16px;
+  min-height: 24px;
+}
+
+.daily-table-pagination-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+
+.daily-table-refresh-button.ant-btn {
+  color: #8c8c8c;
+}
+
+.daily-table-refresh-button.ant-btn:not(:disabled):hover,
+.daily-table-refresh-button.ant-btn:not(:disabled):active {
+  color: #595959;
+}
+
+.daily-table-refresh-layout:has(> .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table-pagination .daily-table-pagination-total) > .daily-table-refresh-action {
+  display: none;
+}
+
+/* Keep all Daily tables aligned with the Daily case table's 6px corners. */
+.daily-table-refresh-layout .ant-table-wrapper .ant-table,
+.daily-table-refresh-layout .ant-table-wrapper .ant-table-container,
+.daily-trigger-preview .ant-table-wrapper .ant-table,
+.daily-trigger-preview .ant-table-wrapper .ant-table-container {
+  border-radius: 6px;
+}
+
+.daily-table-refresh-layout .ant-table-thead > tr:first-child > th:first-child,
+.daily-trigger-preview .ant-table-thead > tr:first-child > th:first-child {
+  border-start-start-radius: 6px;
+}
+
+.daily-table-refresh-layout .ant-table-thead > tr:first-child > th:last-child,
+.daily-trigger-preview .ant-table-thead > tr:first-child > th:last-child {
+  border-start-end-radius: 6px;
+}

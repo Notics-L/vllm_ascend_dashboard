@@ -1,0 +1,38 @@
+.daily-issue-drawer .ant-drawer-title,
+.daily-issue-drawer .ant-drawer-body,
+.daily-issue-drawer .ant-typography,
+.daily-issue-drawer .ant-list {
+  color: #10213a;
+  font-size: 13px;
+}
+
+.daily-issue-drawer .ant-drawer-body {
+  overflow-wrap: anywhere;
+}
+
+.daily-issue-title {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.daily-issue-comments {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.daily-issue-comment {
+  width: 100%;
+  min-width: 0;
+}
+
+.daily-issue-comment-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.daily-issue-comment-meta time {
+  color: #64748b;
+}

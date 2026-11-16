@@ -1,0 +1,54 @@
+.daily-collection-page {
+  width: 100%;
+  min-width: 0;
+}
+
+.daily-collection-table .ant-table,
+.daily-collection-table .ant-tag,
+.daily-collection-table .ant-pagination,
+.daily-collection-table .ant-form-item-label > label,
+.daily-collection-table .ant-select,
+.daily-collection-table .ant-input,
+.daily-collection-table .ant-btn,
+.daily-collection-detail .ant-descriptions-item-label,
+.daily-collection-detail .ant-descriptions-item-content,
+.daily-collection-detail .ant-table,
+.daily-collection-detail .ant-tag,
+.daily-collection-detail .ant-tabs-tab {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-collection-table .ant-table-thead > tr > th,
+.daily-collection-detail .ant-table-thead > tr > th {
+  font-weight: 400;
+}
+
+.daily-collection-link.ant-btn {
+  height: auto;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-collection-history-link {
+  color: #1677ff;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-collection-history-link:hover {
+  color: #4096ff;
+}
+
+.daily-collection-execution-title {
+  margin-top: 16px;
+  color: #10213a;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-collection-run-drawer .ant-drawer-title {
+  font-size: 13px;
+  font-weight: 400;
+}

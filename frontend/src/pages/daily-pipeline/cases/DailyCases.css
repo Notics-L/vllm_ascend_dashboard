@@ -1,0 +1,414 @@
+.daily-cases-pro-table .daily-cases-table .ant-table-thead > tr > th {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.daily-cases-pro-table .daily-cases-table .ant-table-tbody > tr > td {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-cases-pro-table .daily-cases-table .ant-typography,
+.daily-cases-pro-table .daily-cases-table .ant-tag {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 400;
+}
+
+.daily-cases-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.daily-cases-actions .ant-btn {
+  height: 28px;
+  padding-inline: 10px;
+  gap: 4px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  box-shadow: none;
+}
+
+.daily-cases-actions .ant-btn .anticon {
+  font-size: 12px;
+}
+
+.daily-cases-actions .ant-btn-primary:not(:disabled) {
+  background: #1677ff;
+  border-color: #1677ff;
+  box-shadow: none;
+}
+
+.daily-cases-actions .ant-btn-primary:not(:disabled):hover {
+  background: #4096ff;
+  border-color: #4096ff;
+  box-shadow: none;
+  transform: none;
+}
+
+.daily-cases-actions .ant-btn-primary:not(:disabled):active {
+  background: #0958d9;
+  border-color: #0958d9;
+}
+
+.daily-cases-actions .ant-btn-primary:not(:disabled)::after {
+  display: none;
+}
+
+.daily-cases-pro-table .ant-pro-table-search {
+  margin-bottom: 16px;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-form-item-label > label {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-input,
+.daily-cases-pro-table .ant-pro-query-filter .ant-input::placeholder,
+.daily-cases-pro-table .ant-pro-query-filter .ant-select,
+.daily-cases-pro-table .ant-pro-query-filter .ant-select-selector,
+.daily-cases-pro-table .ant-pro-query-filter .ant-select-selection-item,
+.daily-cases-pro-table .ant-pro-query-filter .ant-select-selection-placeholder,
+.daily-cases-pro-table .ant-pro-query-filter .ant-select-selection-search-input,
+.daily-cases-pro-table .ant-pro-query-filter .ant-btn,
+.daily-cases-pro-table .ant-pro-query-filter a {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-btn {
+  font-weight: 400;
+  box-shadow: none;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-btn-primary:not(:disabled) {
+  background: #1677ff;
+  border-color: #1677ff;
+  box-shadow: none;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-btn-primary:not(:disabled):hover {
+  background: #4096ff;
+  border-color: #4096ff;
+  box-shadow: none;
+  transform: none;
+}
+
+.daily-cases-pro-table .ant-pro-query-filter .ant-btn-primary:not(:disabled)::after {
+  display: none;
+}
+
+/* Match the query panel's native ProCard background and 6px corner radius. */
+.daily-cases-pro-table .daily-cases-table .ant-table,
+.daily-cases-pro-table .daily-cases-table .ant-table-container {
+  background: #fff;
+  border-radius: 6px;
+}
+
+/* Let each filter size independently; the action buttons only use the space they need. */
+@media (min-width: 768px) {
+  .daily-cases-pro-table .ant-pro-query-filter-row > .ant-col {
+    flex: 1 1 220px;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .daily-cases-pro-table .ant-pro-query-filter-row > .ant-col:has(.daily-cases-filter-name) {
+    flex-grow: 1.4;
+    flex-basis: 320px;
+  }
+
+  .daily-cases-pro-table .ant-pro-query-filter-row > .ant-col:has(.daily-cases-filter-hardware) {
+    flex-basis: 240px;
+  }
+
+  .daily-cases-pro-table .ant-pro-query-filter-row > .ant-col:has(.daily-cases-filter-tags) {
+    flex-basis: 260px;
+  }
+
+  .daily-cases-pro-table .ant-pro-query-filter-row > .ant-col:has(.daily-cases-filter-status) {
+    flex-basis: 180px;
+  }
+
+  .daily-cases-pro-table .ant-pro-query-filter-row > .daily-cases-filter-actions {
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+  }
+}
+
+.daily-cases-pro-table .daily-cases-table {
+  padding-block-end: 16px;
+}
+
+.daily-cases-pro-table .ant-pagination,
+.daily-cases-pro-table .ant-pagination .ant-pagination-item,
+.daily-cases-pro-table .ant-pagination .ant-pagination-item a,
+.daily-cases-pro-table .ant-pagination .ant-pagination-total-text,
+.daily-cases-pro-table .ant-pagination .ant-select,
+.daily-cases-pro-table .ant-pagination .ant-select-selection-item,
+.daily-cases-pro-table .ant-pagination input {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+
+.daily-case-config-form {
+  max-width: 1200px;
+}
+
+.daily-case-tree-transfer {
+  width: 100%;
+}
+
+.daily-case-tree-transfer .ant-transfer-list {
+  flex: 1;
+  min-width: 0;
+  height: 560px;
+}
+
+.daily-case-tree-transfer .ant-transfer-list-body-customize-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.daily-case-transfer-tree {
+  padding: 8px;
+}
+
+.daily-case-tree-transfer .ant-tree-node-content-wrapper {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.daily-case-tree-transfer .ant-transfer-list-content-item-text {
+  min-width: 0;
+  white-space: normal;
+}
+
+.daily-case-tree-transfer .ant-tag {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .daily-case-tree-transfer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .daily-case-tree-transfer .ant-transfer-list {
+    flex: 0 0 auto;
+    width: 100%;
+    height: 340px;
+  }
+
+  .daily-case-tree-transfer .ant-transfer-operation {
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .daily-case-tree-transfer .ant-transfer-operation .anticon {
+    transform: rotate(90deg);
+  }
+}
+
+.daily-case-config-form .ant-form-item-label > label {
+  color: #10213a;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-config-form .ant-form-item-extra {
+  color: #334155;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.daily-case-tree-transfer .ant-transfer-list,
+.daily-case-tree-transfer .ant-tree {
+  color: #10213a;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.daily-case-tree-transfer .ant-transfer-list-header-title,
+.daily-case-tree-transfer .ant-transfer-list-header-selected,
+.daily-case-tree-transfer .ant-transfer-list-search .ant-input {
+  color: #10213a;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.daily-case-tree-transfer .ant-transfer-list-content-item-disabled,
+.daily-case-tree-transfer .ant-tree-treenode-disabled .ant-tree-node-content-wrapper {
+  color: #475569;
+}
+
+.daily-case-cron-input {
+  max-width: 480px;
+}
+
+.daily-case-tree-transfer .daily-case-transfer-name {
+  color: #10213a;
+}
+
+
+.daily-case-tree-transfer .daily-case-change-group {
+  color: #10213a;
+  font-weight: 600;
+}
+
+.daily-case-tree-transfer .daily-case-change-group-added {
+  color: #237804;
+}
+
+.daily-case-tree-transfer .daily-case-change-group-removed {
+  color: #cf1322;
+}
+
+.daily-case-tree-transfer .ant-tree-title {
+  display: block;
+  min-width: 0;
+}
+
+.daily-case-leaf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.daily-case-leaf .daily-case-transfer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-case-transfer-tags {
+  flex: 0 1 auto;
+  max-width: 42%;
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-case-transfer-tags .ant-tag {
+  display: inline-block;
+  max-width: 72px;
+  margin-inline-end: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.daily-case-tree-transfer .daily-case-transfer-status {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.daily-case-tree-transfer .ant-transfer-list-search .ant-input,
+.daily-case-tree-transfer .ant-transfer-list-search .ant-input::placeholder {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-config-form.daily-case-edit-form {
+  max-width: 720px;
+}
+
+.daily-case-edit-form .ant-tag,
+.daily-case-edit-form .ant-select-selection-item {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-edit-form .daily-case-readonly-value {
+  display: block;
+  padding-block: 5px;
+  color: #10213a;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.daily-case-edit-form .daily-case-edit-tags {
+  width: 320px;
+  max-width: 100%;
+}
+
+.daily-case-edit-form .daily-case-edit-status,
+.daily-cases-table .daily-case-table-status {
+  min-width: 28px;
+}
+
+.daily-case-edit-form .daily-case-edit-status.ant-switch-checked,
+.daily-cases-table .daily-case-table-status.ant-switch-checked {
+  background: #52c41a;
+}
+
+.daily-case-edit-form .daily-case-edit-status.ant-switch-checked:not(.ant-switch-disabled):hover,
+.daily-cases-table .daily-case-table-status.ant-switch-checked:not(.ant-switch-disabled):hover {
+  background: #73d13d;
+}
+
+.ant-tag.daily-case-business-tag {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-config-form .daily-execution-time-select {
+  width: 100%;
+  max-width: 600px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-config-form .daily-execution-time-select .ant-select-selection-item {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-case-config-form .daily-case-time-select {
+  width: 320px;
+  max-width: 100%;
+}
+
+.daily-case-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
