@@ -464,7 +464,19 @@ export default function ImageBuildMonitor() {
     {
       title: '状态',
       dataIndex: 'enabled',
-      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '监控中' : '已停用'}</Tag>,
+      render: (v: boolean, r) => (
+        <Tooltip
+          title={
+            r.last_check_error
+              ? `最近检测异常：${r.last_check_error}`
+              : `最近成功：${fmtTime(r.last_check_success_at)}`
+          }
+        >
+          <Tag color={r.last_check_error ? 'orange' : v ? 'green' : 'default'}>
+            {r.last_check_error ? '检测异常' : v ? '监控中' : '已停用'}
+          </Tag>
+        </Tooltip>
+      ),
     },
     {
       title: '操作',
@@ -602,6 +614,12 @@ export default function ImageBuildMonitor() {
           <Text type="secondary" style={{ fontSize: 13 }}>
             监控定时镜像构建的失败、未触发与长时间卡住，并邮件通知责任人
           </Text>
+          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+            最近检测成功：{fmtTime(overview?.monitor_health?.last_success_at)}
+            {overview?.monitor_health?.last_checked_at
+              ? ` · 最近检测：${fmtTime(overview.monitor_health.last_checked_at)}`
+              : ''}
+          </div>
         </div>
         <Space>
           <Select
@@ -631,6 +649,16 @@ export default function ImageBuildMonitor() {
           </Button>
         </Space>
       </div>
+
+      {(overview?.monitor_health?.targets_with_error ?? 0) > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`${overview?.monitor_health?.targets_with_error} 个监控目标最近检测异常`}
+          description="请查看目标列表并检查 GitHub Token、网络或 SMTP 配置；检测任务本身仍会继续运行。"
+        />
+      )}
 
       {githubStatusQuery.data && !githubStatusQuery.data.ok && (
         <Alert

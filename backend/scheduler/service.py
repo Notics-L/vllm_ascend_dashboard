@@ -1825,10 +1825,13 @@ class DataSyncScheduler:
             try:
                 from image_build_monitor.service import ImageBuildMonitorService
 
-                result = await ImageBuildMonitorService(db).evaluate_all()
+                result = await ImageBuildMonitorService(db).evaluate_all(
+                    sync_remote=getattr(settings, 'IMAGE_BUILD_MONITOR_SYNC_REMOTE', True)
+                )
                 logger.info(
-                    "Image build monitor checked %s targets: created=%s notified=%s resolved=%s",
+                    "Image build monitor checked %s targets: synced=%s created=%s notified=%s resolved=%s",
                     result.get("targets"),
+                    result.get("synced_runs"),
                     result.get("created"),
                     result.get("notified"),
                     result.get("resolved"),

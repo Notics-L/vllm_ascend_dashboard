@@ -23,6 +23,22 @@ async def _table_exists(db, table: str) -> bool:
     return int(result.scalar_one()) > 0
 
 
+async def _column_exists(db, table: str, column: str) -> bool:
+    result = await db.execute(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = :table
+              AND COLUMN_NAME = :column
+            """
+        ),
+        {"table": table, "column": column},
+    )
+    return int(result.scalar_one()) > 0
+
+
 async def run() -> dict[str, int]:
     created: dict[str, int] = {}
     async with SessionLocal() as db:
@@ -43,6 +59,8 @@ async def run() -> dict[str, int]:
                     stuck_threshold_minutes INT NOT NULL DEFAULT 180,
                     cooldown_minutes INT NOT NULL DEFAULT 60,
                     last_checked_at DATETIME DEFAULT NULL,
+                    last_check_success_at DATETIME DEFAULT NULL,
+                    last_check_error TEXT DEFAULT NULL,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     UNIQUE KEY uq_image_build_monitor_workflow (release_workflow_id),
@@ -90,6 +108,20 @@ async def run() -> dict[str, int]:
             """))
             created["image_build_alerts"] = 1
             logger.info("Created image_build_alerts")
+
+        if await _table_exists(db, "image_build_monitor_targets"):
+            for column, ddl in (
+                ("last_check_success_at", "DATETIME DEFAULT NULL"),
+                ("last_check_error", "TEXT DEFAULT NULL"),
+            ):
+                if not await _column_exists(db, "image_build_monitor_targets", column):
+                    await db.execute(
+                        text(
+                            f"ALTER TABLE image_build_monitor_targets ADD COLUMN {column} {ddl}"
+                        )
+                    )
+                    created[f"image_build_monitor_targets.{column}"] = 1
+                    logger.info("Added image_build_monitor_targets.%s", column)
 
         if created:
             await db.commit()

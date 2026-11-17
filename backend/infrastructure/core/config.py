@@ -156,6 +156,7 @@ class Settings(BaseSettings):
     # 镜像构建监控与通知
     IMAGE_BUILD_MONITOR_ENABLED: bool = True
     IMAGE_BUILD_MONITOR_INTERVAL_MINUTES: int = 10
+    IMAGE_BUILD_MONITOR_SYNC_REMOTE: bool = True
 
     # 每日运行报告邮件推送配置（调度相关）
     REPORT_ENABLED: bool = True
