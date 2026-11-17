@@ -81,6 +81,7 @@ export interface MonitorOverview {
   failed_runs: number
   alerts_total: number
   open_alerts: number
+  unresolved_alerts: number
   by_type: Record<string, number>
   by_status: Record<string, number>
   monitor_health: {

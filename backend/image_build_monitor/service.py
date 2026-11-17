@@ -123,7 +123,7 @@ class ImageBuildMonitorService:
                     select(ImageBuildAlert.target_id, func.count(ImageBuildAlert.id))
                     .where(
                         ImageBuildAlert.target_id.in_(target_ids),
-                        ImageBuildAlert.status == "open",
+                        ImageBuildAlert.status != "resolved",
                     )
                     .group_by(ImageBuildAlert.target_id)
                 )
@@ -266,7 +266,10 @@ class ImageBuildMonitorService:
     ) -> dict[str, Any]:
         conditions = []
         if status:
-            conditions.append(ImageBuildAlert.status == status)
+            if status == "unresolved":
+                conditions.append(ImageBuildAlert.status != "resolved")
+            else:
+                conditions.append(ImageBuildAlert.status == status)
         if alert_type:
             conditions.append(ImageBuildAlert.alert_type == alert_type)
         if release_workflow_id:
@@ -492,6 +495,15 @@ class ImageBuildMonitorService:
                 )
             ).scalar_one()
         )
+        total_unresolved = int(
+            (
+                await self.db.execute(
+                    select(func.count(ImageBuildAlert.id)).where(
+                        ImageBuildAlert.status != "resolved"
+                    )
+                )
+            ).scalar_one()
+        )
 
         target_health = []
         for target, wf in targets:
@@ -508,7 +520,7 @@ class ImageBuildMonitorService:
                     await self.db.execute(
                         select(func.count(ImageBuildAlert.id)).where(
                             ImageBuildAlert.target_id == target.id,
-                            ImageBuildAlert.status == "open",
+                            ImageBuildAlert.status != "resolved",
                         )
                     )
                 ).scalar_one()
@@ -534,6 +546,7 @@ class ImageBuildMonitorService:
             "failed_runs": failed_count,
             "alerts_total": len(alert_rows),
             "open_alerts": total_open,
+            "unresolved_alerts": total_unresolved,
             "by_type": by_type,
             "by_status": by_status,
             "monitor_health": {
