@@ -1065,6 +1065,7 @@ function RankingTab({ loading: _, selectedRepo }: { loading: boolean; selectedRe
                     { label: '近 90 天', value: 90 },
                     { label: '近 180 天', value: 180 },
                     { label: '近 365 天', value: 365 },
+                    { label: '全部时间', value: 3650 },
                   ]}
                 />
             <Divider type="vertical" />

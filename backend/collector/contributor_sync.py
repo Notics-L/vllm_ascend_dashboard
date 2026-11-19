@@ -76,6 +76,22 @@ def _is_doc_file(filename: str) -> bool:
     return ext in _DOC_EXT
 
 
+def _min_dt(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
+
+
+def _max_dt(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
 def _empty_profile() -> dict[str, Any]:
     """新建一个空的贡献者画像聚合桶。"""
     return {
@@ -148,6 +164,7 @@ class ContributorSyncCollector:
         since: datetime | None = None,
         until: datetime | None = None,
         commit_profiles: bool = True,
+        full_resync: bool = True,
     ) -> SyncResult:
         start_time = datetime.now(UTC)
         result = SyncResult()
@@ -335,9 +352,12 @@ class ContributorSyncCollector:
                 processed_since_flush = 0
                 # 全量重建：在同一事务内清空并写入，commit 才一次性生效（原子化）
                 # commit_profiles=False 时，由调用方统一 commit（便于外层原子控制）
-                await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
-                # 清理本次同步窗口之外 / 已消失的日度明细，保证 daily 表与本次 PR 集一致
-                await self._cleanup_stale_daily()
+                if full_resync:
+                    await self._rebuild_profiles(profiles, result, commit_on_success=commit_profiles)
+                    # 仅全量同步才清理窗口外的历史日度明细
+                    await self._cleanup_stale_daily()
+                else:
+                    await self._merge_profiles(profiles, result, commit_on_success=commit_profiles)
                 # 同步完成：清除断点
                 await self._clear_checkpoint()
 
@@ -1155,6 +1175,135 @@ class ContributorSyncCollector:
             created, self.repo_name, commit_on_success,
         )
 
+    async def _merge_profiles(
+        self,
+        profiles: dict[str, dict[str, Any]],
+        result: SyncResult,
+        *,
+        commit_on_success: bool = True,
+    ) -> None:
+        if not profiles:
+            logger.warning(
+                "_merge_profiles: 0 profiles for %s, skipping to preserve existing data",
+                self.repo_name,
+            )
+            result.contributors_synced = 0
+            return
+
+        now = datetime.now(UTC)
+        active_cutoff = (now - timedelta(days=90)).date()
+
+        existing_rows = (
+            await self.db.execute(
+                select(ContributorProfile).where(
+                    ContributorProfile.repo_name == self.repo_name
+                )
+            )
+        ).scalars().all()
+        existing_map = {row.login: row for row in existing_rows}
+
+        contributor_cache: dict[str, Contributor | None] = {}
+        affected = 0
+        for login, prof in profiles.items():
+            email = prof.pop("_email", "") or ""
+            new_active = sum(1 for d in prof["active_days"] if d >= active_cutoff)
+
+            row = existing_map.get(login)
+            if row is None:
+                row = ContributorProfile(repo_name=self.repo_name, login=login)
+                self.db.add(row)
+                first_seen = prof["first_seen"]
+                last_seen = prof["last_seen"]
+                commit_count = prof["commits"]
+                code_files = prof["code_files"]
+                doc_files = prof["doc_files"]
+                pr_merged = prof["pr_merged"]
+                pr_open = prof["pr_open"]
+                pr_closed = prof["pr_closed"]
+                review_count = prof["review_count"]
+                approval_count = prof["approval_count"]
+                active_days_90 = new_active
+            else:
+                first_seen = _min_dt(row.first_seen, prof["first_seen"])
+                last_seen = _max_dt(row.last_seen, prof["last_seen"])
+                commit_count = (row.commit_count or 0) + prof["commits"]
+                code_files = (row.code_files or 0) + prof["code_files"]
+                doc_files = (row.doc_files or 0) + prof["doc_files"]
+                pr_merged = (row.pr_merged or 0) + prof["pr_merged"]
+                pr_open = (row.pr_open or 0) + prof["pr_open"]
+                pr_closed = (row.pr_closed or 0) + prof["pr_closed"]
+                review_count = (row.review_count or 0) + prof["review_count"]
+                approval_count = (row.approval_count or 0) + prof["approval_count"]
+                active_days_90 = min(90, (row.active_days_90 or 0) + new_active)
+
+            span_days = 0
+            if first_seen and last_seen:
+                span_days = (last_seen - first_seen).days
+
+            pr_total = pr_merged + pr_open + pr_closed
+            review_ratio = round(review_count / max(1, review_count + pr_total), 4)
+            metrics = {
+                "commit_count": commit_count,
+                "code_files": code_files,
+                "doc_files": doc_files,
+                "pr_merged": pr_merged,
+                "pr_open": pr_open,
+                "pr_closed": pr_closed,
+                "active_days_90": active_days_90,
+                "span_days": span_days,
+                "review_count": review_count,
+                "approval_count": approval_count,
+            }
+            score = calculate_score(metrics)
+            tier = assign_tier(score, active_days_90)
+            role = infer_role(metrics)
+
+            if login not in contributor_cache:
+                contributor_cache[login] = await self._upsert_contributor(
+                    login,
+                    {"id": prof.get("_github_id"), "name": prof.get("_name"),
+                     "avatar_url": prof.get("_avatar_url")},
+                    email,
+                )
+            contributor = contributor_cache[login]
+
+            roles = detect_roles(
+                merged_pr_count=pr_merged,
+                review_count=review_count,
+                approval_count=approval_count,
+                merge_count=pr_merged,
+                code_additions=code_files,
+            )
+            if contributor and contributor.role_types != roles:
+                contributor.role_types = roles
+
+            row.contributor_id = contributor.id if contributor else None
+            row.commit_count = commit_count
+            row.code_files = code_files
+            row.doc_files = doc_files
+            row.pr_merged = pr_merged
+            row.pr_open = pr_open
+            row.pr_closed = pr_closed
+            row.active_days_90 = active_days_90
+            row.span_days = span_days
+            row.review_count = review_count
+            row.approval_count = approval_count
+            row.review_ratio = review_ratio
+            row.total_score = score
+            row.tier = tier
+            row.role = role
+            row.first_seen = first_seen
+            row.last_seen = last_seen
+            affected += 1
+
+        if commit_on_success:
+            await self.db.commit()
+        result.contributors_synced = affected
+        logger.info(
+            "Merged contributor_profiles: %d rows for %s (commit=%s)",
+            affected, self.repo_name, commit_on_success,
+        )
+
     # ── 私有方法：Build Plan（保留）────────────────────────────────
 
     @staticmethod
@@ -1289,6 +1438,7 @@ async def sync_contributors(
     repo_name: str | None = None,
     progress_callback=None,
     cancel_check_func=None,
+    full_resync: bool = False,
 ) -> SyncResult:
     """执行贡献者数据同步的主入口（多仓库，并行）。"""
     import asyncio
@@ -1337,7 +1487,10 @@ async def sync_contributors(
                         cancel_check_func=cancel_check_func,
                     )
                     # collect 不再自己提交，由外层统一 commit，实现 Build Plan + 画像原子化
-                    result = await collector.collect(since=since_date, until=until_date, commit_profiles=False)
+                    result = await collector.collect(
+                        since=since_date, until=until_date,
+                        commit_profiles=False, full_resync=full_resync,
+                    )
                     if result.total_prs_scanned == 0:
                         # 0 PR：可能是 token 失效 / 网络异常 / 日期范围无 PR，
                         # 此时 rebuild 已被内部跳过，不应 commit（保留旧数据）
@@ -1411,6 +1564,7 @@ async def sync_full_task_func(params: dict, tracker) -> dict:
     since_s = params.get("since_date")
     until_s = params.get("until_date")
     repo_name = params.get("repo_name")
+    full_resync = params.get("sync_type") == "full"
 
     since_dt = datetime.fromisoformat(since_s) if since_s else None
     until_dt = datetime.fromisoformat(until_s) if until_s else None
@@ -1453,6 +1607,7 @@ async def sync_full_task_func(params: dict, tracker) -> dict:
             since_date=since_dt, until_date=until_dt,
             repo_name=repo_name, progress_callback=_progress,
             cancel_check_func=_cancel_check,
+            full_resync=full_resync,
         )
     except Exception as e:
         logger.error("sync_full_task_func failed: %s", e, exc_info=True)
