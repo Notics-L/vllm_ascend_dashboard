@@ -1,25 +1,27 @@
+import type { DailyNotificationConsumptionResult, DailyNotificationConsumptionStatus } from '../types/dailyPipeline'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getDailyOverview, closeDailyIssues, deleteDailyIssues, addDailyCasesFromNightly, deleteDailyCases, deleteDailyTriggerHistory, deleteDailyCollectionRuns, getDailyCases, getDailySchedule, getDailyCollectionRuns, getDailyCollectionDetail, getDailyFailedCases, getDailyFailedCase, getDailyIssueDetail, getDailyIssues, recollectDailyRun, getDailyTriggerConfig, getDailyTriggerHistory, getDailyTriggerHistoryDetail, previewDailySchedule, getNightlyCases, saveDailyTriggerConfig, testDailyTriggerConnection, saveDailySchedule, saveDailyCaseSelection, updateDailyCase, updateDailyCaseStatuses } from '../services/dailyPipeline'
+import { shareDailyVersionFlow, updateDailyVersionFlow } from '../services/dailyPipeline'
+import { getDailyFailureNotificationConfig, saveDailyFailureNotificationConfig, getDailyNotificationRecipients, saveDailyNotificationRecipient, deleteDailyNotificationRecipient, getDailyNotificationRecords, retryDailyProcessing, manuallyCompleteDailyNode, getDailyOverview, closeDailyIssues, deleteDailyIssues, addDailyCasesFromNightly, deleteDailyCases, deleteDailyTriggerHistory, deleteDailyCollectionRuns, getDailyCases, getDailySchedule, getDailyCollectionRuns, getDailyCollectionDetail, getDailyFailedCases, getDailyFailedCase, getDailyIssueDetail, getDailyIssues, recollectDailyRun, getDailyTriggerConfig, getDailyTriggerHistory, getDailyTriggerHistoryDetail, previewDailySchedule, saveDailyTriggerConfig, testDailyTriggerConnection, triggerDailyPipeline, saveDailySchedule, saveDailyCaseSelection, updateDailyCase, updateDailyCaseStatuses } from '../services/dailyPipeline'
 
 const DAILY_CASES_QUERY_KEY = ['daily-pipeline', 'cases']
-const NIGHTLY_CASES_QUERY_KEY = ['daily-pipeline', 'nightly-cases']
 
-export const useDailyCases = () => useQuery({
-  queryKey: DAILY_CASES_QUERY_KEY,
-  queryFn: getDailyCases,
-})
+type DailyListQueryOptions = { enabled?: boolean; staleTime?: number }
 
-export const useNightlyCases = () => useQuery({
-  queryKey: NIGHTLY_CASES_QUERY_KEY,
-  queryFn: getNightlyCases,
+export const useDailyCases = (
+  isDaily = true,
+  options?: DailyListQueryOptions,
+) => useQuery({
+  queryKey: [...DAILY_CASES_QUERY_KEY, isDaily],
+  queryFn: () => getDailyCases(isDaily),
+  retry: false,
+  ...options,
 })
 
 export const useDailyCaseMutations = () => {
   const queryClient = useQueryClient()
   const refreshCases = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: DAILY_CASES_QUERY_KEY }),
-    queryClient.invalidateQueries({ queryKey: NIGHTLY_CASES_QUERY_KEY }),
     queryClient.invalidateQueries({ queryKey: ['daily-pipeline', 'overview'] }),
   ])
 
@@ -37,7 +39,8 @@ const DAILY_SCHEDULE_QUERY_KEY = ['daily-pipeline', 'schedule']
 export const useDailySchedule = () => useQuery({
   queryKey: DAILY_SCHEDULE_QUERY_KEY,
   queryFn: getDailySchedule,
-  refetchInterval: 60_000,
+  retry: false,
+  refetchOnReconnect: false,
 })
 
 export const useSaveDailySchedule = () => {
@@ -53,9 +56,11 @@ export const useSaveDailySchedule = () => {
 
 const DAILY_TRIGGER_CONFIG_QUERY_KEY = ['daily-pipeline', 'trigger-config']
 
-export const useDailyTriggerConfig = () => useQuery({
+export const useDailyTriggerConfig = (active: boolean) => useQuery({
   queryKey: DAILY_TRIGGER_CONFIG_QUERY_KEY,
   queryFn: getDailyTriggerConfig,
+  enabled: active,
+  staleTime: 0,
 })
 
 export const useSaveDailyTriggerConfig = () => {
@@ -76,9 +81,17 @@ export const useTestDailyTriggerConnection = () => useMutation({
   mutationFn: testDailyTriggerConnection,
 })
 
+export const useTriggerDailyPipeline = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: triggerDailyPipeline,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['daily-pipeline', 'trigger-history'] }),
+  })
+}
+
 const CRON_PREVIEW_DELAY_MS = 200
 
-export const useDailySchedulePreview = (cron: string | undefined) => {
+export const useDailySchedulePreview = (cron: string | undefined, active: boolean) => {
   const normalized = cron?.trim().replace(/\s+/g, ' ') ?? ''
   const [debouncedCron, setDebouncedCron] = useState('')
   useEffect(() => {
@@ -88,7 +101,8 @@ export const useDailySchedulePreview = (cron: string | undefined) => {
   return useQuery({
     queryKey: ['daily-pipeline', 'schedule-preview', normalized],
     queryFn: ({ signal }) => previewDailySchedule(normalized, signal),
-    enabled: Boolean(normalized) && normalized === debouncedCron,
+    enabled: active && Boolean(normalized) && normalized === debouncedCron,
+    staleTime: 0,
     retry: false,
     refetchInterval: 60_000,
   })
@@ -97,12 +111,15 @@ export const useDailySchedulePreview = (cron: string | undefined) => {
 export const useDailyTriggerHistory = (page: number, pageSize: number, enabled: boolean) => useQuery({
   queryKey: ['daily-pipeline', 'trigger-history', page, pageSize],
   queryFn: () => getDailyTriggerHistory(page, pageSize),
+  retry: false,
   enabled,
+  staleTime: 0,
 })
 
 export const useDailyTriggerHistoryDetail = (id: string) => useQuery({
   queryKey: ['daily-pipeline', 'trigger-history-detail', id],
   queryFn: () => getDailyTriggerHistoryDetail(id),
+  retry: false,
 })
 
 export const useDeleteDailyTriggerHistory = () => {
@@ -115,11 +132,14 @@ export const useDeleteDailyTriggerHistory = () => {
 
 export const useDailyCollectionRuns = () => useQuery({
   queryKey: ['daily-pipeline', 'collection-runs'], queryFn: getDailyCollectionRuns,
+  staleTime: 0,
+  retry: false,
 })
 
 export const useDailyCollectionDetail = (id: string | null) => useQuery({
   queryKey: ['daily-pipeline', 'collection-detail', id],
   queryFn: () => getDailyCollectionDetail(id!), enabled: Boolean(id),
+  retry: false,
 })
 
 export const useRecollectDailyRun = () => {
@@ -149,9 +169,11 @@ export const useDeleteDailyCollectionRuns = () => {
   })
 }
 
-export const useDailyFailedCases = () => useQuery({
+export const useDailyFailedCases = (options?: DailyListQueryOptions) => useQuery({
   queryKey: ['daily-pipeline', 'failed-cases'],
   queryFn: getDailyFailedCases,
+  retry: false,
+  ...options,
 })
 
 export const useDailyIssueDetail = (number: number, enabled: boolean) => useQuery({
@@ -160,9 +182,11 @@ export const useDailyIssueDetail = (number: number, enabled: boolean) => useQuer
   enabled,
 })
 
-export const useDailyIssues = () => useQuery({
+export const useDailyIssues = (options?: DailyListQueryOptions) => useQuery({
   queryKey: ['daily-pipeline', 'issues'],
   queryFn: getDailyIssues,
+  retry: false,
+  ...options,
 })
 
 export const useDailyFailedCase = (id: string | undefined) => useQuery({
@@ -182,8 +206,93 @@ export const useDailyIssueMutations = () => {
   }
 }
 
+export const useDailyVersionFlowMutations = () => {
+  const client = useQueryClient()
+  const refresh = () => Promise.all([
+    'failed-cases', 'failed-case-detail', 'issues', 'cases', 'overview', 'notification-records',
+  ].map((key) => client.invalidateQueries({ queryKey: ['daily-pipeline', key] })))
+  return {
+    share: useMutation({ mutationFn: shareDailyVersionFlow, onSuccess: refresh }),
+    update: useMutation({ mutationFn: updateDailyVersionFlow, onSuccess: refresh }),
+  }
+}
+
 export const useDailyOverview = (days: 7 | 14) => useQuery({
   queryKey: ['daily-pipeline', 'overview', days],
   queryFn: () => getDailyOverview(days),
+  placeholderData: (previous) => previous,
+})
+
+
+export const useManuallyCompleteDailyNode = () => {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: manuallyCompleteDailyNode,
+    onSuccess: () => Promise.all([
+      'failed-cases', 'failed-case-detail', 'cases', 'issues', 'overview',
+    ].map((key) => client.invalidateQueries({ queryKey: ['daily-pipeline', key] }))),
+    onError: () => client.invalidateQueries({ queryKey: ['daily-pipeline', 'failed-case-detail'] }),
+  })
+}
+
+
+export const useRetryDailyProcessing = () => {
+  const client = useQueryClient()
+  return useMutation({ mutationFn: retryDailyProcessing, onSettled: () => Promise.all([
+    'failed-cases', 'failed-case-detail', 'overview',
+  ].map((key) => client.invalidateQueries({ queryKey: ['daily-pipeline', key] }))) })
+}
+
+
+export const useDailyNotificationRecipients = () => useQuery({
+  queryKey: ['daily-pipeline', 'notification-recipients'], queryFn: getDailyNotificationRecipients, retry: false,
+})
+
+export const useDailyNotificationRecipientMutations = () => {
+  const client = useQueryClient()
+  const refresh = () => Promise.all([
+    'notification-recipients', 'failed-case-detail', 'failed-cases',
+  ].map((key) => client.invalidateQueries({ queryKey: ['daily-pipeline', key] })))
+  return {
+    save: useMutation({ mutationFn: saveDailyNotificationRecipient, onSuccess: refresh }),
+    remove: useMutation({ mutationFn: deleteDailyNotificationRecipient, onSuccess: refresh }),
+  }
+}
+
+
+const FAILURE_NOTIFICATION_CONFIG_QUERY_KEY = ['daily-pipeline', 'failure-notification-config']
+
+export const useDailyFailureNotificationConfig = (active: boolean) => useQuery({
+  queryKey: FAILURE_NOTIFICATION_CONFIG_QUERY_KEY,
+  queryFn: getDailyFailureNotificationConfig,
+  enabled: active,
+  staleTime: 0,
+  retry: false,
+})
+
+export const useSaveDailyFailureNotificationConfig = () => {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: saveDailyFailureNotificationConfig,
+    onSuccess: (config) => {
+      client.setQueryData(FAILURE_NOTIFICATION_CONFIG_QUERY_KEY, config)
+      return Promise.all(['notification-records', 'failed-cases', 'failed-case-detail'].map((key) =>
+        client.invalidateQueries({ queryKey: ['daily-pipeline', key] })))
+    },
+  })
+}
+
+export const useDailyNotificationRecords = (
+  page: number,
+  pageSize: number,
+  result: DailyNotificationConsumptionResult | undefined,
+  status: DailyNotificationConsumptionStatus | undefined,
+  active: boolean,
+) => useQuery({
+  queryKey: ['daily-pipeline', 'notification-records', page, pageSize, result, status],
+  queryFn: () => getDailyNotificationRecords(page, pageSize, result, status),
+  enabled: active,
+  staleTime: 0,
+  retry: false,
   placeholderData: (previous) => previous,
 })

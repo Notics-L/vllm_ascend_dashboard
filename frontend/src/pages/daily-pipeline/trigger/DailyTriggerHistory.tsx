@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Alert, Button, Drawer, Table, Tag, message } from 'antd'
+import { Button, Drawer, Table, Tag, message } from 'antd'
 import { ProTable } from '@ant-design/pro-components'
 import type { ProColumns } from '@ant-design/pro-components'
+import { useDailyQueryError } from '../shared/useDailyQueryError'
 import { dailyTableRefresh } from '../shared/dailyTableRefresh'
+import { useDailyTabOpening } from '../shared/useDailyTabOpening'
 import { DeleteOutlined } from '@ant-design/icons'
 import { isAxiosError } from 'axios'
 import { useDeleteDailyTriggerHistory, useDailyTriggerHistory } from '../../../hooks/useDailyPipeline'
@@ -15,7 +17,7 @@ const timeFormat = new Intl.DateTimeFormat('sv-SE', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
 })
 const formatTime = (value: string) => timeFormat.format(new Date(value))
-const resultColors = { 触发成功: 'green', 触发失败: 'red', 触发中: 'processing' }
+const resultColors = { 触发成功: 'green', 触发失败: 'red' }
 
 const columns: ProColumns<DailyTriggerHistoryItem>[] = [
   { title: '触发时间', dataIndex: 'triggeredAt', width: 175, render: (_, row) => formatTime(row.triggeredAt) },
@@ -34,7 +36,12 @@ function DailyTriggerHistory({ open, focusId, onClose }: DailyTriggerHistoryProp
   const [pageSize, setPageSize] = useState(5)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const deleteHistory = useDeleteDailyTriggerHistory()
-  const { data, isLoading, isFetching, isError, refetch } = useDailyTriggerHistory(page, pageSize, open && !focusId)
+  const showHistory = open && !focusId
+  const history = useDailyTriggerHistory(page, pageSize, showHistory)
+  const opening = useDailyTabOpening(showHistory)
+  useDailyQueryError(history, '触发历史加载失败', showHistory)
+  const { data, isFetching, isError, refetch } = history
+  const loading = showHistory && (opening || isFetching || deleteHistory.isPending)
   const handleDelete = async () => {
     try {
       const result = await deleteHistory.mutateAsync(selectedIds)
@@ -61,20 +68,18 @@ function DailyTriggerHistory({ open, focusId, onClose }: DailyTriggerHistoryProp
       <Button
         danger
         icon={<DeleteOutlined />}
-        disabled={!selectedIds.length || isFetching || isError}
+        disabled={!selectedIds.length || loading || isError}
         loading={deleteHistory.isPending}
         onClick={() => void handleDelete()}
       >删除</Button>
     </div>
-    {isError ? <Alert type="error" showIcon message="触发历史加载失败" action={
-      <Button size="small" loading={isFetching} onClick={() => void refetch()}>重试</Button>
-    } /> : <ProTable<DailyTriggerHistoryItem>
+    <ProTable<DailyTriggerHistoryItem>
       search={false}
       headerTitle={false}
       toolBarRender={false}
       cardProps={false}
       tableAlertRender={false}
-      {...dailyTableRefresh(refetch, isFetching || deleteHistory.isPending, {
+      {...dailyTableRefresh(refetch, loading, {
         current: page, pageSize, total: data?.total ?? 0, showSizeChanger: false,
         onChange: (current, size) => { setPage(current); setPageSize(size) },
       })}
@@ -82,7 +87,6 @@ function DailyTriggerHistory({ open, focusId, onClose }: DailyTriggerHistoryProp
       size="small"
       columns={[Table.SELECTION_COLUMN, Table.EXPAND_COLUMN, ...columns]}
       dataSource={data?.items ?? []}
-      loading={isLoading || isFetching || deleteHistory.isPending}
       rowSelection={{
         selectedRowKeys: selectedIds,
         onChange: (keys) => setSelectedIds(keys.map(String)),
@@ -96,7 +100,7 @@ function DailyTriggerHistory({ open, focusId, onClose }: DailyTriggerHistoryProp
         expandedRowRender: (record) => <TriggerHistoryDetail id={record.id} />,
         columnTitle: '日志',
       }}
-    />}
+    />
     </>}
   </Drawer>
 }

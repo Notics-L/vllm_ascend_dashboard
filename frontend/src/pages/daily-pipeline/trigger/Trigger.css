@@ -1,3 +1,18 @@
+.daily-trigger-settings {
+  position: relative;
+}
+
+.daily-trigger-settings-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / 76%);
+  border-radius: 6px;
+  cursor: progress;
+}
+
 .daily-trigger-form .ant-input,
 .daily-trigger-form .ant-input-password {
   width: 320px;
@@ -10,13 +25,15 @@
   width: 100%;
 }
 
-.daily-trigger-actions .daily-trigger-refresh.ant-btn:not(:disabled) {
+.daily-trigger-actions .daily-trigger-refresh.ant-btn:not(:disabled),
+.daily-notification-actions .daily-trigger-refresh.ant-btn:not(:disabled) {
   color: #1677ff;
   border-color: #1677ff;
   background: #fff;
 }
 
-.daily-trigger-actions .daily-trigger-refresh.ant-btn:not(:disabled):hover {
+.daily-trigger-actions .daily-trigger-refresh.ant-btn:not(:disabled):hover,
+.daily-notification-actions .daily-trigger-refresh.ant-btn:not(:disabled):hover {
   color: #4096ff;
   border-color: #4096ff;
 }
@@ -47,11 +64,6 @@
   white-space: nowrap;
 }
 
-.daily-trigger-form .daily-trigger-cron-info {
-  color: #1677ff;
-  cursor: help;
-}
-
 .daily-trigger-form .daily-trigger-cron-control {
   display: flex;
   align-items: center;
@@ -67,6 +79,8 @@
 
 .daily-trigger-form .daily-trigger-cron-info {
   flex: none;
+  color: #1677ff;
+  cursor: help;
 }
 
 .daily-trigger-preview {
@@ -98,6 +112,10 @@
   margin-top: 24px;
 }
 
+
+.daily-trigger-manual-action {
+  margin-bottom: 12px;
+}
 
 .daily-trigger-history-entry {
   margin-bottom: 16px;

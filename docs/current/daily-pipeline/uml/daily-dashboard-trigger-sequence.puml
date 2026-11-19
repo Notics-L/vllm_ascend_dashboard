@@ -1,0 +1,44 @@
+@startuml
+title 看板：用例配置与定时触发
+autonumber
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+actor 用户 as User
+boundary 看板页面 as UI
+control Daily用例管理模块 as Cases
+control 触发与调度模块 as Trigger
+database 看板数据库 as DB
+participant "社区 Daily 主流水线\nschedule_daily_test.yaml" as Daily
+participant "run-all-tests\nUT + PR E2E" as AllTests
+participant "Nightly 子工作流\nDaily 冒烟子集" as Nightly
+
+User -> UI : 选择 Nightly 用例，维护标签、启用状态
+UI -> Cases : 保存 Daily 用例配置
+Cases -> DB : 保存选中用例及状态
+DB --> Cases : 保存成功
+Cases --> UI : 返回最新配置
+
+User -> UI : 配置 GitHub Token、Cron
+UI -> Trigger : 保存统一触发配置
+Trigger -> DB : 保存触发配置
+DB --> Trigger : 保存成功
+Trigger --> UI : 返回 Cron 对应的时间点
+note over UI,Cases : Daily 配置及编辑页的执行时间来自统一 Cron；当前单独修改入口禁用。
+
+... Cron 到期 ...
+Trigger -> DB : 读取 Token、Cron、Daily 用例配置和处理标记
+DB --> Trigger : 触发配置、选中用例、启用状态、处理标记
+Trigger -> Trigger : 筛选本轮可调度用例
+Trigger -> Trigger : 按硬件生成 daily_test_cases
+Trigger -> DB : 记录触发事件和本轮用例快照
+Trigger -> Daily : workflow_dispatch(daily_test_cases)
+Daily --> Trigger : 触发请求已受理
+Trigger -> DB : 更新触发日志
+
+par UT 与 PR E2E 路径
+  Daily -> AllTests : 按主流程选择结果执行 main、release 两套版本
+else Daily 冒烟路径
+  Daily -> Nightly : 按启用用例分发各硬件的 Daily 子集
+end
+note over Trigger,Nightly : 测试执行结果由后续采集取得；请求受理不表示测试完成。
+@enduml

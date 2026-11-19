@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Alert, Button, Modal, message } from 'antd'
+import { Button, Modal, message } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
 import { isAxiosError } from 'axios'
 import { ProTable } from '@ant-design/pro-components'
@@ -13,10 +13,15 @@ import CollectionIssueLink from './CollectionIssueLink'
 import DailyTriggerHistory from '../trigger/DailyTriggerHistory'
 import { executionResult, formatCollectionTime } from './collectionDisplay'
 import { dailyTableRefresh } from '../shared/dailyTableRefresh'
+import { useDailyQueryError } from '../shared/useDailyQueryError'
+import { useDailyTabOpening } from '../shared/useDailyTabOpening'
 import './Collection.css'
 
 function DailyPipelineCollection() {
   const runs = useDailyCollectionRuns()
+  const opening = useDailyTabOpening(true)
+  const loading = opening || runs.isFetching
+  useDailyQueryError(runs, '采集记录加载失败')
   const [historyId, setHistoryId] = useState<string | null>(null)
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([])
   const [currentPage, setCurrentPage] = useState(1)
@@ -24,7 +29,7 @@ function DailyPipelineCollection() {
   const [modal, contextHolder] = Modal.useModal()
   const handleDelete = () => {
     const runIds = [...selectedRunIds]
-    if (!runIds.length || deleteRuns.isPending) return
+    if (!runIds.length || loading || deleteRuns.isPending) return
     modal.confirm({
       title: `删除选中的 ${runIds.length} 条采集记录？`,
       okText: '删除',
@@ -60,12 +65,11 @@ function DailyPipelineCollection() {
   return <DailyCasePage title="流水线采集">
     {contextHolder}
     <div className="daily-collection-page">
-      {runs.isError ? <Alert type="error" showIcon message="采集记录加载失败" action={<Button size="small" onClick={() => void runs.refetch()}>重试</Button>} /> :
-        <ProTable<DailyCollectionRun> className="daily-collection-table" size="small" rowKey="runId" columns={columns}
-          dataSource={runs.data ?? []} loading={runs.isLoading || runs.isFetching || deleteRuns.isPending}
+      <ProTable<DailyCollectionRun> className="daily-collection-table" size="small" rowKey="runId" columns={columns}
+          dataSource={runs.data ?? []}
           cardProps={false}
-          headerTitle={<div className="daily-cases-actions"><Button danger size="small" icon={<DeleteOutlined />} onClick={handleDelete} disabled={!selectedRunIds.length || runs.isFetching || deleteRuns.isPending} loading={deleteRuns.isPending}>删除</Button></div>}
-          {...dailyTableRefresh(runs.refetch, runs.isFetching || deleteRuns.isPending, { current: currentPage, onChange: setCurrentPage, defaultPageSize: 5, pageSizeOptions: ['5', '10', '20'], showSizeChanger: true })}
+          headerTitle={<div className="daily-cases-actions"><Button danger size="small" icon={<DeleteOutlined />} onClick={handleDelete} disabled={!selectedRunIds.length || deleteRuns.isPending} loading={deleteRuns.isPending}>删除</Button></div>}
+          {...dailyTableRefresh(runs.refetch, loading || deleteRuns.isPending, { current: currentPage, onChange: setCurrentPage, defaultPageSize: 5, pageSizeOptions: ['5', '10', '20'], showSizeChanger: true })}
           tableAlertRender={false}
           rowSelection={{
             columnWidth: 48,
@@ -75,7 +79,7 @@ function DailyPipelineCollection() {
             getCheckboxProps: () => ({ disabled: deleteRuns.isPending }),
           }}
           search={false} scroll={{ x: 1123 }}
-           />}
+           />
     </div>
     <DailyTriggerHistory open={Boolean(historyId)} focusId={historyId} onClose={() => setHistoryId(null)} />
   </DailyCasePage>

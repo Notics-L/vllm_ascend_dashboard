@@ -1,0 +1,39 @@
+@startuml
+title 第一部分：Daily 主流水线与增量 Issue 更新交互
+autonumber
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+participant "Daily 主流水线" as D
+participant "测试路径 A" as A
+participant "测试路径 B" as B
+participant "Issue 更新 workflow" as W
+participant "vLLM Ascend 社区 Issue" as G
+
+note over D,B : 复用现有调用结构，传递统一的本轮唯一标识；A/B 为路径示意。
+D -> A : 调度（本轮标识）
+D -> B : 调度（同一本轮标识）
+note over A,B : 测试路径并行执行用例
+par 测试路径 A
+  loop 每出现一个失败用例
+    A ->> W : workflow_dispatch（本轮标识、失败信息）
+  end
+else 测试路径 B
+  loop 每出现一个失败用例
+    B ->> W : workflow_dispatch（本轮标识、失败信息）
+  end
+end
+note over W : 同一本轮标识的更新任务串行执行
+loop 每个更新任务
+  W -> G : 按本轮标识查找 Issue
+  alt Issue 不存在
+    G --> W : 未找到
+    W -> G : 创建 Issue，写入本轮标识和首条失败
+  else Issue 已存在
+    G --> W : 返回 Issue 及正文
+    W -> G : 合并新增失败信息，更新正文
+  end
+  G --> W : 操作结果
+end
+note over D,G : 全部成功时，不触发更新 workflow，不创建 Issue。
+note over D,G : 不增加独立的结束汇总动作。
+@enduml

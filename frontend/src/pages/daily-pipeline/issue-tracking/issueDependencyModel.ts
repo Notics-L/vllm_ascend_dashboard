@@ -16,10 +16,10 @@ export type IssueDependencyNode = Node<IssueDependencyData, 'dependency'>
 export const ISSUE_CASE_SPACING = 76
 const ISSUE_HEIGHT = 180
 const CASE_HEIGHT = 64
-const progressColors = { 已解决: '#389e0d', 未解决: '#cf1322', 处理中: '#1677ff', 待处理: '#8c8c8c' }
+const progressColors = { 已结束: '#8c8c8c', 已解决: '#389e0d', 未解决: '#cf1322', 处理中: '#1677ff', 待处理: '#8c8c8c' }
 
 export function buildIssueDependencyGraph(issue: DailyIssueItem, records: DailyFailedCase[]): { nodes: IssueDependencyNode[]; edges: Edge[] } {
-  const failures = [...new Map(records.filter((row) => row.runId === issue.runId).map((row) => [row.id, row])).values()]
+  const failures = [...new Map(records.filter((row) => row.runId === issue.runId).slice().reverse().map((row) => [JSON.stringify([row.name, row.hardware, row.group, row.vllmVersion]), row])).values()]
   const centerY = Math.max(0, failures.length - 1) * ISSUE_CASE_SPACING / 2 + CASE_HEIGHT / 2
   const nodes: IssueDependencyNode[] = [{
     id: 'issue', type: 'dependency', position: { x: failures.length ? 420 : 0, y: centerY - ISSUE_HEIGHT / 2 },

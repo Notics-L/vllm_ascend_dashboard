@@ -1,3 +1,4 @@
+import { ExportOutlined } from '@ant-design/icons'
 import { Alert, Button, Drawer, List, Spin, Typography } from 'antd'
 import { useDailyIssueDetail } from '../../../hooks/useDailyPipeline'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
@@ -13,12 +14,15 @@ interface DailyIssueDrawerProps {
 function DailyIssueDrawer({ number, open, onClose }: DailyIssueDrawerProps) {
   const { data, isLoading, isFetching, isError, refetch } = useDailyIssueDetail(number, open)
   return <Drawer rootClassName="daily-issue-drawer" title={data ? `#${data.number}-${data.state === 'open' ? 'open' : 'close'}` : `#${number}`}
+    extra={data && <Typography.Link href={data.url} target="_blank" rel="noopener noreferrer" className="daily-issue-external-link">
+      <ExportOutlined /> GitHub Issue
+    </Typography.Link>}
     placement="right" width={760} styles={{ wrapper: { maxWidth: '100vw' } }} open={open} onClose={onClose} destroyOnHidden>
     {isLoading ? <Spin size="small" /> : isError ? <Alert type="error" showIcon message="Issue 加载失败" action={
       <Button size="small" loading={isFetching} onClick={() => void refetch()}>重试</Button>
     } /> : data && <>
-      <Typography.Text className="daily-issue-title">{data.title}</Typography.Text>
-      <MarkdownRenderer content={data.body} />
+      <Typography.Title level={4} className="daily-issue-title">{data.title}</Typography.Title>
+      <section className="daily-issue-body"><MarkdownRenderer content={data.body} skipHtml /></section>
       <div className="daily-issue-comments">
         <Typography.Text>评论（{data.comments.length}）</Typography.Text>
         <List dataSource={data.comments} renderItem={(comment) => <List.Item key={comment.id}>
@@ -27,7 +31,7 @@ function DailyIssueDrawer({ number, open, onClose }: DailyIssueDrawerProps) {
               <span>{comment.author}</span>
               <time dateTime={comment.createdAt}>{formatCollectionTime(comment.createdAt)}</time>
             </div>
-            <MarkdownRenderer content={comment.body} />
+            <div className="daily-issue-comment-body"><MarkdownRenderer content={comment.body} skipHtml /></div>
           </article>
         </List.Item>} />
       </div>

@@ -1,8 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { Alert, Button, Descriptions, Space, Tabs, Tag, Typography, theme } from 'antd'
+import { Descriptions, Space, Tabs, Tag, Typography, theme } from 'antd'
 import { ProTable } from '@ant-design/pro-components'
 import type { ProColumns } from '@ant-design/pro-components'
-import { useDailyCases } from '../../../hooks/useDailyPipeline'
 import type { DailyCase } from '../../../types/dailyPipeline'
 import DailyCaseTag from '../cases/DailyCaseTag'
 
@@ -38,7 +37,7 @@ function measurePanelContent(content: HTMLElement, width: number) {
   }
 }
 
-function DailyTriggerPreview() {
+function DailyTriggerPreview({ cases }: { cases: DailyCase[] }) {
   const { token } = theme.useToken()
   const tabsRef = useRef<HTMLDivElement>(null)
   const dailyRef = useRef<HTMLDivElement>(null)
@@ -71,7 +70,6 @@ function DailyTriggerPreview() {
     }
   }, [])
   const panelStyle = { minHeight: panelHeight || undefined, background: token.colorBgContainer, borderRadius: token.borderRadiusLG }
-  const { data: cases = [], isLoading, isFetching, isError, refetch } = useDailyCases()
   const enabledCases = cases.filter((item) => item.status === '启用')
   return (
     <section className="daily-trigger-preview" aria-label="流水线触发内容预览">
@@ -83,9 +81,7 @@ function DailyTriggerPreview() {
           forceRender: true,
           style: panelStyle,
           label: 'Daily 用例',
-          children: <div ref={dailyRef}>{isError ? <Alert type="error" showIcon message="Daily 用例加载失败" action={
-            <Button size="small" loading={isFetching} onClick={() => void refetch()}>重试</Button>
-          } /> : <ProTable<DailyCase>
+          children: <div ref={dailyRef}><ProTable<DailyCase>
               search={false}
               headerTitle={false}
               cardProps={false}
@@ -95,10 +91,9 @@ function DailyTriggerPreview() {
               rowKey="id"
               columns={columns}
               dataSource={enabledCases}
-              loading={isLoading || isFetching}
               pagination={{ pageSize: 5, hideOnSinglePage: true, showSizeChanger: false }}
               scroll={{ x: 740 }}
-            />}</div>,
+            /></div>,
         },
         {
           key: 'e2e',

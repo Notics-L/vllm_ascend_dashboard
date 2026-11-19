@@ -3,12 +3,14 @@ import remarkGfm from 'remark-gfm'
 
 interface MarkdownRendererProps {
   content: string
+  skipHtml?: boolean
   maxHeight?: number
   style?: React.CSSProperties
 }
 
 const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
+  skipHtml = false,
   maxHeight,
   style,
 }) => {
@@ -21,6 +23,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        skipHtml={skipHtml}
         components={{
           h1: ({ node: _node, ...props }) => <h1 style={{ fontSize: 20, fontWeight: 700, margin: '16px 0 8px' }} {...props} />,
           h2: ({ node: _node, ...props }) => <h2 style={{ fontSize: 18, fontWeight: 700, margin: '14px 0 8px', borderBottom: '1px solid #f0f0f0', paddingBottom: 6 }} {...props} />,

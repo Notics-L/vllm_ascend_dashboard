@@ -1,0 +1,38 @@
+@startuml
+title 第一部分：首个失败创建 Issue，后续失败增量更新
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+start
+:Daily 调度，确定本轮唯一标识;
+:调度现有测试路径，传递同一本轮标识;
+fork
+  :各测试路径并行执行用例;
+  while (仍有用例结果产生？) is (是)
+    :单个用例结果产生;
+    if (是否失败？) then (是)
+      :测试 Step 通过 workflow_dispatch 上报\n本轮标识和失败信息;
+      note right
+        异步触发后继续执行测试，
+        不等待 Issue 更新结束。
+      end note
+    else (否)
+      :不触发 Issue 更新;
+    endif
+  endwhile (否)
+fork again
+  while (收到本轮失败更新请求？) is (是)
+    :按本轮标识串行获得更新执行资格;
+    :查找本轮 Issue;
+    if (Issue 已存在？) then (否)
+      :创建本轮 Issue，写入首条失败信息;
+    else (是)
+      :读取正文，合并新增失败并写回;
+    endif
+  endwhile (本轮更新请求处理完毕)
+end fork
+stop
+note right
+  本图不增加独立的结束汇总或关闭步骤。
+  全部成功时不触发更新、不创建 Issue。
+end note
+@enduml

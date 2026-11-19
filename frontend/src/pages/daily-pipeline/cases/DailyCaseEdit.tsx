@@ -9,6 +9,7 @@ import DailyCasePage from './DailyCasePage'
 function DailyCaseEdit() {
   const { caseId } = useParams<{ caseId: string }>()
   const navigate = useNavigate()
+  const [form] = Form.useForm<DailyCaseUpdate>()
   const { data: cases = [], isLoading, isFetching, isError, refetch } = useDailyCases()
   const { updateCase } = useDailyCaseMutations()
   const record = cases.find((item) => item.id === caseId)
@@ -19,7 +20,10 @@ function DailyCaseEdit() {
   const handleSave = async (values: DailyCaseUpdate) => {
     if (!record) return
     try {
-      await updateCase.mutateAsync({ id: record.id, values: { tags: values.tags || [], status: values.status } })
+      await updateCase.mutateAsync({ id: record.id, values: {
+        tags: values.tags || [],
+        ...(form.isFieldTouched('status') ? { status: values.status } : {}),
+      } })
       message.success('用例已更新')
       returnToCases()
     } catch (error) {
@@ -39,6 +43,7 @@ function DailyCaseEdit() {
         <Result status="404" title="用例不存在" subTitle="该用例可能已被移出 Daily 清单。" />
       ) : (
         <Form<DailyCaseUpdate>
+          form={form}
           key={record.id}
           className="daily-case-config-form daily-case-edit-form"
           layout="horizontal"

@@ -1,0 +1,16 @@
+/* Keep both panels measured at the same width so the card does not jump on a tab change. */
+.daily-stable-tabs > .ant-tabs-content-holder > .ant-tabs-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.daily-stable-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.daily-stable-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane[aria-hidden="true"] {
+  display: block !important;
+  visibility: hidden;
+  pointer-events: none;
+}

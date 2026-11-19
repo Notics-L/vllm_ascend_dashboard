@@ -1,0 +1,25 @@
+.daily-notification-recipients {
+  width: 900px;
+  max-width: 100%;
+  margin-top: 24px;
+  color: #10213a;
+  font-size: 13px;
+}
+
+.daily-notification-recipients .ant-table,
+.daily-notification-recipients .ant-pagination,
+.daily-notification-recipients .ant-btn {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.daily-notification-recipients .ant-table-body {
+  height: 280px;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+
+.daily-notification-recipients .ant-table-thead > tr > th,
+.daily-notification-recipients .ant-table-tbody > tr > td {
+  font-weight: 400;
+}

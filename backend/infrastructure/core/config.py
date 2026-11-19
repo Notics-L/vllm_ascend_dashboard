@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     GITHUB_OWNER: str = "vllm-project"
     GITHUB_REPO: str = "vllm-ascend"
 
+    # Daily 模块独立调度服务的内部控制地址。
+    DAILY_PIPELINE_SCHEDULER_URL: str = "http://daily-catalog:9001"
+
     # 数据库配置
     DATABASE_URL: str = "mysql+aiomysql://dashboard:dashboard123@localhost:3306/vllm_dashboard"
     DB_POOL_SIZE: int = 5

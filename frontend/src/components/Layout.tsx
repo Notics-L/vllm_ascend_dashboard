@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
@@ -66,8 +67,8 @@ const primaryNavigation: NavigationItem[] = [
         label: 'Daily流水线',
         children: [
           { key: '/daily-pipeline/overview', label: '概览' },
+          { key: '/daily-pipeline/configuration', label: '配置' },
           { key: '/daily-pipeline/cases', label: 'daily用例' },
-          { key: '/daily-pipeline/trigger', label: '流水线触发' },
           { key: '/daily-pipeline/collection', label: '流水线采集' },
           { key: '/daily-pipeline/issue-tracking', label: '问题跟踪' },
         ],
@@ -124,7 +125,7 @@ const routeMeta = [
   { prefix: '/image-build-monitor', title: '镜像构建监控', section: '研发交付' },
   { prefix: '/daily-pipeline/overview', title: 'Daily流水线 · 概览', section: '研发交付' },
   { prefix: '/daily-pipeline/cases', title: 'Daily流水线 · daily用例', section: '研发交付' },
-  { prefix: '/daily-pipeline/trigger', title: 'Daily流水线 · 流水线触发', section: '研发交付' },
+  { prefix: '/daily-pipeline/configuration', title: 'Daily流水线 · 配置', section: '研发交付' },
   { prefix: '/daily-pipeline/collection', title: 'Daily流水线 · 流水线采集', section: '研发交付' },
   { prefix: '/daily-pipeline/issue-tracking', title: 'Daily流水线 · 问题跟踪', section: '研发交付' },
   { prefix: '/daily-pipeline/processing-progress', title: 'Daily流水线 · 处理进展', section: '研发交付' },
@@ -150,11 +151,20 @@ function getSelectedNavigation(pathname: string) {
   return match?.prefix || pathname
 }
 
+// Refetch only the active data queries for a reselected Daily submenu.
+const dailyMenuQueries: Record<string, readonly string[]> = {
+  '/daily-pipeline/configuration': ['trigger-config', 'cases', 'schedule-preview', 'failure-notification-config', 'notification-records'],
+  '/daily-pipeline/cases': ['cases'],
+  '/daily-pipeline/collection': ['collection-runs'],
+  '/daily-pipeline/issue-tracking': ['failed-cases', 'issues'],
+}
+
 function Layout() {
   const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('navigation_collapsed') === 'true')
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const location = useLocation()
   const { data: currentUser } = useCurrentUser()
   const hasAdminRole = currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
@@ -224,8 +234,15 @@ function Layout() {
   }
 
   const handleNavigate: MenuProps['onClick'] = ({ key }) => {
-    navigate(key)
     setMobileMenuOpen(false)
+    const queryNames = dailyMenuQueries[key]
+    if (queryNames && key === location.pathname.replace(/\/+$/, '')) {
+      for (const name of queryNames) {
+        void queryClient.refetchQueries({ queryKey: ['daily-pipeline', name], type: 'active' })
+      }
+      return
+    }
+    navigate(key)
   }
 
   return (
@@ -323,7 +340,7 @@ function Layout() {
 
         <Content
           id="main-content"
-          className={['/daily-pipeline/overview', '/daily-pipeline/cases', '/daily-pipeline/trigger', '/daily-pipeline/collection', '/daily-pipeline/issue-tracking', '/daily-pipeline/processing-progress']
+          className={['/daily-pipeline/overview', '/daily-pipeline/cases', '/daily-pipeline/configuration', '/daily-pipeline/collection', '/daily-pipeline/issue-tracking', '/daily-pipeline/processing-progress']
             .includes(location.pathname.replace(/\/+$/, '')) || location.pathname.startsWith('/daily-pipeline/cases/') || location.pathname.startsWith('/daily-pipeline/collection/runs/') || location.pathname.startsWith('/daily-pipeline/issue-tracking/')
             ? 'app-content app-content-wide'
             : 'app-content'}

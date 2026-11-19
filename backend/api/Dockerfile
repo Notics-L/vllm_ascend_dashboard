@@ -62,6 +62,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install lizard for code complexity analysis
 # Copy application code
 COPY backend/api/ ./api/
+COPY backend/daily_pipeline/ ./daily_pipeline/
 COPY backend/scheduler/ ./scheduler/
 COPY backend/collector/ ./collector/
 COPY backend/infrastructure/ ./infrastructure/

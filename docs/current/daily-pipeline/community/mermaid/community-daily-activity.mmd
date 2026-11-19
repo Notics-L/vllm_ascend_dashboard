@@ -1,0 +1,13 @@
+flowchart TD
+    Start["Daily 调度<br/>生成本轮唯一标识"] --> Run["两条子流水线并行执行用例"]
+    Run --> Result["单个用例结果产生"]
+    Result --> Failed{"是否失败？"}
+
+    Failed -->|否| Continue["继续执行剩余用例"]
+    Failed -->|是| Dispatch["触发 Issue 更新 workflow<br/>传入本轮标识和失败信息"]
+    Dispatch --> Continue
+
+    Dispatch --> Queue["按本轮标识进行并发控制<br/>串行处理更新请求"]
+    Queue --> Exists{"本轮 Issue 是否已存在？"}
+    Exists -->|否| Create["创建本轮 Issue<br/>写入首条失败信息"]
+    Exists -->|是| Update["增量更新失败信息"]

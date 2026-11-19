@@ -25,7 +25,7 @@ it('connects all failures from the associated run directly to the issue without 
 })
 
 it('preserves each case state and keeps the actual issue state independent', () => {
-  const graph = buildIssueDependencyGraph(issue, [failure, { ...failure, id: 'failed', processingProgress: '未解决' }])
+  const graph = buildIssueDependencyGraph(issue, [failure, { ...failure, id: 'failed', name: 'Other', processingProgress: '未解决' }])
   expect(graph.nodes.find((node) => node.id === 'case:failed')?.data.status).toBe('未解决')
   expect(graph.nodes[0].data.status).toBe('open')
   expect(graph.nodes[0].data.resolvedCount).toBe(1)
@@ -43,4 +43,12 @@ it('does not invent a Run ID when the issue has no association', () => {
   const graph = buildIssueDependencyGraph({ ...issue, runId: null }, [failure])
   expect(graph.nodes).toHaveLength(1)
   expect(graph.edges).toEqual([])
+})
+
+
+it('shows latest failure per case in an Issue while preserving actual Issue state', () => {
+  const latest = { ...failure, id: 'latest', processingProgress: '处理中' as const }
+  const graph = buildIssueDependencyGraph(issue, [latest, failure])
+  expect(graph.nodes.map((node) => node.id)).toEqual(['issue', 'case:latest'])
+  expect(graph.nodes[0].data.status).toBe('open')
 })

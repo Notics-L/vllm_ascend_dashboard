@@ -1,0 +1,11 @@
+{
+  "baseline_date": "2026-11-13",
+  "scope": "第二部分：Daily 看板系统",
+  "files": {
+    "uml/daily-dashboard-components.puml": "099377c88bdd18e981a2391ff32fada5a020c0a61f55cea15fee9867ba774006",
+    "uml/daily-dashboard-trigger-sequence.puml": "27a46ac16c6fe119d7dc1c1f813854271a686930b567e875299c1cb27032c1fb",
+    "uml/daily-dashboard-collection-sequence.puml": "c8beb6f12162372e746b88eef56e7bff94efc5212e137ff9126f3f74bb078c87",
+    "uml/daily-dashboard-processing-sequence.puml": "bdbcf18165cd30f02baffded558603f7cebaabc5877bd395311c2642283c55bf",
+    "uml/daily-dashboard-tracking-sequence.puml": "01a6e69d9e791f2f01e47c343d758c5cde368149a6b6f68dc7a43d614f1bed3a"
+  }
+}

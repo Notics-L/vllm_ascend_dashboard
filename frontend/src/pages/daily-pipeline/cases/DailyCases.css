@@ -152,7 +152,14 @@
 }
 
 .daily-cases-pro-table .daily-cases-table {
+  --daily-case-body-height: clamp(240px, calc(100dvh - 350px), 520px);
   padding-block-end: 16px;
+}
+
+.daily-cases-pro-table .daily-cases-table .ant-table-body {
+  height: var(--daily-case-body-height);
+  overflow-y: auto !important;
+  scrollbar-gutter: stable;
 }
 
 .daily-cases-pro-table .ant-pagination,
@@ -167,6 +174,10 @@
   font-weight: 400;
 }
 
+
+.daily-case-config-loading.ant-spin-nested-loading > div > .ant-spin {
+  max-height: none;
+}
 
 .daily-case-config-form {
   max-width: 1200px;

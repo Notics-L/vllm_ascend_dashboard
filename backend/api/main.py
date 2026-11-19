@@ -32,6 +32,7 @@ from api.v1 import (
     commit_analysis,
     contributor_board,
     contributor_scoring,
+    daily_pipeline,
     daily_report,
     daily_summary,
     image_build_monitor,
@@ -55,6 +56,7 @@ from api.v1 import (
     workflow_actions,
     workflows,
 )
+from daily_pipeline.logging import setup_daily_file_logging
 from infrastructure.core.config import settings
 from infrastructure.core.logging import setup_db_logging
 from infrastructure.db.base import engine
@@ -373,6 +375,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Failed to load shared runtime configuration: %s", exc)
 
+    try:
+        setup_daily_file_logging(settings.DATA_DIR, component="api")
+    except OSError:
+        logger.exception("Could not initialize Daily pipeline log files")
+
     # 安装 DB 日志处理器，将应用日志持久化到数据库
     # 放在 init_db 之后：确保 app_logs 表已创建，worker 首次 flush 即可成功
     # 事件循环安全：worker 的阻塞 queue.get 已通过 run_in_executor 移出事件循环
@@ -479,6 +486,7 @@ def create_app() -> FastAPI:
         tags=["镜像构建监控"],
     )
     app.include_router(commit_analysis.router, prefix="/api/v1/commit-analysis", tags=["Commit 分析"])
+    app.include_router(daily_pipeline.router, prefix="/api/v1")
     app.include_router(daily_summary.router, prefix="/api/v1", tags=["每日总结"])
     app.include_router(models.router, prefix="/api/v1/models", tags=["模型管理"])
     app.include_router(model_sync_configs.router, prefix="/api/v1/model-sync-configs", tags=["模型同步配置"])

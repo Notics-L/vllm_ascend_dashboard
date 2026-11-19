@@ -12,16 +12,20 @@ export interface FailedCaseFilters {
   processingResult?: string[]
 }
 
+export function failedCaseDisplayName({ name, hardware, vllmVersion }: DailyFailedCase): string {
+  return hardware.toUpperCase() === 'CPU' && vllmVersion ? name + ' (' + vllmVersion + ')' : name
+}
+
 export const failedCaseIssueValue = (row: DailyFailedCase) => row.issue ? `#${row.issue.number}-${row.issue.state === 'open' ? 'open' : 'close'}` : '—'
 
-export const failedCaseProcessingResult = (row: DailyFailedCase): '成功' | '失败' | '执行中' => row.processingProgress === '已解决' ? '成功' : row.processingProgress === '未解决' ? '失败' : '执行中'
+export const failedCaseProcessingResult = (row: DailyFailedCase): '成功' | '失败' | '执行中' | '已结束' => row.processingProgress === '已结束' ? '已结束' : row.processingProgress === '已解决' ? '成功' : row.processingProgress === '未解决' ? '失败' : '执行中'
 
 export function filterFailedCases(data: DailyFailedCase[], filters: FailedCaseFilters): DailyFailedCase[] {
   const name = filters.name?.trim().toLowerCase()
   const runId = filters.runId?.trim()
   return data.filter((row) => {
     const collectedAt = row.collectedAt ? Date.parse(row.collectedAt) : NaN
-    return (!name || row.name.toLowerCase().includes(name)) &&
+    return (!name || failedCaseDisplayName(row).toLowerCase().includes(name)) &&
       (!runId || String(row.runId).includes(runId)) &&
       (!filters.hardware?.length || filters.hardware.includes(row.hardware)) &&
       (!filters.group?.length || filters.group.includes(row.group)) &&

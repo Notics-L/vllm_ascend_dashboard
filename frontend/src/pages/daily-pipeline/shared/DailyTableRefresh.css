@@ -1,5 +1,22 @@
 .daily-table-refresh-layout {
+  position: relative;
   padding-bottom: 16px;
+}
+
+.daily-table-loading-mask,
+.daily-page-loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / 76%);
+  border-radius: 6px;
+  cursor: progress;
+}
+
+.daily-table-refresh-layout[aria-busy="true"] .ant-table-wrapper > .ant-spin-nested-loading > div > .ant-spin {
+  visibility: hidden;
 }
 
 .daily-table-refresh-layout > .ant-table-wrapper,

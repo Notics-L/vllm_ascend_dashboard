@@ -7,14 +7,14 @@ import type { DailyCollectionRun } from '../../../types/dailyPipeline'
 
 const running: DailyCollectionRun = {
   id: 'current', runId: 101, startedAt: '2026-11-12T04:00:00Z', endedAt: null,
-  triggerHistoryId: 'trigger-1', issue: null, lastCollectedAt: null, status: '采集中',
-  result: '执行中', collectedCases: 0, expectedCases: 1, failedCases: 0,
+  triggerHistoryId: 'trigger-1', issue: null, lastCollectedAt: null,
+  result: '执行中',
 }
 const fixtures: DailyCollectionRun[] = [
   running,
   { ...running, id: 'previous', runId: 102, triggerHistoryId: 'trigger-2',
-    endedAt: '2026-11-12T04:28:42Z', result: '失败', status: '已完成',
-    collectedCases: 1, failedCases: 1, issue: { number: 12, state: 'open' } },
+    endedAt: '2026-11-12T04:28:42Z', result: '失败',
+    issue: { number: 12, state: 'open' } },
 ]
 
 it('shows Run ID in record cells and keeps it as the internal row key', () => {

@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Alert, Button, ConfigProvider, Modal, Space, Switch, Tag, Tooltip, Typography, message, theme } from 'antd'
+import { Link, useNavigate } from 'react-router-dom'
+import { Button, ConfigProvider, Modal, Space, Switch, Tag, Tooltip, Typography, message, theme } from 'antd'
 import { CheckCircleOutlined, DeleteOutlined, EditOutlined, SettingOutlined, StopOutlined } from '@ant-design/icons'
 import { isAxiosError } from 'axios'
+import { useDailyQueryError } from '../shared/useDailyQueryError'
+import { useDailyTabOpening } from '../shared/useDailyTabOpening'
 import { ProTable } from '@ant-design/pro-components'
 import type { ProColumns } from '@ant-design/pro-components'
 import type { SelectProps } from 'antd'
@@ -94,10 +96,11 @@ function getDailyCaseColumns(cases: DailyCase[], statusControls: DailyCaseStatus
       dataIndex: 'status',
       key: 'status',
       formItemProps: { className: 'daily-cases-filter-status' },
-      width: 120,
+      width: 170,
       valueType: 'select',
       fieldProps: { mode: 'multiple', options: optionsFor('status'), placeholder: '全部状态', allowClear: true, style: { width: '100%' } },
       render: (_, record) => (
+        <Space size={6}>
         <Switch
           className="daily-case-table-status"
           checked={record.status === '启用'}
@@ -107,7 +110,25 @@ function getDailyCaseColumns(cases: DailyCase[], statusControls: DailyCaseStatus
           onChange={(checked) => statusControls.onChange(record, checked)}
           aria-label={`${record.name}的启用状态`}
         />
+        {record.autoDisabled && <Tooltip title="可手动启用；新的失败将再次禁用">
+          {record.processingFailureId ? <Link to={'/daily-pipeline/issue-tracking/cases/' + record.processingFailureId + '/progress'}><Tag color="orange" style={{ cursor: 'pointer', marginInlineEnd: 0 }}>故障禁用</Tag></Link> : <Tag color="orange">故障禁用</Tag>}
+        </Tooltip>}
+        </Space>
       ),
+    },
+    {
+      title: '成功次数',
+      dataIndex: 'successCount',
+      width: 100,
+      search: false,
+      render: (_, record) => record.successCount ?? 0,
+    },
+    {
+      title: '失败次数',
+      dataIndex: 'failureCount',
+      width: 100,
+      search: false,
+      render: (_, record) => record.failureCount ?? 0,
     },
     {
       title: '执行时间',
@@ -137,7 +158,10 @@ function getMutationError(error: unknown, fallback: string) {
 
 function DailyPipelineCases() {
   const navigate = useNavigate()
-  const { data: cases = [], isLoading, isFetching, isError, refetch } = useDailyCases()
+  const casesQuery = useDailyCases(true, { staleTime: 0 })
+  const opening = useDailyTabOpening(true)
+  useDailyQueryError(casesQuery, 'Daily 用例加载失败')
+  const { data: cases = [], isFetching, refetch } = casesQuery
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null)
   const [filters, setFilters] = useState<DailyCaseFilters>({})
@@ -190,8 +214,7 @@ function DailyPipelineCases() {
   const handleDelete = () => {
     const ids = [...selectedRowKeys]
     modal.confirm({
-      title: `删除选中的 ${ids.length} 条用例？`,
-      content: '确认后将从当前用例清单中移除。',
+      title: '确定删除吗？',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -200,7 +223,7 @@ function DailyPipelineCases() {
           const result = await deleteCases.mutateAsync(ids)
           setSelectedRowKeys([])
           setCurrentPage(1)
-          message.success(`已删除 ${result.deleted} 条用例`)
+          message.success(`已从 Daily 移出 ${result.deleted} 条用例`)
         } catch (error) {
           message.error(getMutationError(error, '删除失败，请重试'))
           throw error
@@ -233,18 +256,6 @@ function DailyPipelineCases() {
         </ConfigProvider>
       </div>
       {contextHolder}
-      {isError && (
-        <Alert
-          type="error"
-          showIcon
-          message="Daily 用例加载失败"
-          action={
-            <Button size="small" loading={isFetching} onClick={() => void refetch()}>
-              重试
-            </Button>
-          }
-        />
-      )}
       <ConfigProvider theme={{
         token: {
           colorPrimary: '#1677ff', borderRadius: 6, controlHeight: 32, fontSize: 13,
@@ -259,7 +270,7 @@ function DailyPipelineCases() {
           tableClassName="daily-cases-table"
           headerTitle={false}
           toolBarRender={false}
-          {...dailyTableRefresh(refetch, isFetching || busy, {
+          {...dailyTableRefresh(refetch, opening || isFetching || busy, {
             current: currentPage,
             onChange: (page) => setCurrentPage(page),
             defaultPageSize: 10,
@@ -290,7 +301,6 @@ function DailyPipelineCases() {
           rowKey="id"
           columns={columns}
           dataSource={filteredCases}
-          loading={isLoading || isFetching}
           rowSelection={{
             type: 'checkbox',
             columnWidth: 48,
@@ -300,7 +310,7 @@ function DailyPipelineCases() {
             onChange: (keys) => setSelectedRowKeys(keys.map(String)),
           }}
 
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1380, y: 'var(--daily-case-body-height)' }}
         />
       </ConfigProvider>
     </Space>

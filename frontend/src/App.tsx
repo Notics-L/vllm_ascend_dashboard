@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ConfigProvider, Spin } from 'antd'
+import { Button, ConfigProvider, Spin } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 
 import Login from './pages/Login'
@@ -14,7 +14,7 @@ import JobDetail from './pages/JobDetail'
 import JobRuns from './pages/JobRuns'
 import CIDailyReport from './pages/CIDailyReport'
 import DailyPipelineOverview from './pages/daily-pipeline/overview'
-import DailyPipelineTrigger from './pages/daily-pipeline/trigger'
+import DailyPipelineConfiguration from './pages/daily-pipeline/configuration'
 import DailyPipelineCollection from './pages/daily-pipeline/collection'
 import DailyPipelineIssueTracking from './pages/daily-pipeline/issue-tracking'
 import IssueProgressPage from './pages/daily-pipeline/issue-tracking/IssueProgressPage'
@@ -52,6 +52,7 @@ import ReleaseManagement from './components/release/ReleaseManagement'
 import BuildRunDetail from './pages/BuildRunDetail'
 import ImageBuildMonitor from './pages/ImageBuildMonitor'
 import { useCurrentUser } from './hooks/useCurrentUser'
+import { credentialsRejected } from './services/api'
 import { appBasePath } from './utils/basePath'
 
 const queryClient = new QueryClient({
@@ -64,11 +65,25 @@ const queryClient = new QueryClient({
   },
 })
 
+function UserCheckFailure({ error, retry }: { error: unknown; retry: () => void }) {
+  if (credentialsRejected(error)) {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+    return <Navigate to="/login" replace />
+  }
+  return (
+    <div className="route-loading-state">
+      <span>暂时无法获取用户信息</span>
+      <Button onClick={retry}>重试</Button>
+    </div>
+  )
+}
+
 // 需要登录的路由保护组件
 function ProtectedRoute({ children, allowLanding = false }: { children: React.ReactNode; allowLanding?: boolean }) {
   const token = localStorage.getItem('access_token')
   const location = useLocation()
-  const { data: currentUser, isLoading, error } = useCurrentUser()
+  const { data: currentUser, isLoading, error, refetch } = useCurrentUser()
 
   // 首先检查 token 是否存在
   if (!token) {
@@ -87,11 +102,8 @@ function ProtectedRoute({ children, allowLanding = false }: { children: React.Re
     )
   }
 
-  // 如果获取用户信息失败（可能是 token 过期），重定向到登录页
   if (error || !currentUser) {
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('refresh_token')
-    return <Navigate to="/login" replace />
+    return <UserCheckFailure error={error} retry={() => void refetch()} />
   }
 
   return <>{children}</>
@@ -100,7 +112,7 @@ function ProtectedRoute({ children, allowLanding = false }: { children: React.Re
 // 仅管理员路由需要登录和权限
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('access_token')
-  const { data: currentUser, isLoading, error } = useCurrentUser()
+  const { data: currentUser, isLoading, error, refetch } = useCurrentUser()
 
   // 首先检查 token 是否存在
   if (!token) {
@@ -118,11 +130,8 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // 如果获取用户信息失败（可能是 token 过期），重定向到登录页
   if (error || !currentUser) {
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('refresh_token')
-    return <Navigate to="/login" replace />
+    return <UserCheckFailure error={error} retry={() => void refetch()} />
   }
 
   // 检查用户是否为管理员
@@ -136,7 +145,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 // 仅超级管理员可访问的路由
 function SuperAdminRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('access_token')
-  const { data: currentUser, isLoading, error } = useCurrentUser()
+  const { data: currentUser, isLoading, error, refetch } = useCurrentUser()
 
   if (!token) return <Navigate to="/login" replace />
 
@@ -150,9 +159,7 @@ function SuperAdminRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (error || !currentUser) {
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('refresh_token')
-    return <Navigate to="/login" replace />
+    return <UserCheckFailure error={error} retry={() => void refetch()} />
   }
 
   if (currentUser.role !== 'super_admin') return <Navigate to="/" replace />
@@ -210,7 +217,8 @@ function App() {
               <Route path="daily-pipeline">
                 <Route index element={<Navigate to="overview" replace />} />
                 <Route path="overview" element={<DailyPipelineOverview />} />
-                <Route path="trigger" element={<DailyPipelineTrigger />} />
+                <Route path="configuration" element={<DailyPipelineConfiguration />} />
+                <Route path="trigger" element={<Navigate to="/daily-pipeline/configuration" replace />} />
                 <Route path="collection" element={<DailyPipelineCollection />} />
                 <Route path="issue-tracking" element={<DailyPipelineIssueTracking />} />
                 <Route path="issue-tracking/issues/:issueNumber/progress" element={<IssueProgressPage />} />

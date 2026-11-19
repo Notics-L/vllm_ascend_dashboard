@@ -1,0 +1,47 @@
+.daily-notification-records {
+  position: relative;
+  width: 100%;
+  color: #10213a;
+  font-size: 13px;
+}
+.daily-notification-records .ant-table,
+.daily-notification-records .ant-pagination,
+.daily-notification-records .ant-badge-status-text {
+  color: #10213a;
+  font-size: 13px;
+  font-weight: 400;
+}
+.daily-notification-records .ant-table-body {
+  height: 480px;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+.daily-notification-records .ant-table-thead > tr > th,
+.daily-notification-records .ant-table-tbody > tr > td {
+  font-weight: 400;
+}
+
+.daily-notification-records .ant-table-pagination.ant-pagination {
+  margin-block: 16px 0;
+}
+
+
+.daily-notification-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: 100%;
+  margin-bottom: 20px;
+}
+
+.daily-notification-records-title {
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.daily-notification-config .ant-select {
+  width: 360px;
+  max-width: 100%;
+  font-size: 13px;
+}

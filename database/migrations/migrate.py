@@ -28,6 +28,21 @@ from database.migrations.ci_npu_queue_snapshot_physical_running import (
     run as migrate_ci_npu_queue_snapshot_physical_running,
 )
 from database.migrations.ci_npu_queue_snapshots import run as migrate_ci_npu_queue_snapshots
+from database.migrations.daily_pipeline_case_counts import run as migrate_daily_case_counts
+from database.migrations.daily_pipeline_collection import run as migrate_daily_collection
+from database.migrations.daily_pipeline_config import run as migrate_daily_pipeline_config
+from database.migrations.daily_pipeline_manual_processing import (
+    run as migrate_daily_manual_processing,
+)
+from database.migrations.daily_pipeline_scheduled_tasks import (
+    run as migrate_daily_pipeline_schedules,
+)
+from database.migrations.daily_pipeline_tracking import run as migrate_daily_tracking
+from database.migrations.daily_pipeline_retryable_nodes import run as migrate_daily_retryable_nodes
+from database.migrations.daily_pipeline_merged_pr import run as migrate_daily_merged_pr
+from database.migrations.daily_pipeline_notifications import run as migrate_daily_notifications
+from database.migrations.daily_pipeline_issue_reopen import run as migrate_daily_issue_reopen
+from database.migrations.daily_pipeline_trigger_history import run as migrate_daily_trigger_history
 from database.migrations.github_workflow_run_metadata import (
     run as migrate_github_workflow_run_metadata,
 )
@@ -85,6 +100,17 @@ async def migrate() -> None:
     users_before = await _user_count()
     # phase_a creates migration_history first, so it must run before other migrations
     await migrate_phase_a()
+    await migrate_daily_pipeline_schedules()
+    await migrate_daily_pipeline_config()
+    await migrate_daily_trigger_history()
+    await migrate_daily_collection()
+    await migrate_daily_case_counts()
+    await migrate_daily_tracking()
+    await migrate_daily_merged_pr()
+    await migrate_daily_manual_processing()
+    await migrate_daily_notifications()
+    await migrate_daily_issue_reopen()
+    await migrate_daily_retryable_nodes()
     await migrate_mysql_schema()
     await migrate_process_runtime()
     model_fo_result = await migrate_model_fo_mapping_seed()
@@ -125,8 +151,9 @@ async def migrate() -> None:
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s",
+        "Migration completed; users=%d model_fo=%s permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s",
         users_after,
+        model_fo_result,
         permission_result,
         test_board_result,
         contributor_board_result,

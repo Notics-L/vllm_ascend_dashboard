@@ -8,8 +8,8 @@ function CollectionDetailPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const state = location.state as { returnTo?: string } | null
-  const returnTo = state?.returnTo === '/daily-pipeline/issue-tracking'
-    ? '/daily-pipeline/issue-tracking'
+  const returnTo = state?.returnTo === '/daily-pipeline/issue-tracking' || state?.returnTo === '/daily-pipeline/overview'
+    ? state.returnTo
     : '/daily-pipeline/collection'
   return <DailyCasePage title="采集详情" onBack={() => navigate(returnTo, { replace: true })}>
     <CollectionDetail id={runId ?? null} />

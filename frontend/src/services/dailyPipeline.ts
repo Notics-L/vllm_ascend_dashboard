@@ -1,17 +1,14 @@
 import api from './api'
-import type { DailyOverviewData, DailyCase, DailyCaseUpdate, DailyCollectionRun, DailyCollectionDetail, DailyFailedCase, DailyFailedCaseDetail, DailyIssueDetail, DailyIssueItem, DailyPipelineSchedule, DailyTriggerHistoryDetail, DailyTriggerHistoryPage, DailySelectionResult, DailyTriggerConfig, DailyTriggerConfigInput, NightlyCase } from '../types/dailyPipeline'
+import type { DailyNotificationConsumptionPage, DailyNotificationConsumptionResult, DailyNotificationConsumptionStatus, DailyNotificationRecipient, DailyNotificationRecipientInput, DailyManualNodeInput, DailyOverviewData, DailyCase, DailyCaseUpdate, DailyCollectionRun, DailyCollectionDetail, DailyFailedCase, DailyFailedCaseDetail, DailyIssueDetail, DailyIssueItem, DailyPipelineSchedule, DailyTriggerHistoryDetail, DailyTriggerHistoryPage, DailySelectionResult, DailyTriggerConfig, DailyTriggerConfigInput } from '../types/dailyPipeline'
 
 export type { DailyCase, DailyCaseInput, DailyCaseUpdate, DailySelectionResult, NightlyCase } from '../types/dailyPipeline'
 
 
-export const getDailyCases = async (): Promise<DailyCase[]> => {
-  const response = await api.get<DailyCase[]>('/daily-pipeline/cases')
-  return response.data
-}
-
-
-export const getNightlyCases = async (): Promise<NightlyCase[]> => {
-  const response = await api.get<NightlyCase[]>('/daily-pipeline/nightly-cases')
+export async function getDailyCases(isDaily: boolean): Promise<DailyCase[]> {
+  const response = await api.get<DailyCase[]>('/daily-pipeline/cases', {
+    params: { is_daily: isDaily },
+    headers: { 'Cache-Control': 'no-cache' },
+  })
   return response.data
 }
 
@@ -51,7 +48,12 @@ export const saveDailySchedule = async (cron: string): Promise<DailyPipelineSche
 }
 
 export const getDailyTriggerConfig = async (): Promise<DailyTriggerConfig> => {
-  const response = await api.get<DailyTriggerConfig>('/daily-pipeline/trigger-config')
+  const response = await api.get<DailyTriggerConfig | null>('/daily-pipeline/trigger-config', {
+    validateStatus: (status) => (status >= 200 && status < 300) || status === 404,
+  })
+  if (response.status === 404 || !response.data) {
+    return { cron: null, githubTokenConfigured: false }
+  }
   return response.data
 }
 
@@ -60,9 +62,14 @@ export const saveDailyTriggerConfig = async (values: DailyTriggerConfigInput): P
   return response.data
 }
 
-export const testDailyTriggerConnection = async (githubToken?: string): Promise<{ detail: string }> => {
-  const response = await api.post<{ detail: string }>('/daily-pipeline/trigger-config/test-connection',
+export const testDailyTriggerConnection = async (githubToken?: string) => {
+  const response = await api.post<{ verified: boolean; detail: string }>('/daily-pipeline/trigger-config/test-connection',
     githubToken ? { githubToken } : {})
+  return response.data
+}
+
+export const triggerDailyPipeline = async (): Promise<DailyTriggerHistoryDetail> => {
+  const response = await api.post<DailyTriggerHistoryDetail>('/daily-pipeline/trigger', {})
   return response.data
 }
 
@@ -118,6 +125,19 @@ export const getDailyFailedCase = async (id: string): Promise<DailyFailedCaseDet
   return (await api.get<DailyFailedCaseDetail>(`/daily-pipeline/failed-cases/${encodeURIComponent(id)}`)).data
 }
 
+export async function shareDailyVersionFlow(values: { failureIds: string[]; targetFailureId: string }) {
+  return (await api.post<{ flowId: string }>('/daily-pipeline/failed-cases/version-flow/share', values)).data
+}
+
+export async function updateDailyVersionFlow({ failureId, values }: {
+  failureId: string
+  values: import('../types/dailyPipeline').DailyVersionFlowInput
+}) {
+  return (await api.post<{ status: string }>(
+    `/daily-pipeline/failed-cases/${encodeURIComponent(failureId)}/version-flow`, values,
+  )).data
+}
+
 export const closeDailyIssues = async (numbers: number[]): Promise<{ closed: number }> => {
   return (await api.post<{ closed: number }>('/daily-pipeline/issues/close', { numbers })).data
 }
@@ -128,4 +148,50 @@ export const deleteDailyIssues = async (numbers: number[]): Promise<{ deleted: n
 
 export const getDailyOverview = async (days: 7 | 14): Promise<DailyOverviewData> => {
   return (await api.get<DailyOverviewData>('/daily-pipeline/overview', { params: { days } })).data
+}
+
+
+export async function manuallyCompleteDailyNode({ nodeId, values }: { nodeId: string; values: DailyManualNodeInput }) {
+  return (await api.post<{ status: string; executionId: number; automaticQueued?: boolean | null }>(
+    `/daily-pipeline/processing/nodes/${encodeURIComponent(nodeId)}/manual-complete`, values,
+  )).data
+}
+
+
+export async function retryDailyProcessing({ nodeId }: { nodeId: string }) {
+  return (await api.post<{ queued: boolean }>(`/daily-pipeline/processing/nodes/${encodeURIComponent(nodeId)}/retry`, {})).data
+}
+
+
+export async function getDailyNotificationRecipients(): Promise<DailyNotificationRecipient[]> {
+  return (await api.get('/daily-pipeline/notification-recipients')).data
+}
+
+export async function saveDailyNotificationRecipient({ id, values }: { id?: number; values: DailyNotificationRecipientInput }): Promise<DailyNotificationRecipient> {
+  return id
+    ? (await api.put(`/daily-pipeline/notification-recipients/${id}`, values)).data
+    : (await api.post('/daily-pipeline/notification-recipients', values)).data
+}
+
+export async function deleteDailyNotificationRecipient(ids: number[]) {
+  return (await api.delete('/daily-pipeline/notification-recipients', { data: { ids } })).data
+}
+
+
+export async function getDailyFailureNotificationConfig(): Promise<{ githubNames: string[] }> {
+  const response = await api.get<{ githubNames?: string[] | null } | null>('/daily-pipeline/failure-notification-config', {
+    validateStatus: (status) => (status >= 200 && status < 300) || status === 404,
+  })
+  return { githubNames: response.status === 404 ? [] : response.data?.githubNames ?? [] }
+}
+
+export async function saveDailyFailureNotificationConfig(githubNames: string[]): Promise<{ githubNames: string[] }> {
+  return (await api.put('/daily-pipeline/failure-notification-config', { githubNames })).data
+}
+
+export async function getDailyNotificationRecords(page: number, pageSize: number, result?: DailyNotificationConsumptionResult, status?: DailyNotificationConsumptionStatus): Promise<DailyNotificationConsumptionPage> {
+  return (await api.get('/daily-pipeline/notification-records', {
+    params: { page, page_size: pageSize, result, status },
+    headers: { 'Cache-Control': 'no-cache' },
+  })).data
 }

@@ -1,14 +1,11 @@
-import { Button, Form, Select } from 'antd'
+import { Form, Select } from 'antd'
 import { useDailySchedule } from '../../../hooks/useDailyPipeline'
 
 function DailyExecutionTimeField() {
-  const { data, isLoading, isError, isFetching, refetch } = useDailySchedule()
+  const { data, isLoading, isError } = useDailySchedule()
   const times = data?.timeOptions ?? []
   return (
-    <Form.Item
-      label="执行时间"
-      extra={isError ? <Button type="link" size="small" loading={isFetching} onClick={() => void refetch()}>重试</Button> : undefined}
-    >
+    <Form.Item label="执行时间">
       <Select
         className="daily-execution-time-select daily-case-time-select"
         mode="multiple"

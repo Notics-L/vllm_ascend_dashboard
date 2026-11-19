@@ -135,7 +135,7 @@
   font-size: 16px;
 }
 
-.app-menu .ant-menu-item:hover {
+.app-menu .ant-menu-item:not(.ant-menu-item-selected):hover {
   color: #fff !important;
   background: rgba(255, 255, 255, 0.07) !important;
 }

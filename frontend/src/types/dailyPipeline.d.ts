@@ -6,6 +6,9 @@ export interface DailyPipelineSchedule {
 }
 
 export interface DailyCase {
+  autoDisabled?: boolean
+  manualEnabled?: boolean
+  processingFailureId?: string | null
   nightlyCaseId?: string
   id: string
   name: string
@@ -14,6 +17,8 @@ export interface DailyCase {
   tags: string[]
   status: '启用' | '禁用'
   branch: string
+  successCount?: number
+  failureCount?: number
   executionTimes: string[]
 }
 
@@ -43,12 +48,15 @@ export interface DailyTriggerHistoryItem {
   id: string
   triggeredAt: string
   event: '定时触发' | '手动触发'
-  result: '触发成功' | '触发失败' | '触发中'
+  result: '触发成功' | '触发失败'
 }
 
 export interface DailyTriggerHistoryDetail extends DailyTriggerHistoryItem {
+  repository: string
+  sourceBranch: string
+  runId: number | null
   workflow: string
-  cron: string
+  cron: string | null
   dailyCases: Pick<DailyCase, 'id' | 'name' | 'hardware' | 'testType'>[]
   logs: { time: string; level: 'INFO' | 'ERROR'; message: string }[]
 }
@@ -58,59 +66,70 @@ export interface DailyTriggerHistoryPage {
   total: number
 }
 
+export type DailyExecutionResult = '排队中' | '执行中' | '成功' | '失败' | '已取消' | '已跳过' | '未获取'
+
 export interface DailyCollectionRun {
   id: string
   runId: number
-  startedAt: string
+  startedAt: string | null
   endedAt: string | null
-  triggerHistoryId: string
+  triggerHistoryId: string | null
   issue: { number: number; state: 'open' | 'closed' } | null
   lastCollectedAt: string | null
-  status: '等待采集' | '采集中' | '已完成' | '采集失败'
-  result: '执行中' | '成功' | '失败' | '已取消'
-  collectedCases: number
-  expectedCases: number
-  failedCases: number
+  result: DailyExecutionResult
+}
+
+export type DailyCollectionCaseGroup = 'Daily' | 'E2E' | 'UT' | 'UT/E2E'
+
+export interface DailyCollectionNode {
+  id: string
+  parentId: string | null
+  nodeType: 'workflow_run' | 'matrix' | 'workflow_call' | 'job' | 'test_job'
+  sourceId: string | null
+  name: string
+  result: DailyExecutionResult
+  group?: DailyCollectionCaseGroup | null
+  hardware?: string | null
+  vllmVersion?: 'main' | 'release' | null
 }
 
 export interface DailyCollectionDetail extends DailyCollectionRun {
-  branch: string
-  commit: string
+  nodes?: DailyCollectionNode[]
   jobs: {
     id: string
     name: string
-    result: '成功' | '失败' | '执行中' | '排队中' | '已跳过' | '已取消' | '未获取'
-  }[]
-  children: {
-    workflow: string
-    runId: number | null
-    association: '已关联' | '待关联'
-    result: '执行中' | '成功' | '失败' | '未获取'
+    result: DailyExecutionResult
+    group: 'run-all-tests' | 'other'
+    hardware?: string
+    vllmVersion?: 'main' | 'release'
   }[]
   cases: {
     id: string
+    jobId: string
     name: string
-    group: 'Daily' | 'E2E' | 'UT'
+    group: DailyCollectionCaseGroup
     hardware: string
     vllmVersion?: 'main' | 'release'
-    result: '成功' | '失败' | '执行中'
-    failureLog: string | null
+    result: DailyExecutionResult
   }[]
-  logs: string[]
 }
 
-export interface DailyFailedCase extends Omit<DailyCollectionDetail['cases'][number], 'id' | 'result'> {
+export interface DailyFailedCase extends Omit<DailyCollectionDetail['cases'][number], 'id' | 'jobId' | 'result'> {
+  failureLog?: string | null
   id: string
   caseId: string
   result: '失败'
   runId: number
   collectedAt: string | null
-  processingProgress: '待处理' | '处理中' | '已解决' | '未解决'
+  processingProgress: '待处理' | '处理中' | '已解决' | '未解决' | '已结束'
   problemCategory: string | null
+  versionFlowId?: string | null
+  versionFlowSize?: number | null
   issue: DailyCollectionRun['issue']
 }
 
 export interface DailyIssueDetail {
+  url: string
   number: number
   title: string
   state: 'open' | 'closed'
@@ -131,17 +150,49 @@ export type DailyIssueItem = Pick<DailyIssueDetail, 'number' | 'title' | 'state'
 export interface DailyProcessingStage {
   id: string
   name: string
-  status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed'
+  stageCode?: string
+  problemCategory?: DailyManualNodeInput["result"]["category"] | null
+  canManuallyComplete?: boolean
+  resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string } | null
+  startedAt?: string | null
+  status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'ended'
   result: string | null
   updatedAt: string | null
-  records: { id: string; author: string; createdAt: string | null; content: string }[]
+  records: { id: string; author: string; createdAt: string | null; content: string; source?: "auto" | "manual"; status?: DailyProcessingStage["status"]; resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string } | null }[]
 }
 
 export interface DailyFailedCaseDetail extends DailyFailedCase {
   processingFlow: {
     currentStageId: DailyProcessingStage['id'] | null
     stages: DailyProcessingStage[]
+    versionFlow?: DailyVersionFlow | null
   }
+}
+
+export interface DailyVersionFlow {
+  failureId: string
+  status: 'waiting_resolution' | 'waiting_pr' | 'waiting_build' | 'building' | 'build_failed' | 'resolved'
+  message: string
+  triggerUrl: string | null
+  sourceBranch: string | null
+  memberCount: number
+  updatedAt: string | null
+  canEdit: boolean
+  resolution: {
+    note?: string
+    references?: Partial<Record<'repair' | 'revert', { pr_url: string; pr_number: number }>>
+    merged_pr?: { pr_url: string; pr_number: number }
+    merged_kind?: 'repair' | 'revert'
+  }
+  build: { url?: string; run_id?: number; conclusion?: string | null }
+}
+
+export interface DailyVersionFlowInput {
+  action: 'external_recovered' | 'track_pr' | 'track_build'
+  repair_url?: string
+  revert_url?: string
+  build_url?: string
+  message?: string
 }
 
 export interface DailyOverviewData {
@@ -158,8 +209,61 @@ export interface DailyOverviewData {
     openIssues: number
     closedIssues: number
   }
-  trend: { date: string; success: number; failed: number; running: number; successRate: number | null }[]
+  trend: { date: string; success: number; failed: number; running: number; other: number; successRate: number | null }[]
+  recentRuns: (Pick<DailyCollectionRun, 'id' | 'startedAt' | 'endedAt' | 'result'> & { issue: { number: number } | null })[]
   categories: { name: string; count: number }[]
-  processing: { type: string; success: number; failed: number; running: number }[]
+  processing: { type: string; resolved: number; unresolved: number; running: number; ended: number }[]
   hardware: { hardware: string; enabled: number; disabled: number }[]
+}
+
+
+export interface DailyManualNodeInput {
+  success: boolean
+  message: string
+  result: {
+    category?: 'code' | 'version' | 'environment'
+    pr_repository?: string
+    pr_url?: string
+    pr_number?: number
+    run_id?: number
+  }
+}
+
+
+export interface DailyNotificationRecipient {
+  id: number
+  githubName: string
+  name: string
+}
+
+export interface DailyNotificationRecipientInput {
+  githubName: string
+  name: string
+  account?: string
+}
+
+
+export type DailyNotificationConsumptionStatus = 'pending' | 'processing' | 'completed' | 'ended'
+
+export type DailyNotificationConsumptionResult = 'waiting' | 'sent' | 'failed' | 'unknown' | 'ended'
+
+export interface DailyNotificationConsumptionRecord {
+  id: string
+  notificationName: string
+  status: DailyNotificationConsumptionStatus
+  createdAt: string | null
+  githubName: string
+  name: string
+  content: string
+  consumer: string
+  claimedAt: string | null
+  confirmedAt: string | null
+  result: DailyNotificationConsumptionResult
+}
+
+export interface DailyNotificationConsumptionPage {
+  items: DailyNotificationConsumptionRecord[]
+  total: number
+  page: number
+  pageSize: number
 }

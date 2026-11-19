@@ -1,9 +1,12 @@
-import { Alert, Button, Form, Space, message } from 'antd'
+import { Button, Form, Space, Spin, message } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
 import { isAxiosError } from 'axios'
 import { useNavigate } from 'react-router-dom'
-import { useDailyCaseMutations, useNightlyCases } from '../../../hooks/useDailyPipeline'
+import { useDailyCaseMutations, useDailyCases } from '../../../hooks/useDailyPipeline'
+import type { NightlyCase } from '../../../types/dailyPipeline'
 import NightlyCaseTreeTransfer from './NightlyCaseTreeTransfer'
 import DailyCasePage from './DailyCasePage'
+import { useDailyRefreshFeedback } from '../shared/useDailyRefreshFeedback'
 import DailyExecutionTimeField from '../shared/DailyExecutionTimeField'
 import './DailyCases.css'
 
@@ -13,7 +16,16 @@ interface DailyCaseConfigValues {
 
 function DailyCaseConfig() {
   const navigate = useNavigate()
-  const { data: cases = [], isLoading, isFetching, isError, refetch } = useNightlyCases()
+  const daily = useDailyCases(true)
+  const nightly = useDailyCases(false)
+  const isLoading = daily.isLoading || nightly.isLoading
+  const isFetching = daily.isFetching || nightly.isFetching
+  const isError = daily.isError || nightly.isError
+  const byId = new Map<string, NightlyCase>((nightly.data ?? []).map((item) => [item.id, item]))
+  for (const item of daily.data ?? []) {
+    byId.set(item.id, { ...item, dailyCaseId: item.id })
+  }
+  const cases = [...byId.values()]
   const { saveSelection } = useDailyCaseMutations()
   const [form] = Form.useForm<DailyCaseConfigValues>()
   const draftIds: string[] | undefined = Form.useWatch('nightlyCaseIds', form)
@@ -23,64 +35,67 @@ function DailyCaseConfig() {
   const removedCount = originalIds.filter((id) => !selectedIds.includes(id)).length
   const returnToCases = () => navigate('/daily-pipeline/cases', { replace: true })
 
+  const { pending: refreshPending, run: handleRefresh } = useDailyRefreshFeedback(async () => {
+    const [left, right] = await Promise.all([daily.refetch(), nightly.refetch()])
+    if (left.isSuccess && right.isSuccess) {
+      form.resetFields(['nightlyCaseIds'])
+    } else {
+      message.error('刷新失败，请重试')
+    }
+  })
+  const loading = isFetching || refreshPending
+
   const handleSave = async ({ nightlyCaseIds = originalIds }: DailyCaseConfigValues) => {
     try {
       const result = await saveSelection.mutateAsync(nightlyCaseIds)
       message.success(`配置已保存：新增 ${result.added} 条，移出 ${result.removed} 条`)
-      returnToCases()
+      form.resetFields(['nightlyCaseIds'])
     } catch (error) {
       message.error(isAxiosError<{ detail?: string }>(error)
         ? error.response?.data?.detail || '保存失败，请重试'
         : '保存失败，请重试')
-      const refreshed = await refetch()
-      if (refreshed.data) {
-        form.setFieldValue('nightlyCaseIds', nightlyCaseIds.filter((id) => (
-          refreshed.data.some((item) => item.id === id)
-        )))
+      const [left, right] = await Promise.all([daily.refetch(), nightly.refetch()])
+      if (left.isSuccess && right.isSuccess) {
+        const validIds = new Set([...left.data, ...right.data].map((item) => item.id))
+        form.setFieldValue('nightlyCaseIds', nightlyCaseIds.filter((id) => validIds.has(id)))
       }
     }
   }
 
   return (
-    <DailyCasePage title="Daily 用例配置" saving={saveSelection.isPending} onBack={returnToCases}>
-      <Form<DailyCaseConfigValues>
-        form={form}
-        className="daily-case-config-form"
-        layout="horizontal"
-        labelCol={{ flex: '128px' }}
-        wrapperCol={{ flex: 'auto' }}
-        labelAlign="left"
-        colon
-        onFinish={handleSave}
-        disabled={saveSelection.isPending}
-      >
-        {isError && (
-          <Form.Item>
-            <Alert type="error" showIcon message="Nightly 用例加载失败" action={
-              <Button size="small" loading={isFetching} onClick={() => void refetch()}>重试</Button>
-            } />
-          </Form.Item>
-        )}
-        <Form.Item
-          name="nightlyCaseIds"
-          label="Daily 用例"
-          extra={`已选 ${selectedIds.length} 条，本次新增 ${addedCount} 条、移出 ${removedCount} 条，保存后生效。`}
+    <Spin spinning={loading} wrapperClassName="daily-case-config-loading">
+      <DailyCasePage title="Daily 用例配置" saving={loading || saveSelection.isPending} onBack={returnToCases}>
+        <Form<DailyCaseConfigValues>
+          form={form}
+          className="daily-case-config-form"
+          layout="horizontal"
+          labelCol={{ flex: '128px' }}
+          wrapperCol={{ flex: 'auto' }}
+          labelAlign="left"
+          colon
+          onFinish={handleSave}
+          disabled={loading || saveSelection.isPending}
         >
-          <NightlyCaseTreeTransfer
-            cases={cases}
-            loading={isLoading || isFetching}
-            disabled={isError || saveSelection.isPending}
-          />
-        </Form.Item>
-        <DailyExecutionTimeField />
-        <Form.Item>
-          <Space className="daily-cases-actions" size={8}>
-            <Button type="primary" htmlType="submit" loading={saveSelection.isPending} disabled={isLoading || isError}>保存</Button>
-            <Button onClick={returnToCases} disabled={saveSelection.isPending}>取消</Button>
-          </Space>
-        </Form.Item>
-      </Form>
-    </DailyCasePage>
+          <Form.Item
+            name="nightlyCaseIds"
+            label="Daily 用例"
+            extra={`已选 ${selectedIds.length} 条，本次新增 ${addedCount} 条、移出 ${removedCount} 条，保存后生效。`}
+          >
+            <NightlyCaseTreeTransfer
+              cases={cases}
+              disabled={isError || loading || saveSelection.isPending}
+            />
+          </Form.Item>
+          <DailyExecutionTimeField />
+          <Form.Item>
+            <Space className="daily-cases-actions" size={8}>
+              <Button type="primary" htmlType="submit" loading={saveSelection.isPending} disabled={loading || isLoading || isError}>保存</Button>
+              <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading} disabled={loading || saveSelection.isPending}>刷新</Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </DailyCasePage>
+    </Spin>
   )
 }
 
