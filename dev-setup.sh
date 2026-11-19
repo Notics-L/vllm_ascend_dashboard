@@ -11,9 +11,11 @@ command -v docker >/dev/null 2>&1 || {
 if [[ ! -f .env.local ]]; then
   cp .env.local.example .env.local
   jwt="$(openssl rand -hex 24)"
+  actions_key="$(openssl rand -hex 32)"
   litellm="$(openssl rand -hex 16)"
   sed -i.bak \
     -e "s/replace-with-a-random-local-jwt-secret/$jwt/" \
+    -e "s/replace-with-a-random-local-actions-master-key/$actions_key/" \
     -e "s/replace-with-a-random-local-litellm-key/sk-local-$litellm/" \
     -e "s/replace-with-a-local-root-password/local-root-$litellm/" \
     -e "s/replace-with-a-local-database-password/local-db-$litellm/" \

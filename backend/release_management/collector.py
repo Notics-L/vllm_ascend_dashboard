@@ -96,21 +96,20 @@ class ReleaseWorkflowCollector:
         until_date: str | None = None
     ) -> int:
         """同步指定 workflow 的构建记录到数据库
-        
+
         sync_mode: 'full' | 'incremental' | 'range'
         since_date: YYYY-MM-DD (for incremental: start from this date; for range: start)
         until_date: YYYY-MM-DD (for range only: end date)
-        
+
         Args:
             api_task_id: API 层创建的 ReleaseAnalysisTask 的 ID，用于更新进度
         Returns:
             新采集的记录数量
         """
-        from sqlalchemy import update as sa_update, text
-        
+
         collected = 0
         new_runs_for_tp: list[tuple[int, list[dict]]] = []
-        
+
         # Determine sync window based on mode
         since_dt: datetime | None = None
         if sync_mode == 'full':

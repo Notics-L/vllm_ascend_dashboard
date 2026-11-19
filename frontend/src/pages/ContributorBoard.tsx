@@ -19,7 +19,6 @@ import {
   DatePicker,
   Descriptions,
   Divider,
-  Dropdown,
   Empty,
   Form,
   Input,
@@ -40,7 +39,6 @@ import {
   Tabs,
   Tag,
   Timeline,
-  Tooltip,
   Typography,
 } from 'antd'
 import {
@@ -55,10 +53,8 @@ import {
   TeamOutlined,
   EyeOutlined,
   FilePdfOutlined,
-  ExperimentOutlined,
   DownloadOutlined,
   FlagOutlined,
-  FilterOutlined,
   GithubOutlined,
   ReloadOutlined,
   RocketOutlined,
@@ -85,10 +81,6 @@ import {
   type ContributorHeatmap as HeatmapType,
   type ContributorDistribution as DistributionType,
   type ContributorTimeline as TimelineType,
-  type HeatmapDataPoint,
-  type ModuleDistributionItem,
-  type TypeDistributionItem,
-  type TimelineCommitItem,
   getQuadrantData,
   getRanking,
   getReposList,
@@ -254,8 +246,6 @@ type ViewMode = 'single' | 'quad'
 function SingleChart({
   data,
   yLabel,
-  quadX,
-  quadY,
   highlightedLogins,
   height = 750,
   sourceTab = 'quadrant',
@@ -635,6 +625,7 @@ function QuadrantTab({ refreshKey, selectedRepo }: { refreshKey?: number; select
       } catch { /* ignore */ }
     }
     if (refreshKey && refreshKey > 0) reloadAxis()
+    return () => { cancelled = true }
   }, [refreshKey])
 
   const loadQuadrant = useCallback(async (axis: string, repo: string | undefined) => {
@@ -1605,7 +1596,7 @@ function SettingsTab() {
           <Card title={<><TrophyOutlined style={{ marginRight: 6, color: '#fa8c16' }} />贡献分数权重（7维，合计建议 ≈ 100）</>}
             size="small" style={cardStyle} bodyStyle={{ padding: '16px 24px 16px' }}>
             <Form form={form} layout="inline">
-              {WEIGHT_DIMENSIONS.map((dw, idx) => (
+              {WEIGHT_DIMENSIONS.map((dw, _idx) => (
                 <Form.Item key={dw.key} label={dw.label} name={dw.key}
                   style={{ marginBottom: 6, display: 'flex', width: '100%', alignItems: 'center' }}>
                   <Slider style={{ flex: 1, margin: '0 8px' }} min={dw.min} max={dw.max} step={dw.step}
@@ -1815,7 +1806,7 @@ function ContributorBoardSettingsPage() {
     }
   }
 
-  const handleExportByVersion = async (versionId: number, format: 'pdf') => {
+  const handleExportByVersion = async (versionId: number, _format: 'pdf') => {
     try {
       setExporting(true)
       const blob = await exportPdfByVersion(versionId)
@@ -4201,8 +4192,6 @@ function SyncTab({ selectedRepo }: { selectedRepo?: string }) {
 /* ------------------------------------------------------------------ */
 /*                           主页面组件                                */
 /* ------------------------------------------------------------------ */
-
-let _pollTimer: ReturnType<typeof setInterval> | null = null
 
 function ContributorBoard() {
    const navigate = useNavigate()

@@ -23,6 +23,7 @@ from infrastructure.clients.github_cache import ensure_repo_cloned, get_github_c
 from infrastructure.db.base import get_db
 from infrastructure.persistence.models import User
 from project_dashboard.service import get_project_dashboard_service
+from workflow_actions.credentials import CREDENTIAL_CONFIG_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -800,7 +801,9 @@ async def get_dashboard_config(
 
     from infrastructure.persistence.models import ProjectDashboardConfig
 
-    stmt = select(ProjectDashboardConfig)
+    stmt = select(ProjectDashboardConfig).where(
+        ProjectDashboardConfig.config_key != CREDENTIAL_CONFIG_KEY
+    )
     result = await db.execute(stmt)
     configs = result.scalars().all()
 
@@ -836,7 +839,8 @@ async def update_dashboard_config(
     from infrastructure.persistence.models import ProjectDashboardConfig
 
     stmt = select(ProjectDashboardConfig).where(
-        ProjectDashboardConfig.config_key == config_key
+        ProjectDashboardConfig.config_key == config_key,
+        ProjectDashboardConfig.config_key != CREDENTIAL_CONFIG_KEY,
     )
     result = await db.execute(stmt)
     config = result.scalar_one_or_none()

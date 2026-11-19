@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import {
-  Card, Form, Input, InputNumber, Switch, Button, Space, Tag, Table,
+  Card, Form, Input, Switch, Button, Space, Tag, Table,
   Alert, Descriptions, Modal, Typography, Divider, Spin, Empty, Row, Col,
   Tooltip, Badge, Select,
 } from 'antd'
 import {
   MailOutlined, SendOutlined, SettingOutlined, HistoryOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
-  ClockCircleOutlined, KeyOutlined, InfoCircleOutlined, ReloadOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined, InfoCircleOutlined
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
@@ -189,21 +188,21 @@ function DailyReportConfigPage() {
               <ReactMarkdown 
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  h1: ({node, ...props}) => <h1 style={{fontSize: 20, fontWeight: 700, color: '#1e293b', margin: '20px 0 12px', paddingBottom: 8, borderBottom: '2px solid #e5e7eb'}} {...props} />,
-                  h2: ({node, ...props}) => <h2 style={{fontSize: 17, fontWeight: 600, color: '#1e293b', margin: '18px 0 10px'}} {...props} />,
-                  h3: ({node, ...props}) => <h3 style={{fontSize: 15, fontWeight: 600, color: '#334155', margin: '14px 0 8px'}} {...props} />,
-                  p: ({node, ...props}) => <p style={{margin: '8px 0', lineHeight: 1.7}} {...props} />,
-                  ul: ({node, ...props}) => <ul style={{margin: '8px 0', paddingLeft: 24}} {...props} />,
-                  ol: ({node, ...props}) => <ol style={{margin: '8px 0', paddingLeft: 24}} {...props} />,
-                  li: ({node, ...props}) => <li style={{margin: '4px 0'}} {...props} />,
-                  table: ({node, ...props}) => <table style={{width: '100%', borderCollapse: 'collapse', margin: '12px 0', fontSize: 13}} {...props} />,
-                  th: ({node, ...props}) => <th style={{background: '#f1f5f9', padding: '8px 12px', textAlign: 'left', border: '1px solid #e2e8f0', fontWeight: 600, color: '#1e293b'}} {...props} />,
-                  td: ({node, ...props}) => <td style={{padding: '8px 12px', border: '1px solid #e2e8f0'}} {...props} />,
-                  code: ({node, ...props}) => <code style={{background: '#f1f5f9', padding: '2px 6px', borderRadius: 3, fontSize: 13, color: '#d97706'}} {...props} />,
-                  pre: ({node, ...props}) => <pre style={{background: '#1e293b', color: '#e2e8f0', padding: 14, borderRadius: 6, overflowX: 'auto', margin: '12px 0'}} {...props} />,
-                  blockquote: ({node, ...props}) => <blockquote style={{borderLeft: '4px solid #635bff', padding: '8px 16px', margin: '12px 0', background: '#f8fafc', color: '#475569'}} {...props} />,
-                  strong: ({node, ...props}) => <strong style={{fontWeight: 700, color: '#1e293b'}} {...props} />,
-                  a: ({node, ...props}) => <a style={{color: '#635bff', textDecoration: 'none'}} {...props} />,
+                  h1: ({node: _node, ...props}) => <h1 style={{fontSize: 20, fontWeight: 700, color: '#1e293b', margin: '20px 0 12px', paddingBottom: 8, borderBottom: '2px solid #e5e7eb'}} {...props} />,
+                  h2: ({node: _node, ...props}) => <h2 style={{fontSize: 17, fontWeight: 600, color: '#1e293b', margin: '18px 0 10px'}} {...props} />,
+                  h3: ({node: _node, ...props}) => <h3 style={{fontSize: 15, fontWeight: 600, color: '#334155', margin: '14px 0 8px'}} {...props} />,
+                  p: ({node: _node, ...props}) => <p style={{margin: '8px 0', lineHeight: 1.7}} {...props} />,
+                  ul: ({node: _node, ...props}) => <ul style={{margin: '8px 0', paddingLeft: 24}} {...props} />,
+                  ol: ({node: _node, ...props}) => <ol style={{margin: '8px 0', paddingLeft: 24}} {...props} />,
+                  li: ({node: _node, ...props}) => <li style={{margin: '4px 0'}} {...props} />,
+                  table: ({node: _node, ...props}) => <table style={{width: '100%', borderCollapse: 'collapse', margin: '12px 0', fontSize: 13}} {...props} />,
+                  th: ({node: _node, ...props}) => <th style={{background: '#f1f5f9', padding: '8px 12px', textAlign: 'left', border: '1px solid #e2e8f0', fontWeight: 600, color: '#1e293b'}} {...props} />,
+                  td: ({node: _node, ...props}) => <td style={{padding: '8px 12px', border: '1px solid #e2e8f0'}} {...props} />,
+                  code: ({node: _node, ...props}) => <code style={{background: '#f1f5f9', padding: '2px 6px', borderRadius: 3, fontSize: 13, color: '#d97706'}} {...props} />,
+                  pre: ({node: _node, ...props}) => <pre style={{background: '#1e293b', color: '#e2e8f0', padding: 14, borderRadius: 6, overflowX: 'auto', margin: '12px 0'}} {...props} />,
+                  blockquote: ({node: _node, ...props}) => <blockquote style={{borderLeft: '4px solid #635bff', padding: '8px 16px', margin: '12px 0', background: '#f8fafc', color: '#475569'}} {...props} />,
+                  strong: ({node: _node, ...props}) => <strong style={{fontWeight: 700, color: '#1e293b'}} {...props} />,
+                  a: ({node: _node, ...props}) => <a style={{color: '#635bff', textDecoration: 'none'}} {...props} />,
                 }}
               >
                 {report.ai_report_content}

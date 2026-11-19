@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 小时
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     KUBECONFIG_ENCRYPTION_KEY: str | None = None
+    WORKFLOW_ACTIONS_ENCRYPTION_KEY: str | None = None
 
     # Resource metrics can be collected through the production API when the
     # local Docker host cannot reach the Kubernetes API networks directly.

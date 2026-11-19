@@ -24,10 +24,8 @@ import {
   GithubOutlined,
   UserOutlined,
   ExclamationCircleOutlined,
-  CheckCircleOutlined,
   SyncOutlined,
   CloseCircleOutlined,
-  CheckSquareOutlined,
   DownloadOutlined,
 } from '@ant-design/icons'
 import {
@@ -35,8 +33,8 @@ import {
   useDailyFailures,
   useUpdateFailureStatus,
 } from '../hooks/useCI'
-import { formatDuration, renderConclusionTag } from '../utils/ciRenderers'
-import { formatTimezone, fromTimezoneNow } from '../utils/timezone'
+import { renderConclusionTag } from '../utils/ciRenderers'
+import { formatTimezone } from '../utils/timezone'
 import {
   WorkflowDateFilter,
   getDateRangeForMode,

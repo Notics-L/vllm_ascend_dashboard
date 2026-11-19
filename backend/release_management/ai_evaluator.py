@@ -13,11 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from infrastructure.clients.github_client import GitHubAuthenticationError
 from infrastructure.clients.llm_client import LLMClient, LLMError
 from infrastructure.persistence.models import (
-    ReleaseAnalysisTask,
     ReleaseAIEvaluation,
+    ReleaseAnalysisTask,
     ReleaseBuildRun,
-    ReleaseThirdPartyBaseline,
-    ReleaseThirdPartyVersion,
 )
 from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 
@@ -317,7 +315,7 @@ class TrustworthinessEvaluator:
         wait_durs = [r.wait_duration for r in runs]
         avg_wait = sum(wait_durs) / len(wait_durs) if wait_durs else 0
 
-        branches = set(r.branch for r in runs if r.branch)
+        branches = {r.branch for r in runs if r.branch}
 
         return (
             f"总运行次数: {total}\n"

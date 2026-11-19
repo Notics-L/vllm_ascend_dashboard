@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 from cryptography.fernet import InvalidToken
 
-from contracts.schemas import ResourcePodInfo, ResourceQuantity
 import resource_dashboard.service as resource_dashboard_service
+from contracts.schemas import ResourcePodInfo, ResourceQuantity
 from resource_dashboard.metrics_query import PersistedResourceMetricsService
 from resource_dashboard.service import ResourceDashboardService, parse_job_workflow_ref
 

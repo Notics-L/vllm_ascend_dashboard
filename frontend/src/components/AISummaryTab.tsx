@@ -2,7 +2,7 @@
  * AI 总结 Tab 组件
  */
 import React, { useEffect } from 'react'
-import { Card, Empty, Button, Spin, Alert, Space, Tag, Typography, message } from 'antd'
+import { Empty, Button, Spin, Alert, Space, Tag, Typography, message } from 'antd'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { RobotOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
@@ -203,15 +203,15 @@ ${data.summary_markdown}
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
-            table: ({ node, ...props }) => (
+            table: ({ node: _node, ...props }) => (
               <div style={{ overflowX: 'auto', marginBottom: 16 }}>
                 <table style={{ borderCollapse: 'collapse', width: '100%' }} {...props} />
               </div>
             ),
-            th: ({ node, ...props }) => (
+            th: ({ node: _node, ...props }) => (
               <th style={{ border: '1px solid #d9d9d9', padding: '8px 12px', background: '#f5f5f5', textAlign: 'left' }} {...props} />
             ),
-            td: ({ node, ...props }) => (
+            td: ({ node: _node, ...props }) => (
               <td style={{ border: '1px solid #d9d9d9', padding: '8px 12px', verticalAlign: 'top' }} {...props} />
             ),
           }}

@@ -456,6 +456,7 @@ class ThirdPartyService:
         wf_names: dict[int, str] = {}
         if wf_ids:
             from sqlalchemy import select as _sel
+
             from infrastructure.persistence.models import ReleaseWorkflow
             wf_result = await self.db.execute(
                 _sel(ReleaseWorkflow).where(ReleaseWorkflow.id.in_(wf_ids))

@@ -6,6 +6,7 @@ import CIBoardConfig from './CIBoardConfig'
 import ModelBoardConfig from './ModelBoardConfig'
 import ProjectBoardConfig from './ProjectBoardConfig'
 import ResourceDashboardConfig from './ResourceDashboardConfig'
+import WorkflowActionPermissions from '../components/WorkflowActionPermissions'
 
 function Admin() {
   const hasAdminRole = useHasAdminRole()
@@ -72,6 +73,11 @@ function Admin() {
       key: 'resource-dashboard',
       label: '资源看板配置',
       children: <ResourceDashboardConfig />,
+    },
+    {
+      key: 'workflow-actions',
+      label: 'Actions 权限',
+      children: <WorkflowActionPermissions />,
     },
   )
 

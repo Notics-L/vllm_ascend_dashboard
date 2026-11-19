@@ -1,4 +1,5 @@
 """Durable configuration channel from the API control plane to Scheduler."""
+
 from __future__ import annotations
 
 import json
@@ -136,3 +137,22 @@ async def persist_scheduler_runtime_config(overrides: dict[str, Any]) -> None:
                     "payload": json.dumps({"changed": sorted(values)}),
                 },
             )
+
+
+async def emit_scheduler_reload(db: AsyncSession) -> None:
+    """Notify Scheduler that database-backed Workflow schedules changed."""
+    await db.execute(
+        text(
+            """
+            INSERT INTO control_outbox
+                (event_id, aggregate_type, aggregate_id, event_type, aggregate_version, payload)
+            VALUES
+                (:event_id, 'scheduler', 'workflow-actions', 'scheduler.config.reload', :version, :payload)
+            """
+        ),
+        {
+            "event_id": str(uuid.uuid4()),
+            "version": int(uuid.uuid4().int >> 65),
+            "payload": json.dumps({"changed": ["workflow_action_schedules"]}),
+        },
+    )

@@ -28,7 +28,6 @@ import {
   CodeOutlined,
   EyeOutlined,
   PlayCircleOutlined,
-  ReadOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
 
@@ -485,7 +484,7 @@ function LatestEvaluationPanel({
 /* ===================== 历史评估列表 ===================== */
 
 function HistoryTable({
-  workflowId, onEvalClick, reloadKey,
+  workflowId, reloadKey,
 }: {
   workflowId: number | null
   onEvalClick: (ev: AIEvaluationSummary) => void

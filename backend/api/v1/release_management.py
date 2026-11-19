@@ -6,23 +6,23 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from starlette.responses import StreamingResponse
 from sqlalchemy import func, select
+from starlette.responses import StreamingResponse
 
 from api.deps import CurrentUser, DbSession
-from infrastructure.clients.github_client import GitHubAuthenticationError, GitHubClient
+from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
 from infrastructure.persistence.models import (
     LLMProviderConfig,
-    ReleaseAnalysisTask,
     ReleaseAIEvaluation,
+    ReleaseAnalysisTask,
     ReleaseBuildRun,
     ReleaseSyncSchedule,
     ReleaseWorkflow,
 )
 from release_management.ai_evaluator import TrustworthinessEvaluator
-from release_management.report_generator import ReportGenerator
 from release_management.collector import ReleaseWorkflowCollector
+from release_management.report_generator import ReportGenerator
 from release_management.service import ReleaseManagementService
 from release_management.third_party_service import ThirdPartyService
 
@@ -543,7 +543,7 @@ async def get_sync_tasks(
     result = await db.execute(query)
     tasks = result.scalars().all()
 
-    wf_ids = list(set(t.workflow_id for t in tasks))
+    wf_ids = list({t.workflow_id for t in tasks})
     wf_map = {}
     if wf_ids:
         wf_result = await db.execute(select(ReleaseWorkflow).where(ReleaseWorkflow.id.in_(wf_ids)))
@@ -604,18 +604,18 @@ async def list_sync_schedules(db: DbSession, current_user: CurrentUser):
         )
         wf_map = {w.id: w.workflow_name for w in wf_result.scalars().all()}
 
-    return [dict(
-        id=s.id,
-        workflow_id=s.workflow_id,
-        workflow_name=wf_map.get(s.workflow_id, ''),
-        sync_mode=s.sync_mode,
-        recent_days=s.recent_days,
-        cron_expression=s.cron_expression,
-        is_active=s.is_active,
-        last_triggered_at=s.last_triggered_at.isoformat() if s.last_triggered_at else None,
-        created_at=s.created_at.isoformat() if s.created_at else None,
-        updated_at=s.updated_at.isoformat() if s.updated_at else None,
-    ) for s in schedules]
+    return [{
+        "id": s.id,
+        "workflow_id": s.workflow_id,
+        "workflow_name": wf_map.get(s.workflow_id, ''),
+        "sync_mode": s.sync_mode,
+        "recent_days": s.recent_days,
+        "cron_expression": s.cron_expression,
+        "is_active": s.is_active,
+        "last_triggered_at": s.last_triggered_at.isoformat() if s.last_triggered_at else None,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    } for s in schedules]
 
 
 @router.post("/release-management/sync/schedules")
@@ -765,9 +765,11 @@ async def get_duration_trend(
     runs = result.scalars().all()
 
     if aggregate == "day":
-        key_func = lambda r: r.created_at_remote.strftime("%Y-%m-%d") if r.created_at_remote else ""
+        def key_func(r):
+            return r.created_at_remote.strftime("%Y-%m-%d") if r.created_at_remote else ""
     else:
-        key_func = lambda r: r.created_at_remote.strftime("%Y-W%V") if r.created_at_remote else ""
+        def key_func(r):
+            return r.created_at_remote.strftime("%Y-W%V") if r.created_at_remote else ""
 
     grouped: dict[str, list[float]] = {}
     status_map: dict[str, list[str]] = {}

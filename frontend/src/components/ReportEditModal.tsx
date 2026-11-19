@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import {
-  Modal, Form, Input, Select, Button, Space, message, Typography,
-  Card, Descriptions, Tag, Table, InputNumber, Divider, Collapse,
-  Switch, Radio, Popconfirm
+  Modal, Input, Select, Button, Space, message, Typography,
+  Card, Descriptions, Tag, Table, InputNumber, Collapse,
+  Radio, Popconfirm
 } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ModelReport, TaskReport } from '../types/models'

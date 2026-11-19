@@ -316,7 +316,7 @@ async def test_hourly_sync_retries_an_empty_failed_snapshot(tmp_path: Path, monk
     monkeypatch.setattr(
         coverage_sync,
         "_process_line_coverage",
-        lambda *_args: {"status": "failed", "warning": "no UT covdata"},
+        lambda *_args, **_kwargs: {"status": "failed", "warning": "no UT covdata"},
     )
 
     result = await coverage_sync.sync_pr_lines(SimpleNamespace())

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from io import BytesIO
-from typing import Any, Callable
+from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -193,7 +193,7 @@ class CIDailyReportExcel:
         for r, row in enumerate(data_rows, header_row + 1):
             for idx, v in enumerate(row, 1):
                 cell = ws.cell(row=r, column=idx, value=v)
-                cell.alignment = Alignment(vertical="center", **(dict(wrap_text=True) if idx in WRAP_COLS else {}))
+                cell.alignment = Alignment(vertical="center", **({"wrap_text": True} if idx in WRAP_COLS else {}))
                 if idx in HYPERLINK_COLS and v and str(v).startswith("http"):
                     cell.hyperlink = str(v)
                     cell.font = Font(color="2563EB", underline="single")
@@ -330,7 +330,7 @@ class CIDailyReportExcel:
             ]
             for idx, v in enumerate(row, 1):
                 cell = ws.cell(row=r, column=idx, value=v)
-                cell.alignment = Alignment(vertical="center", **(dict(wrap_text=True) if idx in WRAP_COLS else {}))
+                cell.alignment = Alignment(vertical="center", **({"wrap_text": True} if idx in WRAP_COLS else {}))
                 # 结论颜色
                 if idx == CONCLUSION_COL and v in CONCLUSION_COLORS:
                     cell.fill = PatternFill("solid", fgColor=CONCLUSION_COLORS[v])

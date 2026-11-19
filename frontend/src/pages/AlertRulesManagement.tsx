@@ -12,7 +12,7 @@ import {
   METRIC_FIELD_OPTIONS, OPERATOR_OPTIONS,
   getAlertRules, getAlertRuleHistory, createAlertRule, updateAlertRule, deleteAlertRule,
 } from '../services/alertRules'
-import { getEnabledResourceClusters, getClusterSummary, KubernetesCluster, ResourceNodeInfo } from '../services/resourceDashboard'
+import { getEnabledResourceClusters, getClusterSummary, ResourceNodeInfo } from '../services/resourceDashboard'
 
 const { Text, Title } = Typography
 

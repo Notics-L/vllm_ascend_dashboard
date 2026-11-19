@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from collector.npu_job_facts import record_sync_success, upsert_npu_job_fact
 from infrastructure.clients.github_client import (
     GitHubAPIError,
     GitHubAuthenticationError,
@@ -33,7 +34,6 @@ from infrastructure.persistence.models import (
     NightlyTestCase,
     WorkflowConfig,
 )
-from collector.npu_job_facts import record_sync_success, upsert_npu_job_fact
 from infrastructure.tasks.sync_progress import SyncProgress, get_sync_progress, reset_sync_progress
 from tooling.ci_version_snapshot import (
     PARSER_VERSION,

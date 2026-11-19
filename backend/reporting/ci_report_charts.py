@@ -119,11 +119,11 @@ def render_result_distribution(summary: dict[str, Any]) -> str:
     colors = [GREEN, RED, YELLOW, GREY]
     if sum(values) == 0:
         return _empty("无运行记录")
-    visible = [(l, v, c) for l, v, c in zip(labels, values, colors, strict=False) if v > 0]
+    visible = [(label, v, c) for label, v, c in zip(labels, values, colors, strict=False) if v > 0]
     fig, ax = plt.subplots(figsize=(5.6, 3.8))
     ax.pie(
         [v for _, v, _ in visible],
-        labels=[l for l, _, _ in visible],
+        labels=[label for label, _, _ in visible],
         colors=[c for _, _, c in visible],
         startangle=90,
         counterclock=False,
@@ -179,7 +179,7 @@ def render_failure_by_branch(failure_by_branch: dict[str, int], total_runs: int)
             return "#0d9488"
         return ["#8b5cf6", "#a855f7", "#6366f1", "#14b8a6"][idx % 4]
 
-    colors = [_branch_color(l, i) for i, l in enumerate(labels)]
+    colors = [_branch_color(label, i) for i, label in enumerate(labels)]
     fig, ax = plt.subplots(figsize=(6.4, max(2.6, len(labels) * 0.6 + 1.2)))
     y = range(len(labels))
     bars = ax.barh(y, values, color=colors, alpha=0.9, height=0.6, zorder=3)
@@ -206,7 +206,7 @@ def render_failure_by_hardware(failure_by_hardware: dict[str, int]) -> str:
     labels = [k for k, _ in items]
     values = [v for _, v in items]
     hw_colors = {"A2": "#15be53", "A3": BLUE, "310P": YELLOW}
-    colors = [hw_colors.get(l, "#6b7280") for l in labels]
+    colors = [hw_colors.get(label, "#6b7280") for label in labels]
     fig, ax = plt.subplots(figsize=(6, max(2.4, len(labels) * 0.6 + 1)))
     y = range(len(labels))
     bars = ax.barh(y, values, color=colors, alpha=0.9, height=0.6, zorder=3)
@@ -244,7 +244,7 @@ def render_failure_by_model(failure_by_model: dict[str, int], top_n: int = 10) -
                 str(v), va="center", fontsize=9, fontweight="bold", color=DARK)
     ax.set_xlim(0, max(values) * 1.15 if max(values) else 1)
     ax.set_xlabel("失败次数", fontsize=10, color=DARK)
-    ax.set_title("失败 · 模型 / 用例 Top%d" % top_n, fontsize=13, fontweight="bold", color=DARK, pad=12)
+    ax.set_title(f"失败 · 模型 / 用例 Top{top_n:d}", fontsize=13, fontweight="bold", color=DARK, pad=12)
     ax.grid(axis="x", alpha=0.3, zorder=0)
     ax.set_axisbelow(True)
     fig.tight_layout()
@@ -269,7 +269,7 @@ def render_analysis_status(analysis_distribution: dict[str, int]) -> str:
         "cancelled": "#6b7280",
         "raw_log_collected": "#8b5cf6",
     }
-    colors = [as_colors.get(l, GREY) for l in labels]
+    colors = [as_colors.get(label, GREY) for label in labels]
     fig, ax = plt.subplots(figsize=(6.4, max(2.6, len(labels) * 0.5 + 1.2)))
     y = range(len(labels))
     bars = ax.barh(y, values, color=colors, alpha=0.9, height=0.6, zorder=3)

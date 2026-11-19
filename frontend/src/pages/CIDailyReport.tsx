@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Statistic, Tag, Table, Typography, Space, Button, message, DatePicker, Drawer, Tree, List } from 'antd'
+import { Card, Row, Col, Statistic, Tag, Table, Typography, Space, Button, message, DatePicker, Drawer, Tree } from 'antd'
 import {
   ArrowLeftOutlined,
   DownloadOutlined,
@@ -378,18 +378,18 @@ function CIDailyReport() {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  h1: ({node, ...props}) => <h1 style={{ borderBottom: '2px solid #1890ff', paddingBottom: '8px', marginBottom: '16px' }} {...props} />,
-                  h2: ({node, ...props}) => <h2 style={{ color: '#1890ff', marginTop: '24px', marginBottom: '12px' }} {...props} />,
-                  h3: ({node, ...props}) => <h3 style={{ color: '#096dd9', marginTop: '16px', marginBottom: '8px' }} {...props} />,
-                  strong: ({node, ...props}) => <strong style={{ color: '#262626' }} {...props} />,
-                  code: ({node, inline, ...props}: any) => (
+                  h1: ({node: _node, ...props}) => <h1 style={{ borderBottom: '2px solid #1890ff', paddingBottom: '8px', marginBottom: '16px' }} {...props} />,
+                  h2: ({node: _node, ...props}) => <h2 style={{ color: '#1890ff', marginTop: '24px', marginBottom: '12px' }} {...props} />,
+                  h3: ({node: _node, ...props}) => <h3 style={{ color: '#096dd9', marginTop: '16px', marginBottom: '8px' }} {...props} />,
+                  strong: ({node: _node, ...props}) => <strong style={{ color: '#262626' }} {...props} />,
+                  code: ({node: _node, inline, ...props}: any) => (
                     inline ?
                     <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: '3px', fontSize: '0.9em' }} {...props} /> :
                     <pre style={{ background: '#f5f5f5', padding: '16px', borderRadius: '4px', overflow: 'auto' }}><code {...props} /></pre>
                   ),
-                  ul: ({node, ...props}) => <ul style={{ paddingLeft: '24px', marginBottom: '12px' }} {...props} />,
-                  li: ({node, ...props}) => <li style={{ marginBottom: '4px' }} {...props} />,
-                  p: ({node, ...props}) => <p style={{ marginBottom: '12px' }} {...props} />,
+                  ul: ({node: _node, ...props}) => <ul style={{ paddingLeft: '24px', marginBottom: '12px' }} {...props} />,
+                  li: ({node: _node, ...props}) => <li style={{ marginBottom: '4px' }} {...props} />,
+                  p: ({node: _node, ...props}) => <p style={{ marginBottom: '12px' }} {...props} />,
                 }}
               >
                 {report.markdown_report}

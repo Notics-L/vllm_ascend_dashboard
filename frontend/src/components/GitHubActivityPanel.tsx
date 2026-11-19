@@ -7,7 +7,6 @@ import {
   ArrowRightOutlined,
   CalendarOutlined,
 } from '@ant-design/icons'
-import { useQuery } from '@tanstack/react-query'
 import { useDailyData } from '../hooks/useDailySummary'
 import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'

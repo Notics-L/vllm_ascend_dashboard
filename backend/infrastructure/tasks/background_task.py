@@ -34,13 +34,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
-from enum import Enum
-from typing import Any, Callable
+from collections.abc import Callable
+from enum import StrEnum
+from typing import Any
 
-from sqlalchemy import Integer, String, Text, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.types import JSON, Float, TIMESTAMP
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ class TaskCancelled(Exception):
     pass
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """任务状态枚举"""
     PENDING = "pending"           # 已创建，等待执行
     RUNNING = "running"           # 正在执行
@@ -161,7 +160,7 @@ class BackgroundTaskTracker:
 
         Returns:
             新创建的任务记录 ID
-        
+
         Raises:
             RuntimeError: 当表不存在时
         """
@@ -304,7 +303,6 @@ class BackgroundTaskTracker:
         task_params: dict[str, Any],
     ) -> None:
         """内部方法：在 asyncio task 中执行后台任务"""
-        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
         tracker = BackgroundTaskTracker(task_id)
         try:
@@ -448,8 +446,9 @@ class BackgroundTaskTracker:
             message: 当前阶段描述
             result_metadata: 中间结果元数据
         """
-        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
         import json as _json
+
+        from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 
         updates: list[str] = ["progress_percent = :pct"]
         params: dict[str, Any] = {"pct": min(100, max(0, progress_percent)), "task_id": self.task_id}

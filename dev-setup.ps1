@@ -17,9 +17,11 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path .env.local)) {
     Copy-Item .env.local.example .env.local
     $jwt = -join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    $actionsKey = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
     $litellm = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
     (Get-Content .env.local) `
         -replace 'replace-with-a-random-local-jwt-secret', $jwt `
+        -replace 'replace-with-a-random-local-actions-master-key', $actionsKey `
         -replace 'replace-with-a-random-local-litellm-key', "sk-local-$litellm" `
         -replace 'replace-with-a-local-root-password', "local-root-$litellm" `
         -replace 'replace-with-a-local-database-password', "local-db-$litellm" |

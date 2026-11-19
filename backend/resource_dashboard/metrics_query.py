@@ -18,6 +18,8 @@ from contracts.schemas import (
     ResourcePodTimelineResponse,
     ResourceQuantity,
 )
+from infrastructure.clients.github_client import GitHubClient
+from infrastructure.core.config import settings
 from infrastructure.persistence.models import (
     CIResult,
     KubernetesClusterConfig,
@@ -25,8 +27,6 @@ from infrastructure.persistence.models import (
     ResourceNodeMetrics,
     ResourceNpuMetrics,
 )
-from infrastructure.clients.github_client import GitHubClient
-from infrastructure.core.config import settings
 from resource_dashboard.service import parse_job_workflow_ref
 
 logger = logging.getLogger(__name__)

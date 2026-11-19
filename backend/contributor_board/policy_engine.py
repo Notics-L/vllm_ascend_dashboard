@@ -10,21 +10,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import desc, select
 
 from infrastructure.persistence.models import (
-    Contributor,
     ContributorProfile,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class PolicyAction(str, Enum):
+class PolicyAction(StrEnum):
     """策略动作类型"""
     MAINTAINER_CANDIDATE = "maintainer_candidate"
     HIGH_PRIORITY_MERGE = "high_priority_merge"
@@ -40,14 +39,14 @@ class PolicyAction(str, Enum):
     CODE_QUALITY_TRACK = "code_quality_track"
 
 
-class PolicySeverity(str, Enum):
+class PolicySeverity(StrEnum):
     """策略严重程度"""
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"
 
 
-class PolicyExecution(str, Enum):
+class PolicyExecution(StrEnum):
     """策略执行方式"""
     AUTO = "auto"              # 系统自动执行
     SUGGESTION = "suggestion"  # 建议执行人工确认

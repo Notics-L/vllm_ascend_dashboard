@@ -4,8 +4,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from infrastructure.db.base import SessionLocal, engine
 from collector.npu_job_facts import backfill_npu_job_facts
+from infrastructure.db.base import SessionLocal, engine
 
 
 async def main() -> None:

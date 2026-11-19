@@ -328,6 +328,11 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed"
 set -a
 source "$ENV_FILE"
 set +a
+if [[ -z "${WORKFLOW_ACTIONS_ENCRYPTION_KEY:-}" || "${WORKFLOW_ACTIONS_ENCRYPTION_KEY}" == replace-with-* ]]; then
+    die "WORKFLOW_ACTIONS_ENCRYPTION_KEY is missing or uses a placeholder"
+fi
+[[ ${#WORKFLOW_ACTIONS_ENCRYPTION_KEY} -ge 32 ]] \
+    || die "WORKFLOW_ACTIONS_ENCRYPTION_KEY must be at least 32 characters"
 validate_runtime_files
 validate_external_volumes
 

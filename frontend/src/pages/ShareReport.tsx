@@ -4,7 +4,6 @@ import { Spin, Alert, Typography, Button, Space, Tag, Divider, Descriptions } fr
 import { DownloadOutlined, ShareAltOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getFailureAnalysis, getFailureAnalysisReport } from '../services/failureAnalysis'
 
 const { Title, Text } = Typography
 
@@ -95,15 +94,15 @@ export default function ShareReport() {
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-              table: ({ node, ...props }: any) => (
+              table: ({ node: _node, ...props }: any) => (
                 <div style={{ overflowX: 'auto', marginBottom: 16 }}>
                   <table style={{ borderCollapse: 'collapse', width: '100%' }} {...props} />
                 </div>
               ),
-              th: ({ node, ...props }: any) => (
+              th: ({ node: _node, ...props }: any) => (
                 <th style={{ border: '1px solid #d9d9d9', padding: '8px 12px', background: '#f5f5f5', textAlign: 'left' }} {...props} />
               ),
-              td: ({ node, ...props }: any) => (
+              td: ({ node: _node, ...props }: any) => (
                 <td style={{ border: '1px solid #d9d9d9', padding: '8px 12px', verticalAlign: 'top' }} {...props} />
               ),
             }}

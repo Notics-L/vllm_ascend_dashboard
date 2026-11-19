@@ -7,8 +7,7 @@ import {
   GithubOutlined,
   SyncOutlined,
   FileTextOutlined,
-  ExperimentOutlined,
-  DashboardOutlined,
+  ExperimentOutlined
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'

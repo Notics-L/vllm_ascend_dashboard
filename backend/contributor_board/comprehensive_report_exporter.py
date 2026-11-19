@@ -53,7 +53,7 @@ async def export_comprehensive_pdf(
     from jinja2 import Template
     from weasyprint import HTML
 
-    template = Template(COMPREHENSIVE_PDF_TEMPLATE)
+    template = Template(COMPREHENSIVE_PDF_TEMPLATE, autoescape=True)
     quadrant_dist = statistics.get("quadrant_distribution", {})
     dim_averages = statistics.get("dimension_averages", {})
 
@@ -96,10 +96,7 @@ def _risk_color(risk: str | None) -> str:
     return {"low": "#52c41a", "medium": "#faad14", "high": "#ff4d4f"}.get(risk, "#999")
 
 
-COMPARE_TEMPLATE_VAR = "_x"
-
-
-COMPARE_PDF_TEMPLATE = r"""<!DOCTYPE html>
+COMPREHENSIVE_PDF_TEMPLATE = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

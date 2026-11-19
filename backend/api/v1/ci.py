@@ -26,8 +26,8 @@ from contracts.schemas import (
     CIDailyReport,
     CIJobDetailResponse,
     CIJobResponse,
-    CIRunJobStats,
     CIResultResponse,
+    CIRunJobStats,
     CIStats,
     CISyncResponse,
     CITrend,
@@ -67,8 +67,8 @@ from infrastructure.persistence.run_attempts import (
     filter_current_run_attempt,
     is_current_run_attempt,
 )
-from tooling.ci_filters import build_workflow_time_filter
 from reporting.ci_daily_report_builder import _parse_model_and_yaml
+from tooling.ci_filters import build_workflow_time_filter
 from tooling.ci_version_snapshot import (
     get_version_snapshot,
     parse_ci_version_snapshot,

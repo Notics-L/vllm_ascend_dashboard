@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Table, Space, Tag, Typography, Button, Descriptions, Alert, Select, Tooltip, Spin } from 'antd'
+import { Card, Table, Space, Tag, Typography, Button, Descriptions, Alert, Select, Tooltip } from 'antd'
 import {
   ArrowLeftOutlined,
   EyeOutlined,

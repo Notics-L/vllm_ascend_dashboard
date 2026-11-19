@@ -32,7 +32,7 @@ def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) 
     # 汇总统计
     summary = context.get("summary", {})
     total = summary.get("total_contributors", 0)
-    lines.append(f"=== 总体概况 ===")
+    lines.append("=== 总体概况 ===")
     lines.append(f"累计贡献者: {total} 人")
     lines.append("")
 
@@ -76,7 +76,7 @@ def _build_prompt(snapshot_data: list[dict[str, Any]], context: dict[str, Any]) 
         lines.append(f"  新增贡献者: {new_count} 人")
         lines.append(f"  离开贡献者: {left_count} 人")
         if shifted:
-            lines.append(f"  象限变动:")
+            lines.append("  象限变动:")
             for s in shifted[:10]:
                 lines.append(f"    {s.get('login', '?')}: "
                             f"{QUADRANT_LABELS.get(s.get('from', ''), '?')} -> "
@@ -286,6 +286,7 @@ async def build_report_context(db: Any, repo_name: str | None = None) -> dict[st
     包括：当前周期 PR 聚合指标、历史快照、top 贡献者、权重变更等。
     """
     from sqlalchemy import select as sa_select
+
     from infrastructure.persistence.models import (
         ContributorProfile,
         ContributorScoreSnapshot,
@@ -311,7 +312,6 @@ async def build_report_context(db: Any, repo_name: str | None = None) -> dict[st
         return (reviewed / total) if total > 0 else 0.0
 
     enriched = []
-    quad_results = []
     for p in profiles:
         total_score = p.total_score or 0
         if total_score <= 0 and (p.pr_merged or 0) <= 0:

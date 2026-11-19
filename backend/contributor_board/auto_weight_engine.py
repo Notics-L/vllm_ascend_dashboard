@@ -97,7 +97,7 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
         weights = {d: round(redundancy[d] / total * 100.0, 2) for d in DIMENSIONS}
 
     cv_weights = _compute_cv_weights(values, DIMENSIONS)
-    
+
     # 综合置信度：熵分布均匀性 + 方法间相关性 + 样本量 + 维度稳定性
     entropy_conf = _entropy_distribution_confidence(weights)
     method_conf = _pearson_correlation(
@@ -112,7 +112,7 @@ def compute_weights(metrics_data: list[dict[str, Any]]) -> tuple[dict[str, float
     # 维度稳定性：有多少维度有有效的数据区分度（std > 0）
     stable_dims = sum(1 for d in DIMENSIONS if len(set(values[d])) > 1)
     dimension_factor = stable_dims / len(DIMENSIONS)
-    
+
     confidence = round(
         0.25 * entropy_conf
         + 0.25 * method_conf
@@ -138,7 +138,6 @@ def _preprocess(raw: list[float]) -> list[float]:
         return raw
 
     sorted_vals = sorted(raw)
-    n = len(sorted_vals)
     Q1 = _percentile(sorted_vals, 25)
     Q3 = _percentile(sorted_vals, 75)
     IQR = Q3 - Q1

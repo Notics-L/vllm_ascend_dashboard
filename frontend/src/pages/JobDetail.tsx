@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Button, Space, Typography, Tag, Descriptions, Timeline, Empty, Alert, message, Spin, Tooltip } from 'antd'
+import { Card, Button, Space, Typography, Tag, Descriptions, Timeline, Empty, Alert, message, Spin } from 'antd'
 import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
@@ -322,15 +322,15 @@ function JobDetail() {
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
-                          table: ({ node, ...props }) => (
+                          table: ({ node: _node, ...props }) => (
                             <div style={{ overflowX: 'auto', marginBottom: 16 }}>
                               <table style={{ borderCollapse: 'collapse', width: '100%' }} {...props} />
                             </div>
                           ),
-                          th: ({ node, ...props }) => (
+                          th: ({ node: _node, ...props }) => (
                             <th style={{ border: '1px solid #d9d9d9', padding: '8px 12px', background: '#f5f5f5', textAlign: 'left' }} {...props} />
                           ),
-                          td: ({ node, ...props }) => (
+                          td: ({ node: _node, ...props }) => (
                             <td style={{ border: '1px solid #d9d9d9', padding: '8px 12px', verticalAlign: 'top' }} {...props} />
                           ),
                         }}

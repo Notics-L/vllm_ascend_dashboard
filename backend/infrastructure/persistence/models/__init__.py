@@ -51,11 +51,17 @@ __all__ = [
     "ReleaseWorkflow", "ReleaseBuildRun", "ReleaseBuildGroup",
     "ImageBuildMonitorTarget", "ImageBuildAlert",
     "ReleaseThirdPartyVersion", "ReleaseThirdPartyBaseline",
+    "WorkflowActionLog", "WorkflowActionPermission",
+    "WorkflowActionSchedule", "WorkflowSchedulePermission",
     "ReleaseAIEvaluation", "ReleaseAnalysisTask",
 ]
 
 
 # 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
+from infrastructure.persistence.models.image_build_monitor import (
+    ImageBuildAlert,
+    ImageBuildMonitorTarget,
+)
 from infrastructure.persistence.models.release_management import (
     ReleaseAIEvaluation,
     ReleaseAnalysisTask,
@@ -66,9 +72,11 @@ from infrastructure.persistence.models.release_management import (
     ReleaseThirdPartyVersion,
     ReleaseWorkflow,
 )
-from infrastructure.persistence.models.image_build_monitor import (
-    ImageBuildAlert,
-    ImageBuildMonitorTarget,
+from infrastructure.persistence.models.workflow_actions import (
+    WorkflowActionLog,
+    WorkflowActionPermission,
+    WorkflowActionSchedule,
+    WorkflowSchedulePermission,
 )
 
 

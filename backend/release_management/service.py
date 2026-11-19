@@ -65,9 +65,9 @@ class ReleaseManagementService:
         trigger_source: str = "scheduled"
     ) -> dict[str, Any]:
         """触发同步并返回创建的 task_id（供 scheduler 调用）"""
-        from datetime import UTC, datetime
         import asyncio
-        
+        from datetime import UTC, datetime
+
         task = ReleaseAnalysisTask(
             workflow_id=workflow_id,
             task_type="sync_runs",
@@ -83,11 +83,11 @@ class ReleaseManagementService:
         self.db.add(task)
         await self.db.commit()
         await self.db.refresh(task)
-        
+
         # Import here to avoid circular imports
         from api.v1.release_management import _run_sync_task
         asyncio.create_task(_run_sync_task(task.id, workflow_id, days_back, max_runs))
-        
+
         return {
             "collected": 0,
             "task_id": task.id,

@@ -272,7 +272,7 @@ async def seed(db, clear: bool = False):
         contrib.role_types = roles
 
     await db.commit()
-    print(f"[seed] Updated role_types for all contributors")
+    print("[seed] Updated role_types for all contributors")
     print(f"[seed] Done! Total: {len(CONTRIBUTORS)} contributors, {profile_count} profiles, {build_plan_count} build plans")
 
 

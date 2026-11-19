@@ -14,7 +14,7 @@ import {
   ExclamationCircleOutlined,
   LineChartOutlined,
 } from '@ant-design/icons'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import { useDailyData, useFetchDailyData, useRefreshDailyStatus, useLLMProviders, useTrendData } from '../hooks/useDailySummary'
 import { useCommitAnalysisBatch } from '../hooks/useCommitAnalysis'

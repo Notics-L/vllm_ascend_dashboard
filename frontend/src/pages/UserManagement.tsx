@@ -80,7 +80,7 @@ function UserManagement() {
   // 删除用户
   const handleDelete = (userId: number) => {
     deleteMutation.mutate(userId, {
-      onSuccess: (data) => {
+      onSuccess: (_data) => {
         message.success('用户已删除')
       },
       onError: (error: any) => {

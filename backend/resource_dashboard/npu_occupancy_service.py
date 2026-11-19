@@ -259,6 +259,12 @@ def _bucket_floor(value: datetime) -> datetime:
     return datetime.fromtimestamp(epoch - epoch % STEP_SECONDS, tz=UTC)
 
 
+def observed_window(start: datetime, end: datetime, snapshot: datetime) -> tuple[datetime, datetime]:
+    if start > snapshot:
+        return snapshot - (end - start), snapshot
+    return start, min(end, snapshot)
+
+
 class NpuOccupancyService:
     def __init__(self, client: NpuOccupancyClient | None = None, envs: list[dict] | None = None, records: list[OccupancyRecord] | None = None, snapshot_at: datetime | None = None):
         self.client = client or NpuOccupancyClient()
@@ -330,7 +336,7 @@ class NpuOccupancyService:
         records, resolved_names = self._selected(records, dimension, names)
         # A persisted snapshot cannot describe time after it was captured.
         # Stop there rather than rendering those unknown buckets as zero.
-        observed_end = min(end, snapshot_at)
+        start, observed_end = observed_window(start, end, snapshot_at)
         points: list[dict[str, object]] = []
         cursor = _bucket_floor(start)
         while cursor <= observed_end:
@@ -380,7 +386,7 @@ class NpuOccupancyService:
         # A persisted snapshot cannot describe the future portion of a browser
         # selected range. Use the same observed end as trend(), both for the
         # metrics and the response shown by the analysis table.
-        observed_end = min(end, snapshot_at)
+        start, observed_end = observed_window(start, end, snapshot_at)
         grouped: dict[str, list[OccupancyRecord]] = defaultdict(list)
         for record in records:
             if record.created_at < observed_end and record.effective_end > start:

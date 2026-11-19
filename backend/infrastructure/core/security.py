@@ -5,8 +5,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+import jwt
 from cryptography.fernet import Fernet
-from jose import ExpiredSignatureError, JWTError, jwt
 
 from infrastructure.core.config import settings
 
@@ -74,9 +74,9 @@ def create_refresh_token(data: dict) -> str:
 def decode_token(token: str) -> dict | None:
     try:
         return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-    except ExpiredSignatureError:
+    except jwt.ExpiredSignatureError:
         return None
-    except JWTError as e:
+    except jwt.InvalidTokenError as e:
         # Tokens are credentials.  Never include even a prefix in logs because
         # logs are commonly exported to third-party observability systems.
         _logger.warning("JWT decode error: %s", e)

@@ -23,6 +23,7 @@ from resource_dashboard.npu_occupancy_service import (
     OccupancyRecord,
     enrich_records_with_runs,
     normalize_records,
+    observed_window,
     parse_timestamp,
 )
 
@@ -430,6 +431,7 @@ class NpuOccupancyRepository:
             snapshot_at = snapshot_at.replace(tzinfo=UTC)
         if snapshot_at is None:
             return [], None
+        start, end = observed_window(start, end, snapshot_at)
         key = (snapshot_at, start, end, tuple(sorted(pools or [])))
         cached = type(self)._records_cache.get(key)
         if cached and monotonic() - cached[0] < settings.NPU_OCCUPANCY_RECORDS_CACHE_TTL_SECONDS:

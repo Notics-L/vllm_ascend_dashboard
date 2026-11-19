@@ -9,6 +9,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import CIBoard from './pages/CIBoard'
 import WorkflowDetail from './pages/WorkflowDetail'
+import WorkflowActions from './pages/WorkflowActions'
 import JobDetail from './pages/JobDetail'
 import JobRuns from './pages/JobRuns'
 import CIDailyReport from './pages/CIDailyReport'
@@ -194,6 +195,7 @@ function App() {
             }>
               <Route index element={<Dashboard />} />
               <Route path="ci" element={<CIBoard />} />
+              <Route path="workflow-actions" element={<WorkflowActions />} />
               <Route path="image-build-monitor" element={<ImageBuildMonitor />} />
               {/* Project Dashboard */}
               <Route path="project" element={<ProjectBoard />} />

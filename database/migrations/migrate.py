@@ -64,6 +64,8 @@ from database.migrations.contributor_board_refactor import run as migrate_contri
 from database.migrations.release_analysis_task_columns import run as migrate_release_analysis_task_columns
 from database.migrations.release_build_groups_columns import run as migrate_release_build_groups_columns
 from database.migrations.release_third_party_repository_url import run as migrate_release_third_party_repository_url
+from database.migrations.workflow_actions import run as migrate_workflow_actions
+from database.migrations.workflow_action_schedules import run as migrate_workflow_action_schedules
 from infrastructure.db.base import SessionLocal, engine
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -115,6 +117,8 @@ async def migrate() -> None:
     release_groups_result = await migrate_release_build_groups_columns()
     release_tp_url_result = await migrate_release_third_party_repository_url()
     image_build_monitor_result = await migrate_image_build_monitor()
+    await migrate_workflow_actions()
+    await migrate_workflow_action_schedules()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(

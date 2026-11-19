@@ -185,7 +185,6 @@ async def get_role_stats(
     total_approvals = 0
 
     for p in profiles:
-        roles = [p.role] if p.role else []
         dev = (p.pr_merged or 0) > 0 or (p.code_files or 0) > 0
         rev = (p.review_count or 0) >= REVIEWER_THRESHOLD
         main = (p.pr_merged or 0) >= MAINTAINER_MIN_MERGE
@@ -326,7 +325,7 @@ async def get_role_ranking(
     rankings: list[ContributorRankingItem] = []
     for i, p in enumerate(matched[:limit]):
         c = contributor_map.get(p.login)
-        pr_total = (p.pr_merged or 0) + (p.pr_open or 0) + (p.pr_closed or 0)
+        (p.pr_merged or 0) + (p.pr_open or 0) + (p.pr_closed or 0)
         rankings.append(
             ContributorRankingItem(
                 login=p.login,
@@ -339,7 +338,7 @@ async def get_role_ranking(
                 merged_pr_count=int(p.pr_merged or 0),
                 pending_pr_count=int(p.pr_open or 0),
                 code_additions=int(p.code_files or 0),
-                code_deletions=int(0),
+                code_deletions=0,
                 review_count=int(p.review_count or 0),
                 approval_count=int(p.approval_count or 0),
                 contribution_score=float(p.total_score or 0),

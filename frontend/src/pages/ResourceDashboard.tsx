@@ -22,7 +22,6 @@ import {
   Tooltip as AntdTooltip,
   Typography,
 } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
 import { useQuery, useQueries } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import {
@@ -41,7 +40,6 @@ import {
   KubernetesCluster,
   ResourceNodeInfo,
   ResourcePodInfo,
-  ResourceQuantity,
   getEnabledResourceClusters,
   getClusterSummary,
 } from '../services/resourceDashboard'

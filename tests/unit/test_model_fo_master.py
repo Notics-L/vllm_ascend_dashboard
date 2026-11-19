@@ -13,7 +13,7 @@ DB 相关用例需要可用 MySQL（tests/mysql_test_db.py 的 TEST_DATABASE_URL
 from __future__ import annotations
 
 import io
-from datetime import UTC, date
+from datetime import date
 
 import pytest
 from openpyxl import Workbook
@@ -30,7 +30,6 @@ from reporting.ci_daily_report_builder import (
     CIDailyReportBuilder,
     _parse_model_and_yaml,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -270,7 +269,7 @@ async def test_build_job_model_fo_map_model_name_lowercase_fallback(master_sessi
     db.add(_master(
         suite="A2", node_type="单机",
         test_yaml="other.yaml",  # yaml 不匹配
-        model_name="Qwen3-30B-A3B-BF16-A2-Performance",
+        model_name="Qwen3-30B-A3B-BF16-A2",
         model_fo="主库FO-model",
     ))
     job = _ci_job(1, 100, "Nightly-A2", "run-1")

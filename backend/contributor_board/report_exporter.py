@@ -1,7 +1,6 @@
 """贡献者评分报告 PDF 导出引擎"""
 from __future__ import annotations
 
-import io
 import logging
 from datetime import datetime
 from typing import Any

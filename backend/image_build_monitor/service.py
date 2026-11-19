@@ -735,16 +735,13 @@ class ImageBuildMonitorService:
         ).scalars().all()
         open_by_key = {alert.dedupe_key: alert for alert in open_alerts}
 
-        all_keys = {
-            key
-            for key in (
+        all_keys = set((
                 await self.db.execute(
                     select(ImageBuildAlert.dedupe_key).where(
                         ImageBuildAlert.target_id == target.id
                     )
                 )
-            ).scalars().all()
-        }
+            ).scalars().all())
 
         created = 0
         to_notify: list[ImageBuildAlert] = []
