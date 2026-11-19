@@ -1,0 +1,77 @@
+@startuml
+title 看板后台：自动问题处理
+autonumber
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+control 流水线采集模块 as Collect
+control 自动问题处理模块 as Processing
+database 看板数据库 as DB
+participant "vLLM Ascend 社区\nPR / 工作流" as GitHub
+participant "通知系统（独立）" as Notification
+control Daily用例管理模块 as Cases
+
+Collect -> Processing : 提交新增失败记录 ID
+Processing -> DB : 按失败记录 ID 幂等创建任务
+DB --> Processing : 新建或已有任务
+Processing --> Collect : 任务已接收
+
+opt 新任务后台执行
+  Processing -> Cases : 标记问题处理中，暂不参与后续调度
+  Cases -> DB : 保存处理标记
+  Processing -> DB : 读取失败上下文和历史成功记录
+  DB --> Processing : 失败信息、执行环境、版本信息
+  Processing -> Processing : 自动问题定位
+  Processing -> DB : 保存定位结果和阶段记录
+
+  alt 代码问题
+    Processing -> GitHub : 创建回退 PR
+    GitHub --> Processing : 回退 PR 信息
+    Processing -> DB : 保存“回退PR”阶段结果
+    Processing -> Notification : 请求发送问题 PR 通知
+    Notification --> Processing : 返回通知结果
+    Processing -> DB : 保存“问题PR通知”阶段结果
+    loop 等待 PR 合入，直到合入或时间窗口结束
+      Processing -> GitHub : 查询回退 PR 的合入状态
+      GitHub --> Processing : 当前合入状态
+    end
+    alt 回退 PR 已在处理时间窗口内合入
+      Processing -> DB : 保存“PR合入”结果，标记已解决
+    else 截止时间仍未合入
+      Processing -> DB : 保存“PR合入”结果，标记未解决
+    end
+
+  else 版本配套问题
+    Processing -> GitHub : 创建版本回退 PR
+    GitHub --> Processing : 版本回退 PR 信息
+    Processing -> DB : 保存“回退版本PR”阶段结果
+    loop 等待 PR 合入，直到合入或时间窗口结束
+      Processing -> GitHub : 查询版本回退 PR 的合入状态
+      GitHub --> Processing : 当前合入状态
+    end
+    Processing -> DB : 保存“PR合入”阶段结果
+    alt PR 已合入且仍在处理时间窗口内
+      Processing -> GitHub : 触发镜像重建
+      GitHub --> Processing : 构建请求已受理
+      loop 构建未结束且未超过处理时间窗口
+        Processing -> GitHub : 查询镜像重建结果
+        GitHub --> Processing : 构建状态及结果
+      end
+      alt 镜像在处理时间窗口内构建成功
+        Processing -> DB : 保存镜像构建结果，标记已解决
+      else 构建失败或超时
+        Processing -> DB : 保存镜像构建结果，标记未解决
+      end
+    else 未合入或时间窗口已结束
+      Processing -> DB : 保存未解决状态
+    end
+
+  else 环境问题
+    Processing -> DB : 按环境问题策略保存“标记成功”结果
+  end
+
+  Processing -> Cases : 更新最终处理标记
+  Cases -> DB : 保存标记，供下一轮调度筛选
+end
+note over Processing,Cases : 后台持续保存阶段时间和结果，供问题跟踪页面查询。
+note over Processing,Cases : 处理中、未解决的用例被后续调度过滤；已解决后仍需满足选中和启用条件。
+@enduml

@@ -1,0 +1,71 @@
+@startuml
+title 第二部分：Daily 看板系统组件图（逻辑视图）
+top to bottom direction
+skinparam defaultFontName Microsoft YaHei
+skinparam componentStyle uml2
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam defaultFontSize 13
+skinparam ArrowColor #64748B
+skinparam componentBackgroundColor #FFFFFF
+skinparam componentBorderColor #94A3B8
+skinparam packageBackgroundColor #F8FAFC
+skinparam packageBorderColor #CBD5E1
+
+package "第二部分：看板系统" {
+package "表示层" {
+  component "看板前端\n概览 / Daily 用例 / 流水线触发\n流水线采集 / 问题跟踪" as UI
+}
+package "业务层" {
+  component "Daily 用例管理模块" as Cases
+  component "触发与调度模块" as Trigger
+  component "流水线采集模块" as Collection
+  component "自动问题处理模块\n定位 / 代码 / 版本配套 / 环境" as Processing
+  component "问题跟踪模块" as Tracking
+  component "统计查询模块" as Statistics
+}
+package "数据与外部接入层" {
+  component "数据访问组件" as Repository
+  component "GitHub 接入组件" as GitHubClient
+  component "通知接入组件" as NotificationClient
+  database "看板数据库" as DB
+}
+}
+cloud "vLLM Ascend 社区\n工作流 / 测试结果 / Issues" as GitHub
+cloud "通知系统（独立）" as Notification
+
+UI ..> Cases : 查询目录、维护 Daily 用例配置
+UI ..> Trigger : 保存 Token / Cron、查询触发日志
+UI ..> Collection : 查询采集记录与执行详情
+UI ..> Tracking : 查询失败、Issue、处理进展\n记录管理与主动关闭
+UI ..> Statistics : 查询概览统计
+Cases ..> Repository : 读写用例配置和处理标记
+Cases ..> GitHubClient : 获取 Nightly 用例目录
+Trigger ..> Repository : 读取 Token / Cron / 用例配置 / 处理标记\n保存触发日志和本轮用例快照
+Trigger ..> GitHubClient : 调用 workflow_dispatch\n触发 schedule_daily_test.yaml
+Collection ..> Repository : 保存 Run、Job、用例结果\n维护触发记录与 Issue 关联
+Collection ..> GitHubClient : 采集主/子 Run、Job、用例、Issue
+Collection ..> Processing : 提交新增失败记录（幂等）
+Processing ..> Repository : 读取失败上下文\n保存任务、阶段记录和处理结果
+Processing ..> GitHubClient : 回退 PR、合入查询、镜像构建
+Processing ..> NotificationClient : 问题 PR 通知
+Processing ..> Cases : 更新用例处理标记
+Tracking ..> Repository : 查询失败与 Issue 关联\n维护问题跟踪记录
+Tracking ..> GitHubClient : Issue 正文、评论与主动关闭
+Tracking ..> Processing : 查询处理结果、阶段记录
+Statistics ..> Repository : 聚合查询
+Repository ..> DB : 数据读写
+GitHubClient ..> GitHub : 调用 GitHub API
+NotificationClient ..> Notification : 提交通知请求、接收通知结果
+note right of Trigger
+  读取配置与处理标记，筛选本轮用例，
+  生成参数并触发社区 Daily 主流水线。
+end note
+note right of Processing
+  后台执行自动处理。
+  打开页面只查询进展，不启动处理任务。
+end note
+note right of GitHubClient
+  触发和采集共用 GitHub Token 配置。
+end note
+@enduml

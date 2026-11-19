@@ -65,6 +65,7 @@ services:
       - "${DEV_BACKEND_PORT:-8000}:8000"
     volumes:
       - dev_backend_data:/app/data
+      - ../../../data/logs/daily_pipeline:/app/data/logs/daily_pipeline
       - ../../config-templates/litellm_config.yaml:/app/litellm_config.yaml
       - ../../../file:/app/replay:ro
     depends_on:
@@ -105,6 +106,28 @@ services:
     depends_on:
       backend:
         condition: service_started
+
+  daily-catalog:
+    build:
+      context: ../../../
+      dockerfile: backend/api/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ../../../.env.local
+    environment:
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER:-dashboard}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-vllm_dashboard}
+      ENVIRONMENT: development
+      DATA_DIR: /app/data
+    volumes:
+      - ../../../data/logs/daily_pipeline:/app/data/logs/daily_pipeline
+    command: python -m daily_pipeline.scheduler
+    healthcheck:
+      disable: true
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+    profiles: ["workers"]
 
   scheduler:
     build:

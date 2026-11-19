@@ -1,0 +1,49 @@
+@startuml
+title 看板：流水线结果采集与展示
+autonumber
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+control 流水线采集模块 as Collect
+control "自动问题处理模块\n看板后台" as Processing
+participant "vLLM Ascend 社区\nGitHub Actions / Issues" as GitHub
+database 看板数据库 as DB
+boundary 看板页面 as UI
+actor 用户 as User
+
+par 后台执行结果采集
+loop 定时采集，直到主 Run 和关联子工作流均结束
+  Collect -> DB : 读取待跟踪的触发记录及 Run 关联
+  DB --> Collect : 触发记录和已有的 Run 关联（可为空）
+  Collect -> GitHub : 关联本轮 Run，查询主流水线、各 Job、子工作流及 Issue
+  GitHub --> Collect : 状态、结果、时间、日志或结果文件、Issue 状态
+  Collect -> Collect : 解析用例结果，识别失败用例
+  Collect -> DB : 更新 Run / Job / 用例结果及关联 Issue
+  opt 存在新增失败记录
+    Collect -> Processing : 提交失败记录 ID
+    Processing -> DB : 按失败记录 ID 幂等创建处理任务
+    DB --> Processing : 返回新建或已有任务
+    Processing --> Collect : 任务已接收
+  end
+end
+else 后台 Issue 状态同步
+  loop 对保留跟踪的 Issue 独立周期同步
+    Collect -> DB : 读取关联 Issue 列表
+    DB --> Collect : Issue 编号及已有状态
+    Collect -> GitHub : 查询 Issue 实际状态
+    GitHub --> Collect : open / closed
+    Collect -> DB : 同步 Issue 状态及关联记录
+  end
+else 用户查询
+  User -> UI : 打开流水线采集页面或点击刷新
+  UI -> Collect : 查询采集记录 / 采集详情
+  Collect -> DB : 读取采集结果及触发日志关联
+  DB --> Collect : Run、Job、用例结果、Issue
+  Collect --> UI : 返回列表或详情数据
+  UI --> User : 展示最新执行结果
+end
+note over Collect,GitHub : 主流水线的 dispatch Job 成功，不等于子工作流测试成功。
+note over Collect,GitHub : 社区流水线增量维护 Issue，看板采集并保留关联。
+note over Collect,GitHub : 需建立触发记录、主 Run、各子 Run 的可靠关联。
+note over Collect,Processing : 自动处理异步执行，重复采集不会重复创建回退任务。
+note over Collect,GitHub : Run 采集结束后，Issue 同步仍独立进行，以获取后续人工关闭或其他状态变化。
+@enduml

@@ -213,13 +213,13 @@ wait_for_schema_lock_drain() {
 
 stop_database_writers() {
     step "Stop database writers"
-    compose stop backend scheduler collector || die "failed to stop database writer services"
-    ok "backend, scheduler, and collector stopped"
+    compose stop daily-catalog backend scheduler collector || die "failed to stop database writer services"
+    ok "backend, scheduler, collector, and Daily scheduler stopped"
 }
 
 database_writer_ips() {
     local service container
-    for service in backend scheduler collector; do
+    for service in backend scheduler collector daily-catalog; do
         container="$(service_container_any "$service")"
         [[ -n "$container" ]] || continue
         docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' "$container"
@@ -264,11 +264,9 @@ confirm_failed_migration_recovery() {
 wait_for_health() {
     local elapsed=0
     while (( elapsed < MAX_WAIT )); do
-        local backend_container
-        backend_container="$(service_container backend)"
         if curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/health" >/dev/null 2>&1 \
-            && [[ -n "$backend_container" ]] \
-            && docker inspect --format '{{.State.Health.Status}}' "$backend_container" 2>/dev/null | grep -q '^healthy$'; then
+            && service_is_healthy backend \
+            && service_is_healthy daily-catalog; then
             return 0
         fi
         sleep 2
@@ -314,7 +312,7 @@ recover_failed_migration() {
     (( post_users >= backup_users && post_tables >= backup_tables )) \
         || die "restored database validation failed: users=$post_users/$backup_users tables=$post_tables/$backup_tables"
 
-    compose up -d mysql litellm backend frontend scheduler collector
+    compose up -d mysql litellm backend frontend scheduler collector daily-catalog
     wait_for_health || die "database restored but services are unhealthy"
     ok "recovery complete: users=$post_users tables=$post_tables"
     get_user_list | sed 's/^/  /'
@@ -457,14 +455,14 @@ fi
 
 step "6/9 Start updated containers"
 if $FAST; then
-    start_services=(backend frontend scheduler collector)
+    start_services=(backend frontend scheduler collector daily-catalog)
     # Most fast deployments leave the proxy untouched.  A changed LiteLLM
     # runtime wrapper/config mount must be recreated once to take effect.
     if $litellm_runtime_changed; then
         start_services=(litellm "${start_services[@]}")
     fi
 else
-    start_services=(mysql litellm backend frontend scheduler collector)
+    start_services=(mysql litellm backend frontend scheduler collector daily-catalog)
 fi
 if ! compose up -d "${start_services[@]}"; then
     die "container startup failed; database was not restored automatically"
@@ -476,7 +474,7 @@ if ! wait_for_health; then
 fi
 curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/api/v1/daily-report/latest" >/dev/null 2>&1 \
     && warn "daily report endpoint unexpectedly allowed anonymous access" || true
-ok "frontend and backend containers are healthy"
+ok "frontend, backend, and Daily scheduler containers are healthy"
 
 step "8/9 Login and database preservation"
 login_payload="$(DEPLOY_ADMIN_USERNAME="$DEPLOY_ADMIN_USERNAME" DEPLOY_ADMIN_PASSWORD="$DEPLOY_ADMIN_PASSWORD" python3 -c 'import json,os; print(json.dumps({"username":os.environ["DEPLOY_ADMIN_USERNAME"],"password":os.environ["DEPLOY_ADMIN_PASSWORD"]}))')"

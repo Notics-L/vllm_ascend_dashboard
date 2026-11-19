@@ -1,0 +1,79 @@
+.daily-issue-drawer .ant-drawer-title,
+.daily-issue-drawer .ant-drawer-body,
+.daily-issue-drawer .ant-typography,
+.daily-issue-drawer .ant-list {
+  color: #10213a;
+  font-size: 13px;
+}
+
+.daily-issue-drawer .ant-drawer-body {
+  overflow-wrap: anywhere;
+}
+
+.daily-issue-title {
+  display: block;
+  margin: 0 0 20px;
+}
+
+.daily-issue-comments {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.daily-issue-comment {
+  width: 100%;
+  min-width: 0;
+}
+
+.daily-issue-comment-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.daily-issue-comment-meta time {
+  color: #64748b;
+}
+
+.daily-issue-drawer h4.daily-issue-title {
+  font-size: 18px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.daily-issue-drawer .daily-issue-external-link {
+  color: #1677ff;
+  white-space: nowrap;
+}
+
+.daily-issue-body {
+  line-height: 1.7;
+}
+
+.daily-issue-body ul,
+.daily-issue-comment-body ul {
+  padding-left: 22px;
+}
+
+.daily-issue-comment {
+  border: 1px solid #e8ecf2;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.daily-issue-comment-meta {
+  background: #f7f9fc;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e8ecf2;
+}
+
+.daily-issue-comment-body {
+  padding: 12px;
+  line-height: 1.7;
+}
+
+.daily-issue-comment-body p:last-child {
+  margin-bottom: 0;
+}

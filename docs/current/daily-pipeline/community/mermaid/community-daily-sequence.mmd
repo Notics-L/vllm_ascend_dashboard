@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant D as Daily 主流水线
+    participant A as 子流水线 A
+    participant B as 子流水线 B
+    participant W as Issue 更新 workflow
+    participant G as vLLM Ascend 社区 Issue
+
+    Note over D,B: 现有流水线调用结构，补充传递本轮标识
+
+    D->>A: 调用（本轮标识）
+    D->>B: 调用（同一本轮标识）
+
+    Note over A,B: 两条子流水线并行执行用例
+
+    par 子流水线 A
+        loop 每出现一个失败用例
+            A->>W: workflow_dispatch（本轮标识、失败信息）
+        end
+    and 子流水线 B
+        loop 每出现一个失败用例
+            B->>W: workflow_dispatch（本轮标识、失败信息）
+        end
+    end
+
+    Note over W: 同一本轮标识的更新任务排队，串行执行
+
+    loop 每个更新任务
+        W->>G: 根据本轮标识查找 Issue
+        alt Issue 不存在
+            G-->>W: 未找到
+            W->>G: 创建 Issue，写入本轮标识和失败信息
+        else Issue 已存在
+            G-->>W: 返回 Issue 及正文
+            W->>G: 合并新增失败信息，更新正文
+        end
+        G-->>W: 操作结果
+    end
+
+    Note over D,G: 全部成功时，不触发更新 workflow，不创建 Issue

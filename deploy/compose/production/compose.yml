@@ -193,6 +193,31 @@ services:
     profiles:
       - full
 
+  daily-catalog:
+    image: ${DASHBOARD_BACKEND_IMAGE:?set DASHBOARD_BACKEND_IMAGE to a CI-published immutable image}
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${DASHBOARD_RUNTIME_ENV_FILE:-../../../.env.production}
+    environment:
+      DATABASE_URL: mysql+aiomysql://${CONTROL_DB_USER:-control_svc}:${CONTROL_DB_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-vllm_dashboard}
+      DATA_DIR: /app/data
+    volumes:
+      - backend_data:/app/data
+    networks:
+      - dashboard-network
+    command: python -m daily_pipeline.scheduler
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:9001/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles: ["full"]
+
   # ── Scheduler（Phase A 拆分后独立运行）──
   scheduler:
     image: ${DASHBOARD_BACKEND_IMAGE:?set DASHBOARD_BACKEND_IMAGE to a CI-published immutable image}

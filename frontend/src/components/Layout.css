@@ -103,11 +103,39 @@
   font-weight: 500;
 }
 
+.app-menu .ant-menu-submenu-title {
+  height: 42px !important;
+  line-height: 42px !important;
+  margin: 3px 0 !important;
+  padding-inline: 13px !important;
+  color: #b7c4de !important;
+  border-radius: 9px !important;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.app-menu .ant-menu-submenu-title:hover {
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+
+.app-menu .ant-menu-submenu-selected > .ant-menu-submenu-title {
+  color: #fff !important;
+}
+
+.app-menu .ant-menu-sub.ant-menu-inline {
+  background: transparent !important;
+}
+
+.app-menu .ant-menu-sub.ant-menu-inline .ant-menu-item {
+  padding-inline-start: 43px !important;
+}
+
 .app-menu .ant-menu-item .anticon {
   font-size: 16px;
 }
 
-.app-menu .ant-menu-item:hover {
+.app-menu .ant-menu-item:not(.ant-menu-item-selected):hover {
   color: #fff !important;
   background: rgba(255, 255, 255, 0.07) !important;
 }
@@ -246,23 +274,34 @@
 }
 
 .page-context {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  min-width: 0;
 }
 
-.page-context span {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+.page-context .ant-breadcrumb {
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
 }
 
-.page-context strong {
+.page-context .ant-breadcrumb ol {
+  flex-wrap: nowrap;
+}
+
+.page-context .ant-breadcrumb li:not(:last-child) {
+  flex-shrink: 0;
+}
+
+.page-context .ant-breadcrumb li:last-child {
+  min-width: 0;
   color: var(--text-primary);
-  font-size: 17px;
-  letter-spacing: -0.015em;
+}
+
+.page-context .ant-breadcrumb-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-action-button {
@@ -326,6 +365,10 @@
   background: transparent;
   position: relative;
   z-index: 1;
+}
+
+.app-content.app-content-wide {
+  max-width: none;
 }
 
 .app-content > * {
@@ -403,18 +446,17 @@
     --app-header-height: 64px;
   }
 
-  .page-context span,
   .header-action-button span,
   .user-copy {
     display: none;
   }
 
-  .page-context strong {
+  .page-context {
     max-width: 135px;
-    overflow: hidden;
-    font-size: 15px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+
+  .page-context .ant-breadcrumb li:not(:last-child) {
+    display: none;
   }
 
   .header-action-button {

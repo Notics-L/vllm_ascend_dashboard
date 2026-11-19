@@ -1,0 +1,47 @@
+@startuml
+title 看板：问题跟踪与主动关闭 Issue
+autonumber
+skinparam defaultFontName Microsoft YaHei
+skinparam shadowing false
+actor 用户 as User
+boundary 看板页面 as UI
+control 问题跟踪模块 as Tracking
+database 看板数据库 as DB
+control "自动问题处理模块\n看板后台" as Processing
+participant "社区 GitHub Issues" as GitHub
+
+User -> UI : 查看 Issue 处理进展
+UI -> Tracking : 查询 Issue 元信息与关联用例
+Tracking -> DB : 通过 Issue 与 Run 关联读取失败用例
+DB --> Tracking : Issue、Run 关联、失败用例信息
+Tracking -> Processing : 查询关联失败用例的处理状态与阶段
+Processing -> DB : 读取任务状态、处理结果和阶段记录
+DB --> Processing : 已保存的处理进展
+Processing --> Tracking : 各用例处理结果及时间线
+Tracking --> UI : Issue 信息、各用例处理状态
+UI --> User : 展示用例直接汇聚到 Issue 的依赖图
+
+opt 点击用例节点
+  User -> UI : 查看用例处理进展
+  UI -> Tracking : 查询失败信息与阶段详情
+  Tracking -> DB : 读取失败信息与处理记录
+  DB --> Tracking : 失败信息、阶段时间点、阶段结果
+  Tracking --> UI : 返回用例进展数据
+  UI --> User : 从右侧滑出处理进展
+end
+
+opt 用户主动关闭 Issue
+  User -> UI : 点击“关闭”
+  UI -> Tracking : 请求关闭 Issue
+  Tracking -> GitHub : 更新 Issue 状态为 closed
+  GitHub --> Tracking : 返回实际 Issue 状态
+  Tracking -> DB : 同步 Issue 状态及关联记录
+  Tracking --> UI : 返回最新状态
+  UI --> User : 更新页面和依赖图中的 Issue 状态
+end
+note over UI,GitHub
+  打开页面只查询进展，不启动自动定位或回退。
+  依赖图展示处理关系，不自行关闭 Issue。
+  社区其他方式修改的 Issue 状态，由采集同步。
+end note
+@enduml
