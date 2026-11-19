@@ -5,9 +5,10 @@ from datetime import UTC, datetime
 
 import httpx
 import yaml
+from pydantic import BaseModel, Field, TypeAdapter
+
 from infrastructure.clients.daily_pipeline_config import read_nightly_config
 from infrastructure.persistence.daily_pipeline_cases import DailyCaseRepository
-from pydantic import BaseModel, Field, TypeAdapter
 
 logger = logging.getLogger(__name__)
 

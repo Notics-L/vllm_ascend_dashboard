@@ -10,6 +10,18 @@ from apscheduler import events
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+
+from daily_pipeline.cases import DailyCaseService
+from daily_pipeline.code_resolution import process_code_issue
+from daily_pipeline.collection_scheduler import DailyRunCollector
+from daily_pipeline.cron import schedule_trigger
+from daily_pipeline.dispatch import trigger_daily_pipeline
+from daily_pipeline.logging import setup_daily_file_logging
+from daily_pipeline.processing_scheduler import DailyProcessRunner
+from daily_pipeline.tracking import DailyTrackingService
+from daily_pipeline.trigger_config import TRIGGER_TASK
+from daily_pipeline.version_resolution import advance_version_flow, version_work_ids
 from infrastructure.clients.daily_pipeline_scheduler import (
     COLLECTION_PURPOSE,
     PROCESSING_PURPOSE,
@@ -27,18 +39,6 @@ from infrastructure.persistence.daily_pipeline_tracking import ACTIVE
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
 from infrastructure.persistence.models import DailyPipelineIssue
 from infrastructure.persistence.models import DailyPipelineProcessNode as Node
-from sqlalchemy import select
-
-from daily_pipeline.cases import DailyCaseService
-from daily_pipeline.code_resolution import process_code_issue
-from daily_pipeline.collection_scheduler import DailyRunCollector
-from daily_pipeline.cron import schedule_trigger
-from daily_pipeline.dispatch import trigger_daily_pipeline
-from daily_pipeline.logging import setup_daily_file_logging
-from daily_pipeline.processing_scheduler import DailyProcessRunner
-from daily_pipeline.tracking import DailyTrackingService
-from daily_pipeline.trigger_config import TRIGGER_TASK
-from daily_pipeline.version_resolution import advance_version_flow, version_work_ids
 
 logger = logging.getLogger("daily_pipeline.scheduler")
 CATALOG_TASK = "sync_nightly_cases"

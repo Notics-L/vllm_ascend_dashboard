@@ -1,11 +1,12 @@
 """Persistence for pull requests merged between Daily triggers."""
 
+from sqlalchemy import select, tuple_, update
+from sqlalchemy.dialects.mysql import insert
+
 from infrastructure.persistence.models import DailyPipelineCollectionRun as Run
 from infrastructure.persistence.models import DailyPipelineIssue as Issue
 from infrastructure.persistence.models import DailyPipelineMergedPR as MergedPR
 from infrastructure.persistence.models import DailyPipelineTriggerHistory as History
-from sqlalchemy import select, tuple_, update
-from sqlalchemy.dialects.mysql import insert
 
 
 async def link_merged_prs_to_issue(db, repository, run_id, issue_id):

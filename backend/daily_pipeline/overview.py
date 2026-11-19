@@ -3,17 +3,17 @@
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import case, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from daily_pipeline.collection import RESULT_LABELS, timestamp
+from daily_pipeline.trigger_config import DEFAULT_TIMEZONE
 from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, CATEGORIES
 from infrastructure.persistence.models import DailyPipelineCollectionNode as CollectionNode
 from infrastructure.persistence.models import DailyPipelineCollectionRun as CollectionRun
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
 from infrastructure.persistence.models import DailyPipelineIssue as Issue
 from infrastructure.persistence.models import DailyPipelineTestCase as DailyCase
-from sqlalchemy import case, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from daily_pipeline.collection import RESULT_LABELS, timestamp
-from daily_pipeline.trigger_config import DEFAULT_TIMEZONE
 
 RUN_BUCKET = {"success": "success", "failure": "failed", "queued": "running", "running": "running"}
 PROCESSING_BUCKET = {"resolved": "resolved", "unresolved": "unresolved", "ended": "ended"}

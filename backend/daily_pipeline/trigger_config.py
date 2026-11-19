@@ -3,6 +3,9 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from daily_pipeline.cron import schedule_trigger
 from infrastructure.clients.daily_pipeline_config import check_trigger_permission
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, update_schedule
 from infrastructure.core.security import decrypt_api_key, encrypt_api_key
@@ -12,9 +15,6 @@ from infrastructure.persistence.daily_pipeline_settings import (
     read_settings,
     set_setting,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from daily_pipeline.cron import schedule_trigger
 
 logger = logging.getLogger(__name__)
 TRIGGER_TASK = "trigger_daily_pipeline"

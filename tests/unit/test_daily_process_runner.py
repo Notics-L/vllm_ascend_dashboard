@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from daily_pipeline import processing_scheduler as module
 
 

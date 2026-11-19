@@ -5,11 +5,12 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
+
 from api.deps import get_current_user
 from api.v1.daily_pipeline import get_notification_consumption_service, router
 from daily_pipeline import notification_consumption as module
 from daily_pipeline.notifications import notification_content
-from fastapi import FastAPI
 from infrastructure.core.security import encrypt_api_key
 
 

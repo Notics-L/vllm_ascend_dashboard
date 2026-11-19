@@ -2,6 +2,9 @@
 import json
 import logging
 
+from sqlalchemy import select
+
+from daily_pipeline.notifications import wake_notifications
 from infrastructure.core.security import encrypt_api_key
 from infrastructure.persistence.daily_pipeline_settings import has_setting, set_setting
 from infrastructure.persistence.daily_pipeline_tracking import (
@@ -17,9 +20,6 @@ from infrastructure.persistence.models import DailyPipelineConfig as Config
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
 from infrastructure.persistence.models import DailyPipelineIssue as Issue
 from infrastructure.persistence.models import DailyPipelineProcessNode as Node
-from sqlalchemy import select
-
-from daily_pipeline.notifications import wake_notifications
 
 logger = logging.getLogger(__name__)
 NOTIFICATION_TOKEN_KEY = "notification_token"

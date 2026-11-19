@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+
 from infrastructure.clients.daily_pipeline_welink import (
     NotificationDeliveryUnknown,
     NotificationError,

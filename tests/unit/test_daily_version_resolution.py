@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
 from daily_pipeline import version_resolution as module
 
 NOW = datetime(2026, 11, 19, 4)

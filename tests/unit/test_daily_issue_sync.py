@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from daily_pipeline import scheduler as module
 
 

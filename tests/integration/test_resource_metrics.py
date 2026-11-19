@@ -24,7 +24,7 @@ from infrastructure.persistence.models import (  # noqa: E402
     ResourceNodeMetrics,
     ResourceNpuMetrics,
 )
-from infrastructure.persistence.read_models.resource_metrics import (
+from infrastructure.persistence.read_models.resource_metrics import (  # noqa: E402
     ResourceMetricsQueryService,  # noqa: E402
 )
 

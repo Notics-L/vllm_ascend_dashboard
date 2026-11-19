@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
 from daily_pipeline.notification_recipients import DailyNotificationRecipientService
 from infrastructure.core.security import decrypt_api_key, encrypt_api_key
 

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
 from daily_pipeline import collection_scheduler as module
 
 

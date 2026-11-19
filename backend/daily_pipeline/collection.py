@@ -3,14 +3,13 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
+from daily_pipeline.collection_source import CollectionSourceError, DailyCollectionSource
+from daily_pipeline.merged_pr import DailyMergedPRService
 from infrastructure.clients.daily_pipeline_collection import DailyCollectionClient
 from infrastructure.clients.daily_pipeline_scheduler import start_collection
 from infrastructure.core.security import decrypt_api_key
 from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
 from infrastructure.persistence.daily_pipeline_settings import read_settings
-
-from daily_pipeline.collection_source import CollectionSourceError, DailyCollectionSource
-from daily_pipeline.merged_pr import DailyMergedPRService
 
 logger = logging.getLogger(__name__)
 ISSUE_REPORT_GRACE = timedelta(minutes=5)

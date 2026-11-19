@@ -2,6 +2,12 @@
 
 import logging
 
+from sqlalchemy import func, or_, select, update
+
+from daily_pipeline.code_resolution import process_code_issue
+from daily_pipeline.collection_source import utc_datetime
+from daily_pipeline.pull_requests import located_pull_request
+from daily_pipeline.version_resolution import flow_view
 from infrastructure.clients.daily_pipeline_collection import (
     CollectionSourceError,
     DailyCollectionClient,
@@ -14,9 +20,9 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     AUTOMATIC_STAGES,
     CATEGORIES,
     FAILURE_NOTIFICATION_STAGE,
-    VERSION_BUILD_NOTICE,
     PATHS,
     STAGES,
+    VERSION_BUILD_NOTICE,
     now,
     reconcile_case_availability,
     retry_failure_notifications,
@@ -28,12 +34,6 @@ from infrastructure.persistence.models import DailyPipelineFailure as Failure
 from infrastructure.persistence.models import DailyPipelineIssue as Issue
 from infrastructure.persistence.models import DailyPipelineProcessNode as Node
 from infrastructure.persistence.models import DailyPipelineProcessNodeExecution as Execution
-from sqlalchemy import func, or_, select, update
-
-from daily_pipeline.code_resolution import process_code_issue
-from daily_pipeline.collection_source import utc_datetime
-from daily_pipeline.pull_requests import located_pull_request
-from daily_pipeline.version_resolution import flow_view
 
 logger = logging.getLogger(__name__)
 

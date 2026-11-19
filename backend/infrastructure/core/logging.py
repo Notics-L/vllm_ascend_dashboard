@@ -11,8 +11,9 @@ import queue
 import traceback
 from datetime import UTC, datetime
 
-from infrastructure.db.base import SessionLocal
 from sqlalchemy import text
+
+from infrastructure.db.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 

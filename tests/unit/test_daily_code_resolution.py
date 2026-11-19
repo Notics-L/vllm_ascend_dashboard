@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
 from daily_pipeline import code_resolution as module
 from infrastructure.clients.daily_pipeline_collection import CollectionSourceError
 

@@ -4,10 +4,10 @@ import logging
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from infrastructure.db.base import SessionLocal
-from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
 
 from daily_pipeline.collection import DailyCollectionService
+from infrastructure.db.base import SessionLocal
+from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
 
 logger = logging.getLogger(__name__)
 COLLECTION_INTERVAL_SECONDS = 60

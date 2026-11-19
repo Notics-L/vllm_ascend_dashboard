@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
 from daily_pipeline.cases import DailyCaseService
 from infrastructure.persistence.daily_pipeline_tracking import is_case_fault_blocked
 

@@ -1,9 +1,9 @@
 """Single-record management of the encrypted notification recipient directory."""
 
-from infrastructure.core.security import encrypt_api_key
 from sqlalchemy.exc import IntegrityError
 
 from daily_pipeline.notifications import wake_notifications
+from infrastructure.core.security import encrypt_api_key
 
 
 def recipient_view(row):

@@ -4,17 +4,16 @@ import hashlib
 import logging
 import secrets
 
+from daily_pipeline.tracking import DailyTrackingService, current_node
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
     FAILURE_NOTIFICATION_STAGE,
     NOTIFICATION_STAGES,
-    STANDALONE_NOTICE_PURPOSES,
     STAGES,
+    STANDALONE_NOTICE_PURPOSES,
     latest_failure_notifications,
     now,
 )
-
-from daily_pipeline.tracking import DailyTrackingService, current_node
 
 logger = logging.getLogger(__name__)
 DELIVERY_MESSAGES = {

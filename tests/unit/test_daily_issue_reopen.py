@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
 from infrastructure.persistence import daily_pipeline_tracking as module
 
 

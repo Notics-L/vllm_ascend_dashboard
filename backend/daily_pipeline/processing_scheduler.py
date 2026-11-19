@@ -4,14 +4,14 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from infrastructure.db.base import SessionLocal
-from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, AUTOMATIC_STAGES
-from infrastructure.persistence.models import DailyPipelineFailure as Failure
-from infrastructure.persistence.models import DailyPipelineProcessNode as Node
 from sqlalchemy import select
 
 from daily_pipeline.notifications import execute_notification
 from daily_pipeline.revert import execute_revert
+from infrastructure.db.base import SessionLocal
+from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, AUTOMATIC_STAGES
+from infrastructure.persistence.models import DailyPipelineFailure as Failure
+from infrastructure.persistence.models import DailyPipelineProcessNode as Node
 
 logger = logging.getLogger(__name__)
 PROCESSING_RETRY_SECONDS = 60

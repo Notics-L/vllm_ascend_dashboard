@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime
 
 import pytest
+
 from daily_pipeline.collection_source import (
     DailyCollectionSource,
     call_node_type,

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 import yaml
+
 from infrastructure.clients.daily_pipeline_collection import (
     CollectionSourceError,
     DailyCollectionClient,

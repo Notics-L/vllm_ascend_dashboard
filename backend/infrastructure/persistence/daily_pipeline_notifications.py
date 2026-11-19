@@ -4,7 +4,10 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import aliased
 
 from infrastructure.persistence.daily_pipeline_tracking import (
-    ACTIVE, NOTIFICATION_STAGES, STANDALONE_NOTICE_PURPOSES, VERSION_BUILD_NOTICE,
+    ACTIVE,
+    NOTIFICATION_STAGES,
+    STANDALONE_NOTICE_PURPOSES,
+    VERSION_BUILD_NOTICE,
 )
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
 from infrastructure.persistence.models import DailyPipelineIssue as Issue

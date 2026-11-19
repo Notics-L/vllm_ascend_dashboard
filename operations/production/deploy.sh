@@ -500,3 +500,12 @@ fi
 
 step "Post-deploy release image cleanup"
 prune_superseded_dashboard_images
+
+step "Install daily download cleanup"
+install -m 750 "$SCRIPT_DIR/cleanup-downloads.sh" /usr/local/sbin/dashboard-cleanup-downloads
+cleanup_volume="${DASHBOARD_BACKEND_VOLUME:-vllm_ascend_dashboard_backend_data}"
+[[ "$cleanup_volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || die "invalid cleanup volume name"
+sed "s/^DASHBOARD_BACKEND_VOLUME=.*/DASHBOARD_BACKEND_VOLUME=$cleanup_volume/" \
+    "$SCRIPT_DIR/dashboard-download-cleanup.cron" > /etc/cron.d/dashboard-download-cleanup
+chmod 644 /etc/cron.d/dashboard-download-cleanup
+ok "daily CI evidence and coverage download cleanup installed (04:00 server time)"

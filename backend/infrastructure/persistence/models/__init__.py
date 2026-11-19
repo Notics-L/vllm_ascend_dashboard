@@ -68,7 +68,6 @@ from infrastructure.persistence.models.daily_pipeline_collection import (
     DailyPipelineMergedPR,
 )
 
-
 # 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
 from infrastructure.persistence.models.image_build_monitor import (
     ImageBuildAlert,
@@ -1475,9 +1474,13 @@ class ContributorAIReport(Base):
         Index("idx_ai_report_created", "generated_at"),
     )
 
+from infrastructure.persistence.models.daily_pipeline_notifications import (
+    DailyPipelineNotificationRecipient,
+)
 from infrastructure.persistence.models.daily_pipeline_tracking import (
-    DailyPipelineIssue, DailyPipelineFailure, DailyPipelineProcessNode, DailyPipelineProcessNodeExecution,
+    DailyPipelineFailure,
+    DailyPipelineIssue,
+    DailyPipelineProcessNode,
+    DailyPipelineProcessNodeExecution,
     DailyPipelineVersionFlow,
 )
-
-from infrastructure.persistence.models.daily_pipeline_notifications import DailyPipelineNotificationRecipient

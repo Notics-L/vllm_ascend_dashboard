@@ -126,6 +126,8 @@ class CICollector:
             return
 
         run_dir = self._evidence_root() / str(run_id)
+        from infrastructure.storage.artifact_lifecycle import track_artifact_run
+        track_artifact_run(run_dir)
         artifact_dir = run_dir / "artifacts"
         extract_root = run_dir / "extracted"
         artifact_dir.mkdir(parents=True, exist_ok=True)

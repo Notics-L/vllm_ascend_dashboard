@@ -4,10 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from fastapi import FastAPI
+
 from api.deps import get_current_user
 from api.v1.daily_pipeline import router
 from daily_pipeline import notification_config as module
-from fastapi import FastAPI
 from infrastructure.core.security import decrypt_api_key
 from infrastructure.db.base import get_db
 

@@ -4,7 +4,10 @@ import html
 import logging
 import re
 
-from infrastructure.clients.daily_pipeline_collection import CollectionSourceError, DailyCollectionClient
+from infrastructure.clients.daily_pipeline_collection import (
+    CollectionSourceError,
+    DailyCollectionClient,
+)
 from infrastructure.persistence.daily_pipeline_merged_pr import DailyMergedPRRepository
 
 logger = logging.getLogger(__name__)
