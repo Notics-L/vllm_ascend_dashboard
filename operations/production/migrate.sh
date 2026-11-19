@@ -46,7 +46,8 @@ fi
 compose_run() {
     DASHBOARD_RUNTIME_ENV_FILE="$ENV_FILE" \
     docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile full \
-        run --rm --no-deps -e "DATABASE_URL=$migration_database_url" \
+        run --rm --no-deps -v "$PROJECT_ROOT/database:/app/database:ro" \
+        -e "DATABASE_URL=$migration_database_url" \
         --entrypoint /opt/venv/bin/python backend "$@"
 }
 
