@@ -203,13 +203,10 @@ class ContributorBoardService:
         if tier:
             base = base.where(ContributorProfile.tier == tier)
 
-        # 时间窗过滤：宽表只存全量累计（first_seen..last_seen），无日度明细。
-        # 按 days 窗口过滤"窗口内有活动"的贡献者：last_seen >= today - days。
-        # 同时按 max(days, active_days_90)/90 把 7 维指标缩放到窗口内估计值，
-        # 再用 scoring_engine 重算 score/tier，让 days 选项真正影响榜单。
+        # 时间窗不用于过滤贡献者：榜单始终返回全量贡献者，
+        # 仅按窗口内活跃程度调整评分，使近期不活跃者分数下降而不是消失。
         days = max(1, int(days))
         window_start = date.today() - timedelta(days=days)
-        base = base.where(ContributorProfile.last_seen >= window_start)
 
         rows = (await db.execute(base)).scalars().all()
 
@@ -223,14 +220,15 @@ class ContributorBoardService:
         )
         scale = min(1.0, days / 90.0)  # active_days_90 是 90 天窗口值；days>=90 不缩放
         for r in rows:
+            active_in_window = r.last_seen is not None and r.last_seen >= window_start
             active = r.active_days_90 or 0
-            if active > 0:
-                # 窗口内活跃天数估计：min(active * scale, days)
-                # 当 days>=90 时 scale=1.0，active 不变
-                r.active_days_90 = max(1, int(active * scale)) if scale < 1.0 else active
-            # span_days 缩放到窗口内（last_seen - first_seen 跨度，窗口内最大为 days）
-            r.span_days = min(r.span_days or 0, days)
-            # 重算 score + tier
+            if active_in_window:
+                if scale < 1.0:
+                    r.active_days_90 = max(1, int(active * scale))
+                r.span_days = min(r.span_days or 0, days)
+            else:
+                r.active_days_90 = 0
+                r.span_days = 0
             metrics = {
                 "commit_count": r.commit_count or 0,
                 "code_files": r.code_files or 0,
@@ -241,6 +239,12 @@ class ContributorBoardService:
                 "active_days_90": r.active_days_90 or 0,
                 "span_days": r.span_days or 0,
             }
+            if not active_in_window:
+                for key in (
+                    "commit_count", "code_files", "doc_files",
+                    "pr_merged", "pr_open", "pr_closed",
+                ):
+                    metrics[key] = 0
             r.total_score = calculate_score(metrics, weights)
             r.tier = assign_tier(r.total_score, r.active_days_90 or 0)
 
@@ -577,6 +581,9 @@ class ContributorBoardService:
         full_resync: bool = False, repo_name: str | None = None,
         trigger_source: str = "api",
     ) -> ContributorSyncResponse:
+        # 未指定起始日期时等价于从历史起点扫描，必须走全量重建，
+        # 否则增量 merge 会把整段历史重复累加到已有画像上。
+        effective_full = full_resync or (since_date is None and until_date is None)
         # 已有 running 任务则拒绝
         running = (
             await db.execute(
@@ -591,7 +598,7 @@ class ContributorBoardService:
         now = datetime.now(UTC)
         record = ContributorSyncRecord(
             repo_name=repo_name,
-            sync_type="full" if full_resync else "incremental",
+            sync_type="full" if effective_full else "incremental",
             status="running",
             since_date=since_date,
             until_date=until_date,
@@ -617,7 +624,7 @@ class ContributorBoardService:
             task_func=sync_full_task_func,
             task_params={
                 "sync_record_id": record_id,
-                "sync_type": "full" if full_resync else "incremental",
+                "sync_type": "full" if effective_full else "incremental",
                 "since_date": since_date.isoformat() if since_date else None,
                 "until_date": until_date.isoformat() if until_date else None,
                 "repo_name": repo_name,
@@ -809,6 +816,7 @@ class ContributorBoardService:
                 since_date=since_dt, until_date=until_dt,
                 repo_name=repo_name, progress_callback=_progress,
                 cancel_check_func=_cancel_check,
+                full_resync=full_resync,
             )
             async with AsyncSessionLocal() as db:
                 rec = await db.get(ContributorSyncRecord, record_id)

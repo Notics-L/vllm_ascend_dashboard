@@ -231,7 +231,7 @@ async def get_ranking(
     limit: int = Query(20, ge=1, le=200, description="分页大小"),
     quadrant: str | None = Query(None, description="四象限过滤: INCENTIVE/IMPROVE/ENCOURAGE/REPLACE"),
     y_axis_type: str | None = Query(None, description="[deprecated] 排行榜象限 Y 轴已固定为 error_score"),
-    days: int = Query(30, ge=1, le=365, description="统计时间窗（天），默认 30 天与 PR 流水线一致"),
+    days: int = Query(30, ge=1, le=3650, description="统计时间窗（天），仅影响活跃度评分，不过滤贡献者"),
 ):
     """获取排行榜（完全复用 PR 流水线贡献者数据，管理员可见）"""
     service = get_contributor_board_service()

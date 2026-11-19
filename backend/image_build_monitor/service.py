@@ -199,6 +199,10 @@ class ImageBuildMonitorService:
             "stuck_threshold_minutes": target.stuck_threshold_minutes,
             "cooldown_minutes": target.cooldown_minutes,
             "last_checked_at": _iso(target.last_checked_at),
+            "last_check_success_at": _iso(
+                getattr(target, "last_check_success_at", None)
+            ),
+            "last_check_error": getattr(target, "last_check_error", None),
             "open_alert_count": open_alert_count,
             "latest_run": (
                 {
@@ -262,7 +266,10 @@ class ImageBuildMonitorService:
     ) -> dict[str, Any]:
         conditions = []
         if status:
-            conditions.append(ImageBuildAlert.status == status)
+            if status == "unresolved":
+                conditions.append(ImageBuildAlert.status != "resolved")
+            else:
+                conditions.append(ImageBuildAlert.status == status)
         if alert_type:
             conditions.append(ImageBuildAlert.alert_type == alert_type)
         if release_workflow_id:
@@ -479,6 +486,25 @@ class ImageBuildMonitorService:
             by_type[alert.alert_type] = by_type.get(alert.alert_type, 0) + 1
             by_status[alert.status] = by_status.get(alert.status, 0) + 1
 
+        total_open = int(
+            (
+                await self.db.execute(
+                    select(func.count(ImageBuildAlert.id)).where(
+                        ImageBuildAlert.status == "open"
+                    )
+                )
+            ).scalar_one()
+        )
+        total_unresolved = int(
+            (
+                await self.db.execute(
+                    select(func.count(ImageBuildAlert.id)).where(
+                        ImageBuildAlert.status != "resolved"
+                    )
+                )
+            ).scalar_one()
+        )
+
         target_health = []
         for target, wf in targets:
             latest_run = (
@@ -519,10 +545,31 @@ class ImageBuildMonitorService:
             "runs_total": run_count,
             "failed_runs": failed_count,
             "alerts_total": len(alert_rows),
-            "open_alerts": by_status.get("open", 0)
-            + by_status.get("acknowledged", 0),
+            "open_alerts": total_open,
+            "unresolved_alerts": total_unresolved,
             "by_type": by_type,
             "by_status": by_status,
+            "monitor_health": {
+                "last_checked_at": _iso(
+                    max(
+                        (_as_utc(t.last_checked_at) for t, _ in targets if t.last_checked_at),
+                        default=None,
+                    )
+                ),
+                "last_success_at": _iso(
+                    max(
+                        (
+                            _as_utc(t.last_check_success_at)
+                            for t, _ in targets
+                            if getattr(t, "last_check_success_at", None)
+                        ),
+                        default=None,
+                    )
+                ),
+                "targets_with_error": sum(
+                    1 for t, _ in targets if getattr(t, "last_check_error", None)
+                ),
+            },
             "target_health": target_health,
             "recent_alerts": [self._serialize_alert(a, wf) for a, wf in recent_alerts],
         }
@@ -547,7 +594,10 @@ class ImageBuildMonitorService:
             "resolved": 0,
             "errors": [],
         }
+        health_errors: dict[int, str | None] = {}
         for target, wf in targets:
+            target_id = target.id
+            target_error: str | None = None
             try:
                 if sync_remote:
                     try:
@@ -558,12 +608,14 @@ class ImageBuildMonitorService:
                             wf.id,
                             exc,
                         )
+                        target_error = f"GitHub 同步失败: {exc}"
                         summary["errors"].append(f"{wf.workflow_name} 同步 GitHub 失败: {exc}")
                 stats = await self._evaluate_target(target, wf)
                 summary["created"] += stats["created"]
                 summary["notified"] += stats["notified"]
                 summary["resolved"] += stats["resolved"]
             except Exception as exc:  # noqa: BLE001
+                target_error = str(exc)
                 logger.error(
                     "Image build monitor evaluation failed for workflow %s: %s",
                     wf.id,
@@ -572,6 +624,20 @@ class ImageBuildMonitorService:
                 )
                 summary["errors"].append(f"{wf.workflow_name}: {exc}")
                 await self.db.rollback()
+            health_errors[target_id] = target_error
+
+        now = datetime.now(UTC)
+        for target_id, error in health_errors.items():
+            row = await self.db.get(ImageBuildMonitorTarget, target_id)
+            if not row:
+                continue
+            row.last_checked_at = now
+            if error:
+                row.last_check_error = error
+            else:
+                row.last_check_success_at = now
+                row.last_check_error = None
+        await self.db.commit()
         return summary
 
     async def _sync_recent_runs(self, wf: ReleaseWorkflow, days_back: int = 2) -> int:
@@ -783,8 +849,30 @@ class ImageBuildMonitorService:
                 if now >= grace_end and not has_scheduled_run:
                     key = f"missing:{wf.id}:{prev_fire.isoformat()}"
                     existing = open_by_key.get(key)
+                    if existing is None:
+                        # 同一 workflow 已存在未恢复的 missing 告警时复用，
+                        # 避免每天同一个未触发问题重复生成新告警。
+                        existing = next(
+                            (
+                                a
+                                for a in open_by_key.values()
+                                if a.alert_type == "missing"
+                                and a.release_workflow_id == wf.id
+                                and a.status != "resolved"
+                            ),
+                            None,
+                        )
                     if existing:
                         existing.last_detected_at = now
+                        existing.message = (
+                            f"期望触发时间 {prev_fire.isoformat()}（{target.timezone}），"
+                            f"已超过 {target.grace_minutes} 分钟容忍窗口，未发现 event=schedule 的运行记录。"
+                        )
+                        existing.details = {
+                            "schedule_cron": target.schedule_cron,
+                            "expected_fire_at": prev_fire.isoformat(),
+                            "grace_minutes": target.grace_minutes,
+                        }
                         self._maybe_collect_notification(existing, target, now, to_notify)
                     elif key not in all_keys:
                         alert = ImageBuildAlert(
@@ -823,11 +911,23 @@ class ImageBuildMonitorService:
                 continue
             if alert.alert_type == "failure":
                 alert_first = _as_utc(alert.first_detected_at)
+                failure_run = next(
+                    (r for r in runs if r.github_run_id == alert.github_run_id), None
+                )
+                baseline = (
+                    _as_utc(failure_run.created_at_remote)
+                    if failure_run is not None
+                    else alert_first
+                )
+                alert_branch = alert.branch or (
+                    failure_run.branch if failure_run is not None else None
+                )
                 recovered = any(
                     (run.status or "").lower() in SUCCESS_STATUSES
                     and _as_utc(run.created_at_remote) is not None
-                    and alert_first is not None
-                    and _as_utc(run.created_at_remote) > alert_first
+                    and baseline is not None
+                    and _as_utc(run.created_at_remote) > baseline
+                    and (not alert_branch or run.branch == alert_branch)
                     for run in runs
                 )
                 if recovered:
@@ -884,6 +984,8 @@ class ImageBuildMonitorService:
         now: datetime,
         bucket: list[ImageBuildAlert],
     ) -> None:
+        if alert.status != "open":
+            return
         last = _as_utc(alert.last_notified_at)
         cooldown = timedelta(minutes=max(int(target.cooldown_minutes or 60), 5))
         if alert.notified_at is None or last is None or now - last >= cooldown:

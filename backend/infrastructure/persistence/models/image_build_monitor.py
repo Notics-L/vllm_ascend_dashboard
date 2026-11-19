@@ -43,6 +43,8 @@ class ImageBuildMonitorTarget(Base):
     stuck_threshold_minutes = Column(Integer, default=180, nullable=False)
     cooldown_minutes = Column(Integer, default=60, nullable=False)
     last_checked_at = Column(DateTime, nullable=True)
+    last_check_success_at = Column(DateTime, nullable=True)
+    last_check_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime,

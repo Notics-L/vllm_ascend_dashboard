@@ -20,6 +20,8 @@ export interface MonitorTarget {
   stuck_threshold_minutes: number
   cooldown_minutes: number
   last_checked_at: string | null
+  last_check_success_at: string | null
+  last_check_error: string | null
   open_alert_count: number
   latest_run: {
     github_run_id: number
@@ -79,8 +81,14 @@ export interface MonitorOverview {
   failed_runs: number
   alerts_total: number
   open_alerts: number
+  unresolved_alerts: number
   by_type: Record<string, number>
   by_status: Record<string, number>
+  monitor_health: {
+    last_checked_at: string | null
+    last_success_at: string | null
+    targets_with_error: number
+  }
   target_health: MonitorTarget[]
   recent_alerts: MonitorAlert[]
 }

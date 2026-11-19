@@ -72,11 +72,13 @@ const ALERT_TYPE_COLOR: Record<string, string> = {
   stuck: 'orange',
 }
 const STATUS_ZH: Record<string, string> = {
+  unresolved: '未恢复',
   open: '未处理',
   acknowledged: '已确认',
   resolved: '已恢复',
 }
 const STATUS_COLOR: Record<string, string> = {
+  unresolved: 'orange',
   open: 'red',
   acknowledged: 'gold',
   resolved: 'green',
@@ -193,7 +195,7 @@ export default function ImageBuildMonitor() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<MonitorTarget | null>(null)
   const [runTarget, setRunTarget] = useState<MonitorTarget | null>(null)
-  const [alertStatus, setAlertStatus] = useState<string | undefined>('open')
+  const [alertStatus, setAlertStatus] = useState<string | undefined>('unresolved')
   const [alertType, setAlertType] = useState<string | undefined>()
   const [cronOpen, setCronOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
@@ -301,7 +303,7 @@ export default function ImageBuildMonitor() {
     },
     onSuccess: (_, vars) => {
       message.success(
-        vars.action === 'ack' ? '已确认' : vars.action === 'resolve' ? '已标记恢复' : '已重新发送通知',
+        vars.action === 'ack' ? '已标记为已知晓，告警仍保留在未恢复列表' : vars.action === 'resolve' ? '已标记恢复' : '已重新发送通知',
       )
       refreshAll()
     },
@@ -457,14 +459,26 @@ export default function ImageBuildMonitor() {
       },
     },
     {
-      title: '未处理告警',
+      title: '未恢复告警',
       dataIndex: 'open_alert_count',
       render: (v: number) => <Tag color={v > 0 ? 'red' : 'green'}>{v}</Tag>,
     },
     {
       title: '状态',
       dataIndex: 'enabled',
-      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '监控中' : '已停用'}</Tag>,
+      render: (v: boolean, r) => (
+        <Tooltip
+          title={
+            r.last_check_error
+              ? `最近检测异常：${r.last_check_error}`
+              : `最近成功：${fmtTime(r.last_check_success_at)}`
+          }
+        >
+          <Tag color={r.last_check_error ? 'orange' : v ? 'green' : 'default'}>
+            {r.last_check_error ? '检测异常' : v ? '监控中' : '已停用'}
+          </Tag>
+        </Tooltip>
+      ),
     },
     {
       title: '操作',
@@ -564,13 +578,15 @@ export default function ImageBuildMonitor() {
             </Button>
           )}
           {r.status === 'open' && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => actionMutation.mutate({ action: 'ack', id: r.id })}
-            >
-              确认
-            </Button>
+            <Tooltip title="标记为已知晓：停止重复邮件提醒，但告警仍保留在列表，需处理完后点击「恢复」">
+              <Button
+                size="small"
+                type="link"
+                onClick={() => actionMutation.mutate({ action: 'ack', id: r.id })}
+              >
+                已知晓
+              </Button>
+            </Tooltip>
           )}
           {r.status !== 'resolved' && (
             <Button
@@ -602,6 +618,12 @@ export default function ImageBuildMonitor() {
           <Text type="secondary" style={{ fontSize: 13 }}>
             监控定时镜像构建的失败、未触发与长时间卡住，并邮件通知责任人
           </Text>
+          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+            最近检测成功：{fmtTime(overview?.monitor_health?.last_success_at)}
+            {overview?.monitor_health?.last_checked_at
+              ? ` · 最近检测：${fmtTime(overview.monitor_health.last_checked_at)}`
+              : ''}
+          </div>
         </div>
         <Space>
           <Select
@@ -632,6 +654,16 @@ export default function ImageBuildMonitor() {
         </Space>
       </div>
 
+      {(overview?.monitor_health?.targets_with_error ?? 0) > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`${overview?.monitor_health?.targets_with_error} 个监控目标最近检测异常`}
+          description="请查看目标列表并检查 GitHub Token、网络或 SMTP 配置；检测任务本身仍会继续运行。"
+        />
+      )}
+
       {githubStatusQuery.data && !githubStatusQuery.data.ok && (
         <Alert
           type="warning"
@@ -642,13 +674,13 @@ export default function ImageBuildMonitor() {
         />
       )}
 
-      {overview && overview.open_alerts > 0 && (
+      {overview && overview.unresolved_alerts > 0 && (
         <Alert
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`当前有 ${overview.open_alerts} 条未处理镜像构建告警`}
-          description="请及时在下方告警列表确认或处理；系统会按冷却时间重复提醒。"
+          message={`当前有 ${overview.unresolved_alerts} 条未恢复镜像构建告警`}
+          description="「已知晓」仅停止重复邮件提醒，告警仍会保留在列表；处理完成后请点击「恢复」关闭告警。"
         />
       )}
 
@@ -669,7 +701,7 @@ export default function ImageBuildMonitor() {
           <Card size="small"><Statistic title="构建卡住" value={overview?.by_type?.stuck ?? 0} valueStyle={{ color: '#d46b08' }} /></Card>
         </Col>
         <Col xs={12} md={8} lg={4}>
-          <Card size="small"><Statistic title="未处理告警" value={overview?.open_alerts ?? 0} valueStyle={{ color: (overview?.open_alerts ?? 0) > 0 ? '#cf1322' : '#3f8600' }} /></Card>
+          <Card size="small"><Statistic title="未恢复告警" value={overview?.unresolved_alerts ?? 0} valueStyle={{ color: (overview?.unresolved_alerts ?? 0) > 0 ? '#cf1322' : '#3f8600' }} /></Card>
         </Col>
       </Row>
 
@@ -880,7 +912,7 @@ export default function ImageBuildMonitor() {
               <Text type="secondary" style={{ marginLeft: 8 }}>{runTarget.timezone}</Text>
             </Descriptions.Item>
             <Descriptions.Item label="最近检测">{fmtTime(runTarget.last_checked_at)}</Descriptions.Item>
-            <Descriptions.Item label="未处理告警">
+            <Descriptions.Item label="未恢复告警">
               <Tag color={runTarget.open_alert_count > 0 ? 'red' : 'green'}>{runTarget.open_alert_count}</Tag>
             </Descriptions.Item>
           </Descriptions>
