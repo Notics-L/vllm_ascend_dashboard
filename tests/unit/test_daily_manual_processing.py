@@ -48,17 +48,71 @@ async def test_manual_classification_advances_to_locating_and_records_actor():
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.parametrize("category,path", [
-    ("code", ["revert_pr", "problem_pr_notification", "pr_merge"]),
-    ("environment", ["mark_success"]),
-])
 @pytest.mark.asyncio
-async def test_locating_selects_only_the_saved_business_path(category, path):
-    failure, node, db, added = objects("locating", category=category)
-    await DailyTrackingService(db).manual_complete(10, True, {"pr_number": 123} if category != "environment" else {}, "已定位原因", "alice")
-    assert [item.stage_code for item in added[1:]] == path
+async def test_locating_selects_only_the_saved_business_path():
+    failure, node, db, added = objects("locating", category="code")
+    await DailyTrackingService(db).manual_complete(10, True, {"pr_number": 123}, "已定位原因", "alice")
+    assert [item.stage_code for item in added[1:]] == ["revert_pr", "problem_pr_notification", "pr_merge"]
     assert added[1].previous_node_id == node.id
     assert failure.processing_status == "running"
+
+
+@pytest.mark.asyncio
+async def test_environment_classification_is_resolved_and_records_automatic_success():
+    failure, node, db, added = objects()
+    result = await DailyTrackingService(db).manual_complete(
+        10, True, {"category": "environment"}, "", "alice"
+    )
+    manual, mark, automatic = added
+    assert manual.status == node.status == "completed"
+    assert mark.stage_code == "mark_success" and mark.previous_node_id == node.id
+    assert automatic.source == "auto" and automatic.node_id == mark.id
+    assert mark.status == automatic.status == "completed"
+    assert failure.ended_at == mark.finished_at == automatic.finished_at
+    assert failure.problem_category == "environment" and result["status"] == "resolved"
+    assert result["automaticQueued"] is None
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_automatic_environment_classification_uses_existing_issue_completion():
+    failure, node, db, added = objects(status="running")
+    failure.processing_status, failure.issue_id = "running", 11
+    classification = SimpleNamespace(node_id=node.id, status="running")
+    db.get.side_effect = [classification, node]
+    db.scalar.side_effect = [failure, 123]
+    service = DailyTrackingService(db)
+    close_issue = AsyncMock()
+    with patch.object(service, "close_resolved_issue", close_issue):
+        result = await service.finish_node(99, True, {"category": "environment"}, "环境问题")
+    assert result == {"status": "resolved", "automaticQueued": None}
+    assert added[0].stage_code == "mark_success" and added[1].source == "auto"
+    close_issue.assert_awaited_once_with(11, 123)
+
+
+@pytest.mark.parametrize("stage", ["locating", "mark_success"])
+@pytest.mark.asyncio
+async def test_legacy_environment_node_is_completed_once(stage):
+    failure, node, db, added = objects(stage, status="waiting", category="environment")
+    failure.processing_status = "running"
+    db.scalar.side_effect = [failure, 2, None] if stage == "mark_success" else [failure, 2]
+    service = DailyTrackingService(db)
+    assert await service.complete_environment_node(node.id)
+    assert failure.processing_status == "resolved" and node.status == "completed"
+    assert added[0].source == "auto" and added[0].attempt_no == 3
+    assert len(added) == (3 if stage == "locating" else 1)
+    assert db.execute.await_args.args[0].compile().params["status"] == "ended"
+    db.scalar.side_effect = [failure]
+    assert await service.complete_environment_node(node.id)
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_environment_recovery_does_not_complete_other_categories():
+    _, node, db, added = objects("locating", category="code")
+    assert await DailyTrackingService(db).complete_environment_node(node.id)
+    assert not added and node.status == "pending"
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

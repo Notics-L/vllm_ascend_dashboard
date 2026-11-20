@@ -44,6 +44,8 @@ PROGRESS = {
     "unresolved": "未解决",
     "ended": "已结束",
 }
+ENVIRONMENT_RECOVERY_STAGES = ("locating", "mark_success")
+ENVIRONMENT_SUCCESS_MESSAGE = "已按环境问题策略标记成功"
 
 
 class ManualInputError(ValueError):
@@ -448,6 +450,9 @@ class DailyTrackingService:
             # An attempt failure is retryable. It does not end the business flow.
             # The node/execution retain their failed status and full error history.
             pass
+        elif category == "environment" and node.stage_code in ("classify", "locating"):
+            failure.problem_category = category
+            await self._mark_environment_success(failure, node, point)
         elif node.stage_code in ("classify", "locating"):
             failure.problem_category = category
             codes = () if category == "version" else (
@@ -475,6 +480,67 @@ class DailyTrackingService:
                 automatic_node = child.id
         await reconcile_case_availability(self.db)
         return automatic_node
+
+    async def _mark_environment_success(self, failure, previous, point):
+        step = Node(
+            failure_id=failure.id,
+            previous_node_id=previous.id,
+            stage_code="mark_success",
+            status="completed",
+            started_at=point,
+            finished_at=point,
+            updated_at=point,
+        )
+        self.db.add(step)
+        await self.db.flush()
+        self.db.add(Execution(
+            node_id=step.id,
+            attempt_no=1,
+            source="auto",
+            status="completed",
+            result_data={"category": "environment"},
+            message=ENVIRONMENT_SUCCESS_MESSAGE,
+            started_at=point,
+            finished_at=point,
+        ))
+        failure.processing_status, failure.ended_at = "resolved", point
+
+    async def complete_environment_node(self, node_id):
+        """Complete an environment node left open by an older process definition."""
+        node = await self.db.get(Node, node_id)
+        if node is None or node.stage_code not in ENVIRONMENT_RECOVERY_STAGES:
+            return True
+        failure = await self.db.scalar(
+            select(Failure).where(Failure.id == node.failure_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if failure is None or failure.problem_category != "environment" or failure.processing_status not in ACTIVE:
+            return True
+        nodes = list(await self.db.scalars(
+            select(Node).where(Node.failure_id == failure.id).order_by(Node.id)
+            .execution_options(populate_existing=True)
+        ))
+        current = current_node(nodes)
+        if current is None or current.id != node_id:
+            return True
+        point = now()
+        await self.db.execute(
+            update(Execution)
+            .where(Execution.node_id == node_id, Execution.status.in_(("running", "waiting")))
+            .values(status="ended", finished_at=point)
+        )
+        attempt = (await self.db.scalar(
+            select(func.max(Execution.attempt_no)).where(Execution.node_id == node_id)
+        ) or 0) + 1
+        execution = Execution(
+            node_id=node_id, attempt_no=attempt, source="auto", status="running", started_at=point,
+        )
+        self.db.add(execution)
+        automatic_node = await self._complete_node(
+            failure, current, execution, True, {"category": "environment"}, ENVIRONMENT_SUCCESS_MESSAGE
+        )
+        await self._commit_node_completion(failure, automatic_node)
+        return True
 
     async def _queue_processing(self, node_id):
         try:

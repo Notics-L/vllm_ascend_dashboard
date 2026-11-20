@@ -90,6 +90,9 @@ async def test_restore_reconstructs_pending_and_running_node_jobs(runner, monkey
     value, _ = runner
     class Database:
         async def scalars(self, statement):
+            params = statement.compile().params.values()
+            assert "environment" in params
+            assert list(module.ENVIRONMENT_RECOVERY_STAGES) in params
             return [10, 20]
     @asynccontextmanager
     async def session():
@@ -97,3 +100,23 @@ async def test_restore_reconstructs_pending_and_running_node_jobs(runner, monkey
     monkeypatch.setattr(module, "SessionLocal", session)
     await value.restore()
     assert {job.id for job in value.scheduler.get_jobs()} == {"daily-processing-10", "daily-processing-20"}
+
+
+@pytest.mark.asyncio
+async def test_runner_recovers_open_environment_nodes(runner, monkeypatch):
+    value, execute_revert = runner
+    complete = AsyncMock(return_value=True)
+
+    @asynccontextmanager
+    async def session():
+        yield SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(stage_code="locating")))
+
+    monkeypatch.setattr(module, "SessionLocal", session)
+    monkeypatch.setattr(module, "DailyTrackingService", lambda db: SimpleNamespace(
+        complete_environment_node=complete,
+    ))
+    value.register(10)
+    await value.process(10)
+    complete.assert_awaited_once_with(10)
+    execute_revert.assert_not_awaited()
+    assert value.scheduler.get_jobs() == []

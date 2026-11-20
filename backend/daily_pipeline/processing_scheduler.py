@@ -4,10 +4,11 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from daily_pipeline.notifications import execute_notification
 from daily_pipeline.revert import execute_revert
+from daily_pipeline.tracking import ENVIRONMENT_RECOVERY_STAGES, DailyTrackingService
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, AUTOMATIC_STAGES
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
@@ -54,6 +55,8 @@ class DailyProcessRunner:
                         complete = True
                     elif node.stage_code == "problem_pr_notification":
                         complete = await execute_notification(db, node_id)
+                    elif node.stage_code in ENVIRONMENT_RECOVERY_STAGES:
+                        complete = await DailyTrackingService(db).complete_environment_node(node_id)
                     else:
                         complete = await execute_revert(db, node_id)
         except Exception:
@@ -73,8 +76,17 @@ class DailyProcessRunner:
                     .join(Failure, Failure.id == Node.failure_id)
                     .where(
                         Failure.processing_status.in_(ACTIVE),
-                        Node.stage_code.in_(AUTOMATIC_STAGES),
-                        Node.status.in_(("pending", "running", "waiting")),
+                        or_(
+                            and_(
+                                Node.stage_code.in_(AUTOMATIC_STAGES),
+                                Node.status.in_(("pending", "running", "waiting")),
+                            ),
+                            and_(
+                                Failure.problem_category == "environment",
+                                Node.stage_code.in_(ENVIRONMENT_RECOVERY_STAGES),
+                                Node.status.in_(("pending", "running", "waiting", "failed")),
+                            ),
+                        ),
                     )
                 )
             )

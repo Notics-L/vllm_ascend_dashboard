@@ -20,7 +20,19 @@ def test_fault_override_cutoff(fault_offset, enabled_offset, blocked):
 
 
 def catalog_case():
-    return SimpleNamespace(name="case", hardware="a3-560t", enabled=True, auto_disabled=True, manual_enabled_at=None, tags=["old"], test_type="single_node", source_branch="main", is_daily=True)
+    return SimpleNamespace(
+        name="case",
+        hardware="a3-560t",
+        enabled=True,
+        auto_disabled=True,
+        manual_enabled_at=None,
+        tags=["old"],
+        test_type="single_node",
+        source_branch="main",
+        is_daily=True,
+        success_count=0,
+        failure_count=0,
+    )
 
 
 def repository(row):
