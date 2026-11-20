@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import html as html_lib
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +22,7 @@ from infrastructure.core.email import get_smtp_config, send_email
 from infrastructure.persistence.models import (
     ImageBuildAlert,
     ImageBuildMonitorTarget,
+    ReleaseBuildGroup,
     ReleaseBuildRun,
     ReleaseWorkflow,
 )
@@ -326,6 +329,144 @@ class ImageBuildMonitorService:
             "notification_success": alert.notification_success,
             "notification_error": alert.notification_error,
             "details": alert.details,
+        }
+
+    async def _run_for_alert(self, alert: ImageBuildAlert) -> ReleaseBuildRun | None:
+        if not alert.github_run_id:
+            return None
+        return (
+            await self.db.execute(
+                select(ReleaseBuildRun).where(
+                    ReleaseBuildRun.workflow_id == alert.release_workflow_id,
+                    ReleaseBuildRun.github_run_id == alert.github_run_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def _failed_steps(raw_steps: Any) -> list[dict[str, Any]]:
+        if isinstance(raw_steps, str):
+            try:
+                raw_steps = json.loads(raw_steps or "[]")
+            except (TypeError, ValueError):
+                raw_steps = []
+        if not isinstance(raw_steps, list):
+            return []
+        result = []
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                continue
+            status = str(step.get("conclusion") or step.get("status") or "").lower()
+            if status in FAILED_STATUSES:
+                result.append(
+                    {
+                        "name": step.get("name") or "",
+                        "number": step.get("number"),
+                        "status": status,
+                        "duration": step.get("duration") or 0,
+                    }
+                )
+        return result
+
+    @classmethod
+    def _group_to_failed_job(cls, group: ReleaseBuildGroup) -> dict[str, Any]:
+        return {
+            "name": group.group_name or group.sub_job_name or "未命名 Job",
+            "target": group.target,
+            "os": group.os_name,
+            "phase": group.phase,
+            "architecture": group.architecture,
+            "status": group.status,
+            "url": None,
+            "failed_steps": cls._failed_steps(group.steps_json),
+        }
+
+    async def _failed_jobs_for_run(
+        self,
+        wf: ReleaseWorkflow,
+        run: ReleaseBuildRun | None,
+        *,
+        allow_remote: bool = True,
+    ) -> list[dict[str, Any]]:
+        if run is None:
+            return []
+        groups = (
+            await self.db.execute(
+                select(ReleaseBuildGroup).where(ReleaseBuildGroup.run_id == run.id)
+            )
+        ).scalars().all()
+        failed = [
+            self._group_to_failed_job(group)
+            for group in groups
+            if str(group.status or "").lower() in FAILED_STATUSES
+        ]
+        if failed or not allow_remote or not run.github_run_id or not settings.GITHUB_TOKEN:
+            return failed
+
+        client = GitHubClient(
+            token=settings.GITHUB_TOKEN,
+            owner=wf.repo_owner,
+            repo=wf.repo_name,
+        )
+        try:
+            jobs = await client.get_job_list(int(run.github_run_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to fetch jobs for run %s: %s", run.github_run_id, exc)
+            return []
+        finally:
+            await client.close()
+
+        return [
+            {
+                "name": job.get("name") or "未命名 Job",
+                "target": None,
+                "os": None,
+                "phase": None,
+                "architecture": None,
+                "status": str(job.get("conclusion") or job.get("status") or "").lower(),
+                "url": job.get("html_url"),
+                "failed_steps": self._failed_steps(job.get("steps") or []),
+            }
+            for job in jobs
+            if str(job.get("conclusion") or job.get("status") or "").lower() in FAILED_STATUSES
+        ]
+
+    async def get_alert_detail(self, alert_id: int) -> dict[str, Any] | None:
+        alert = await self.db.get(ImageBuildAlert, alert_id)
+        if not alert:
+            return None
+        wf = await self.db.get(ReleaseWorkflow, alert.release_workflow_id)
+        if not wf:
+            return None
+        run = await self._run_for_alert(alert)
+        job_summary: dict[str, Any] = {}
+        failed_jobs: list[dict[str, Any]] = []
+        if alert.alert_type == "failure" and run is not None:
+            try:
+                job_summary = json.loads(run.conclusion_summary or "{}")
+            except (TypeError, ValueError):
+                job_summary = {}
+            failed_jobs = await self._failed_jobs_for_run(wf, run)
+        return {
+            **self._serialize_alert(alert, wf),
+            "job_summary": job_summary,
+            "failed_jobs": failed_jobs,
+            "run": (
+                {
+                    "github_run_id": run.github_run_id,
+                    "status": run.status,
+                    "event": run.event,
+                    "branch": run.branch,
+                    "commit_sha": run.commit_sha,
+                    "created_at": _iso(run.created_at_remote),
+                    "completed_at": _iso(run.completed_at_remote),
+                    "wall_duration": run.wall_duration,
+                    "num_jobs": run.num_jobs,
+                    "url": _run_url(wf, run),
+                }
+                if run is not None
+                else None
+            ),
         }
 
     async def ack_alert(self, alert_id: int, operator: str) -> dict[str, Any] | None:
@@ -1037,40 +1178,105 @@ class ImageBuildMonitorService:
             f"[vLLM Ascend 镜像构建告警] {wf.repo_name}/{wf.workflow_name} - "
             + "/".join(sorted({type_zh.get(a.alert_type, a.alert_type) for a in alerts}))
         )
-        rows = []
-        for alert in alerts:
-            run_link = (
-                f'<a href="{alert.run_url}">{alert.run_url}</a>' if alert.run_url else "-"
-            )
-            rows.append(
+        type_color = {"failure": "#cf1322", "missing": "#c41d7f", "stuck": "#d46b08"}
+        cards: list[str] = []
+        for index, alert in enumerate(alerts):
+            type_label = type_zh.get(alert.alert_type, alert.alert_type)
+            color = type_color.get(alert.alert_type, "#666")
+            run_url = html_lib.escape(alert.run_url or "")
+            run_link = f'<a href="{run_url}">{run_url}</a>' if run_url else "-"
+            branch = html_lib.escape(alert.branch or "-")
+            event = html_lib.escape(alert.event or "-")
+            title = html_lib.escape(alert.title)
+            message = html_lib.escape(alert.message or "-")
+            first_seen = html_lib.escape(_iso(alert.first_detected_at) or "-")
+
+            failure_block = ""
+            if alert.alert_type == "failure":
+                run = await self._run_for_alert(alert)
+                summary: dict[str, Any] = {}
+                failed_jobs: list[dict[str, Any]] = []
+                if run is not None:
+                    try:
+                        summary = json.loads(run.conclusion_summary or "{}")
+                    except (TypeError, ValueError):
+                        summary = {}
+                    failed_jobs = await self._failed_jobs_for_run(
+                        wf, run, allow_remote=index < 3
+                    )
+                summary_cells = "".join(
+                    f'<td style="padding:6px 10px;border:1px solid #eee;">'
+                    f'<div style="color:#888;font-size:11px;">{label}</div>'
+                    f'<div style="font-weight:600;font-size:15px;">{summary.get(key, 0)}</div>'
+                    f"</td>"
+                    for key, label in (("total", "总 Job"), ("success", "成功"), ("failure", "失败"), ("skipped", "跳过"), ("other", "其他"))
+                )
+                if summary:
+                    failure_block += (
+                        '<table style="border-collapse:collapse;margin:10px 0;font-size:12px;">'
+                        f"<tr>{summary_cells}</tr></table>"
+                    )
+                if failed_jobs:
+                    items = []
+                    for job in failed_jobs:
+                        job_name = html_lib.escape(job.get("name") or "未命名 Job")
+                        job_status = html_lib.escape(str(job.get("status") or "-"))
+                        job_url = html_lib.escape(job.get("url") or "")
+                        name_html = (
+                            f'<a href="{job_url}" style="color:#1677ff;font-weight:600;">{job_name}</a>'
+                            if job_url
+                            else f'<span style="font-weight:600;">{job_name}</span>'
+                        )
+                        steps = job.get("failed_steps") or []
+                        step_html = ""
+                        if steps:
+                            step_names = "、".join(
+                                html_lib.escape(str(step.get("name") or "-")) for step in steps
+                            )
+                            step_html = (
+                                f'<div style="color:#cf1322;margin-top:3px;">失败步骤：{step_names}</div>'
+                            )
+                        items.append(
+                            f'<li style="margin-bottom:8px;">{name_html} '
+                            f'<span style="color:#cf1322;font-size:12px;">[{job_status}]</span>'
+                            f"{step_html}</li>"
+                        )
+                    failure_block += (
+                        f'<div style="margin-top:8px;font-size:13px;">'
+                        f'<div style="color:#555;font-weight:600;margin-bottom:4px;">失败 Job（{len(failed_jobs)}）</div>'
+                        f'<ul style="margin:0;padding-left:20px;">{"".join(items)}</ul></div>'
+                    )
+                elif not summary:
+                    failure_block += (
+                        '<div style="color:#888;font-size:12px;margin-top:8px;">'
+                        "暂无 Job 明细，可点击下方 Run 链接到 GitHub 查看。</div>"
+                    )
+
+            cards.append(
                 f"""
-                <tr>
-                  <td style="padding:8px;border:1px solid #eee;">{type_zh.get(alert.alert_type, alert.alert_type)}</td>
-                  <td style="padding:8px;border:1px solid #eee;">{alert.title}</td>
-                  <td style="padding:8px;border:1px solid #eee;">{alert.message or '-'}</td>
-                  <td style="padding:8px;border:1px solid #eee;">{alert.branch or '-'}</td>
-                  <td style="padding:8px;border:1px solid #eee;">{run_link}</td>
-                  <td style="padding:8px;border:1px solid #eee;">{_iso(alert.first_detected_at) or '-'}</td>
-                </tr>
+                <div style="border:1px solid #f0f0f0;border-left:4px solid {color};border-radius:6px;padding:14px 16px;margin-bottom:14px;">
+                  <div style="font-size:13px;color:{color};font-weight:600;margin-bottom:6px;">{type_label}</div>
+                  <div style="font-size:15px;font-weight:600;margin-bottom:8px;">{title}</div>
+                  <table style="font-size:12px;color:#555;margin-bottom:6px;">
+                    <tr><td style="padding-right:18px;">分支：<strong>{branch}</strong></td>
+                        <td style="padding-right:18px;">Event：<strong>{event}</strong></td>
+                        <td>首次发现：<strong>{first_seen}</strong></td></tr>
+                  </table>
+                  <div style="font-size:12px;color:#555;margin-bottom:4px;">Run：{run_link}</div>
+                  {failure_block}
+                  <div style="font-size:12px;color:#888;margin-top:8px;word-break:break-all;">{message}</div>
+                </div>
                 """
             )
 
         html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="font-family:Arial,sans-serif;padding:20px;">
-<h2 style="color:#cf1322;">⚠ 镜像构建异常告警</h2>
-<p>仓库：<strong>{wf.repo_owner}/{wf.repo_name}</strong>　Workflow：<strong>{wf.workflow_name}</strong></p>
-<table style="border-collapse:collapse;width:100%;font-size:13px;">
-<thead><tr style="background:#fafafa;">
-<th style="padding:8px;border:1px solid #eee;">类型</th>
-<th style="padding:8px;border:1px solid #eee;">标题</th>
-<th style="padding:8px;border:1px solid #eee;">详情</th>
-<th style="padding:8px;border:1px solid #eee;">分支</th>
-<th style="padding:8px;border:1px solid #eee;">Run</th>
-<th style="padding:8px;border:1px solid #eee;">首次发现</th>
-</tr></thead>
-<tbody>{''.join(rows)}</tbody>
-</table>
-<p style="color:#888;font-size:12px;">vLLM Ascend Dashboard 镜像构建监控自动发送</p>
+<body style="font-family:Arial,sans-serif;padding:20px;color:#222;background:#fafafa;">
+<div style="max-width:860px;margin:0 auto;">
+<h2 style="color:#cf1322;margin-bottom:6px;">⚠ 镜像构建异常告警</h2>
+<p style="margin:0 0 16px;color:#555;">仓库：<strong>{html_lib.escape(wf.repo_owner)}/{html_lib.escape(wf.repo_name)}</strong>　Workflow：<strong>{html_lib.escape(wf.workflow_name)}</strong>　共 <strong>{len(alerts)}</strong> 条告警</p>
+{''.join(cards)}
+<p style="color:#999;font-size:12px;margin-top:18px;">vLLM Ascend Dashboard 镜像构建监控自动发送</p>
+</div>
 </body></html>"""
 
         try:

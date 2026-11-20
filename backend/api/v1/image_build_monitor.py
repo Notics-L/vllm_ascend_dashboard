@@ -196,6 +196,18 @@ async def list_alerts(
     )
 
 
+@router.get("/alerts/{alert_id}/detail")
+async def get_alert_detail(
+    alert_id: int,
+    db: DbSession,
+    _: CurrentUser,
+) -> dict[str, Any]:
+    detail = await ImageBuildMonitorService(db).get_alert_detail(alert_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="告警不存在")
+    return detail
+
+
 @router.post("/alerts/{alert_id}/ack")
 async def ack_alert(alert_id: int, db: DbSession, user: CurrentAdminUser) -> dict[str, Any]:
     result = await ImageBuildMonitorService(db).ack_alert(alert_id, user.username)

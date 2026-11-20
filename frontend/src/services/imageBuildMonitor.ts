@@ -73,6 +73,41 @@ export interface MonitorAlert {
   details: Record<string, unknown> | null
 }
 
+export interface AlertFailedStep {
+  name: string
+  number: number | null
+  status: string
+  duration: number
+}
+
+export interface AlertFailedJob {
+  name: string
+  target: string | null
+  os: string | null
+  phase: string | null
+  architecture: string | null
+  status: string | null
+  url: string | null
+  failed_steps: AlertFailedStep[]
+}
+
+export interface AlertDetail extends MonitorAlert {
+  job_summary: Record<string, number>
+  failed_jobs: AlertFailedJob[]
+  run: {
+    github_run_id: number
+    status: string | null
+    event: string | null
+    branch: string | null
+    commit_sha: string | null
+    created_at: string | null
+    completed_at: string | null
+    wall_duration: number | null
+    num_jobs: number
+    url: string | null
+  } | null
+}
+
 export interface MonitorOverview {
   days_back: number
   targets_total: number
@@ -179,6 +214,11 @@ export const listAlerts = async (params?: {
   page_size?: number
 }): Promise<{ total: number; page: number; page_size: number; items: MonitorAlert[] }> => {
   const { data } = await api.get('/image-build-monitor/alerts', { params })
+  return data
+}
+
+export const getAlertDetail = async (id: number): Promise<AlertDetail> => {
+  const { data } = await api.get<AlertDetail>(`/image-build-monitor/alerts/${id}/detail`)
   return data
 }
 
