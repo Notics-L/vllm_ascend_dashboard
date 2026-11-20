@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -32,6 +32,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   HistoryOutlined,
+  InfoCircleOutlined,
   LinkOutlined,
   MailOutlined,
   PlayCircleOutlined,
@@ -46,6 +47,7 @@ import {
   getOverview,
   getGithubStatus,
   getTargetRuns,
+  getAlertDetail,
   listAlerts,
   listCandidates,
   listTargets,
@@ -55,6 +57,7 @@ import {
   sendTestEmail,
   updateTarget,
   type MonitorAlert,
+  type AlertDetail,
   type MonitorTarget,
   type TargetPayload,
 } from '../services/imageBuildMonitor'
@@ -195,6 +198,7 @@ export default function ImageBuildMonitor() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<MonitorTarget | null>(null)
   const [runTarget, setRunTarget] = useState<MonitorTarget | null>(null)
+  const [detailAlertId, setDetailAlertId] = useState<number | null>(null)
   const [alertStatus, setAlertStatus] = useState<string | undefined>('unresolved')
   const [alertType, setAlertType] = useState<string | undefined>()
   const [cronOpen, setCronOpen] = useState(false)
@@ -236,6 +240,11 @@ export default function ImageBuildMonitor() {
     queryKey: ['image-build-monitor-runs', runTarget?.id],
     queryFn: () => getTargetRuns(runTarget!.id, 20),
     enabled: !!runTarget,
+  })
+  const alertDetailQuery = useQuery({
+    queryKey: ['image-build-monitor-alert-detail', detailAlertId],
+    queryFn: () => getAlertDetail(detailAlertId!),
+    enabled: !!detailAlertId,
   })
 
   const refreshAll = () => {
@@ -324,13 +333,53 @@ export default function ImageBuildMonitor() {
   const alerts = alertsQuery.data?.items ?? []
 
   const candidateOptions = useMemo(() => {
-    const items = candidatesQuery.data ?? []
-    return items
-      .filter((c) => !c.already_monitored || c.id === editing?.release_workflow_id)
-      .map((c) => ({
+    const items = (candidatesQuery.data ?? []).filter(
+      (c) => !c.already_monitored || c.id === editing?.release_workflow_id,
+    )
+    const groups = new Map<string, Array<{
+      value: number
+      searchText: string
+      title: string
+      label: ReactNode
+    }>>()
+    for (const c of items) {
+      const repo = `${c.repo_owner}/${c.repo_name}`
+      const shortPath = c.workflow_path.replace(/^\.github\/workflows\//, '')
+      const option = {
         value: c.id,
-        label: `${c.repo_owner}/${c.repo_name} · ${c.workflow_name}`,
-      }))
+        title: `${repo} · ${c.workflow_name} · ${c.workflow_path}`,
+        searchText: `${repo} ${c.workflow_name} ${c.workflow_path} ${shortPath}`,
+        label: (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0, maxWidth: '100%' }}>
+            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{c.workflow_name}</span>
+            <span
+              style={{
+                color: '#8c8c8c',
+                fontSize: 12,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {shortPath}
+            </span>
+          </span>
+        ),
+      }
+      const bucket = groups.get(repo) ?? []
+      bucket.push(option)
+      groups.set(repo, bucket)
+    }
+    return Array.from(groups.entries()).map(([repo, options]) => ({
+      label: (
+        <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#8c8c8c' }}>
+          <span>{repo}</span>
+          <span>{options.length} 个 Workflow</span>
+        </span>
+      ),
+      title: repo,
+      options,
+    }))
   }, [candidatesQuery.data, editing])
 
   const openCreate = () => {
@@ -526,21 +575,50 @@ export default function ImageBuildMonitor() {
     {
       title: 'Workflow',
       key: 'workflow',
+      width: 280,
+      ellipsis: { showTitle: true },
       render: (_, r) => (
-        <div>
-          <div style={{ fontWeight: 600 }}>{r.workflow_name}</div>
-          <Text type="secondary" style={{ fontSize: 12 }}>{r.repo_owner}/{r.repo_name}</Text>
+        <div style={{ minWidth: 0 }}>
+          <Tooltip title={r.workflow_name}>
+            <div
+              style={{
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {r.workflow_name}
+            </div>
+          </Tooltip>
+          <div
+            style={{
+              fontSize: 12,
+              color: '#8c8c8c',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {r.repo_owner}/{r.repo_name}
+          </div>
         </div>
       ),
     },
     {
       title: '告警内容',
       key: 'title',
+      width: 100,
+      align: 'center',
       render: (_, r) => (
-        <div>
-          <div>{r.title}</div>
-          <Text type="secondary" style={{ fontSize: 12 }}>{r.message}</Text>
-        </div>
+        <Button
+          size="small"
+          type="link"
+          icon={<InfoCircleOutlined />}
+          onClick={() => setDetailAlertId(r.id)}
+        >
+          详情
+        </Button>
       ),
     },
     {
@@ -569,7 +647,7 @@ export default function ImageBuildMonitor() {
     {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 240,
       render: (_, r) => (
         <Space size={2}>
           {r.run_url && (
@@ -763,37 +841,75 @@ export default function ImageBuildMonitor() {
           columns={alertColumns}
           dataSource={alerts}
           pagination={false}
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1220 }}
         />
       </Card>
 
       <Modal
-        title={editing ? '编辑监控目标' : '新增监控目标'}
+        title={
+          <Space size={10}>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                background: '#e6f4ff',
+                color: '#1677ff',
+              }}
+            >
+              {editing ? <EditOutlined /> : <PlusOutlined />}
+            </span>
+            <span>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>
+                {editing ? '编辑监控目标' : '新增监控目标'}
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 400, color: '#8c8c8c' }}>
+                选择要监控的 Workflow，并配置调度与告警通知
+              </div>
+            </span>
+          </Space>
+        }
         open={modalOpen}
         onCancel={() => {
           setModalOpen(false)
           setEditing(null)
         }}
         onOk={() => form.submit()}
+        okText={editing ? '保存' : '创建'}
+        cancelText="取消"
         confirmLoading={saveMutation.isPending}
-        width={720}
+        width={760}
         destroyOnClose
       >
         <Form
           form={form}
           layout="vertical"
+          requiredMark="optional"
           onFinish={(values) => saveMutation.mutate(values)}
         >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 14px' }}>
+            <span style={{ width: 3, height: 14, borderRadius: 2, background: '#1677ff' }} />
+            <Text strong>基础配置</Text>
+          </div>
           <Form.Item
             name="release_workflow_id"
             label="目标 Workflow"
             rules={[{ required: true, message: '请选择要监控的 Workflow' }]}
+            extra="支持按 Workflow 名称、文件名或仓库搜索"
           >
             <Select
               showSearch
-              optionFilterProp="label"
+              size="large"
               options={candidateOptions}
-              placeholder="选择已注册的发布件 Workflow"
+              placeholder="搜索 Workflow 名称或文件路径"
+              listHeight={360}
+              filterOption={(input, option) => {
+                const searchText = (option as unknown as { searchText?: string } | undefined)?.searchText
+                return String(searchText ?? '').toLowerCase().includes(input.trim().toLowerCase())
+              }}
             />
           </Form.Item>
           <Row gutter={16}>
@@ -841,30 +957,42 @@ export default function ImageBuildMonitor() {
               </Form.Item>
             </Col>
           </Row>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 14px' }}>
+            <span style={{ width: 3, height: 14, borderRadius: 2, background: '#722ed1' }} />
+            <Text strong>通知设置</Text>
+          </div>
           <Form.Item
             name="notify_emails"
             label="通知邮箱"
+            extra="输入邮箱后回车，可添加多个"
           >
-            <Select mode="tags" tokenSeparators={[',', ';', ' ']} placeholder="输入邮箱后回车，可添加多个" />
+            <Select mode="tags" tokenSeparators={[',', ';', ' ']} placeholder="例如：owner@example.com" />
           </Form.Item>
-          <Row gutter={16}>
+          <Row gutter={12}>
             <Col span={8}>
-              <Form.Item name="notify_on_failure" label="失败通知" valuePropName="checked">
-                <Switch />
-              </Form.Item>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                <Form.Item name="notify_on_failure" label="失败通知" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Switch />
+                </Form.Item>
+              </div>
             </Col>
             <Col span={8}>
-              <Form.Item name="notify_on_missing" label="未触发通知" valuePropName="checked">
-                <Switch />
-              </Form.Item>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                <Form.Item name="notify_on_missing" label="未触发通知" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Switch />
+                </Form.Item>
+              </div>
             </Col>
             <Col span={8}>
-              <Form.Item name="notify_on_stuck" label="卡住通知" valuePropName="checked">
-                <Switch />
-              </Form.Item>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                <Form.Item name="notify_on_stuck" label="卡住通知" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Switch />
+                </Form.Item>
+              </div>
             </Col>
           </Row>
-          <Row gutter={16}>
+          <Row gutter={16} style={{ marginTop: 16 }}>
             <Col span={12}>
               <Form.Item
                 name="cooldown_minutes"
@@ -875,9 +1003,11 @@ export default function ImageBuildMonitor() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="enabled" label="启用监控" valuePropName="checked">
-                <Switch />
-              </Form.Item>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                <Form.Item name="enabled" label="启用监控" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Switch />
+                </Form.Item>
+              </div>
             </Col>
           </Row>
         </Form>
@@ -974,6 +1104,155 @@ export default function ImageBuildMonitor() {
             },
           ]}
         />
+      </Drawer>
+
+      <Drawer
+        title="告警详情"
+        open={!!detailAlertId}
+        onClose={() => setDetailAlertId(null)}
+        width={760}
+      >
+        {(() => {
+          const detail: AlertDetail | undefined = alertDetailQuery.data
+          if (alertDetailQuery.isFetching && !detail) {
+            return <Text type="secondary">加载中...</Text>
+          }
+          if (!detail) {
+            return <Text type="secondary">暂无详情</Text>
+          }
+          const summary = detail.job_summary || {}
+          const run = detail.run
+          return (
+            <div>
+              <Descriptions
+                size="small"
+                column={2}
+                bordered
+                style={{ marginBottom: 16 }}
+                labelStyle={{ width: 96, whiteSpace: 'nowrap', background: '#fafafa' }}
+              >
+                <Descriptions.Item label="类型">
+                  <Tag color={ALERT_TYPE_COLOR[detail.alert_type] || 'default'}>
+                    {ALERT_TYPE_ZH[detail.alert_type] || detail.alert_type}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="状态">
+                  <Tag color={STATUS_COLOR[detail.status] || 'default'}>
+                    {STATUS_ZH[detail.status] || detail.status}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="Workflow" span={2}>{detail.workflow_name}</Descriptions.Item>
+                <Descriptions.Item label="仓库" span={2}>{detail.repo_owner}/{detail.repo_name}</Descriptions.Item>
+                <Descriptions.Item label="分支">{detail.branch || '-'}</Descriptions.Item>
+                <Descriptions.Item label="Event">{detail.event || '-'}</Descriptions.Item>
+                <Descriptions.Item label="首次发现">{fmtTime(detail.first_detected_at)}</Descriptions.Item>
+                <Descriptions.Item label="最近检测">{fmtTime(detail.last_detected_at)}</Descriptions.Item>
+                {run && (
+                  <>
+                    <Descriptions.Item label="Run">
+                      <Space size={4}>
+                        <Text strong>#{run.github_run_id}</Text>
+                        {run.url && (
+                          <Button size="small" type="link" icon={<LinkOutlined />} href={run.url} target="_blank">
+                            GitHub
+                          </Button>
+                        )}
+                      </Space>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="运行状态">
+                      <Tag color={RUN_STATUS_COLOR[run.status || ''] || 'default'}>
+                        {RUN_STATUS_ZH[run.status || ''] ?? run.status ?? '-'}
+                      </Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="创建时间">{fmtTime(run.created_at)}</Descriptions.Item>
+                    <Descriptions.Item label="耗时">{fmtDuration(run.wall_duration)}</Descriptions.Item>
+                  </>
+                )}
+              </Descriptions>
+
+              {!!Object.keys(summary).length && (
+                <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+                  {([
+                    ['total', '总 Job', '#1677ff'],
+                    ['success', '成功', '#389e0d'],
+                    ['failure', '失败', '#cf1322'],
+                    ['skipped', '跳过', '#8c8c8c'],
+                    ['other', '其他', '#d46b08'],
+                  ] as const).map(([key, label, color]) => (
+                    <Card size="small" key={key} style={{ flex: 1, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#888' }}>{label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 600, color }}>{summary[key] ?? 0}</div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              {detail.alert_type === 'failure' ? (
+                detail.failed_jobs.length ? (
+                  <div>
+                    <Typography.Title level={5} style={{ marginTop: 0 }}>
+                      失败 Job（{detail.failed_jobs.length}）
+                    </Typography.Title>
+                    {detail.failed_jobs.map((job, index) => (
+                      <Card key={`${job.name}-${index}`} size="small" style={{ marginBottom: 10 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <Space size={6} wrap>
+                            <Text strong>{job.name}</Text>
+                            {(job.target || job.os || job.architecture) && (
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {[job.target, job.os, job.architecture].filter(Boolean).join(' / ')}
+                              </Text>
+                            )}
+                          </Space>
+                          <Space size={4}>
+                            <Tag color={RUN_STATUS_COLOR[job.status || ''] || 'default'}>
+                              {RUN_STATUS_ZH[job.status || ''] ?? job.status ?? '-'}
+                            </Tag>
+                            {job.url && (
+                              <Button size="small" type="link" icon={<LinkOutlined />} href={job.url} target="_blank">
+                                打开
+                              </Button>
+                            )}
+                          </Space>
+                        </div>
+                        {job.failed_steps.length ? (
+                          <div style={{ marginTop: 8 }}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>失败步骤：</Text>
+                            <Space size={4} wrap>
+                              {job.failed_steps.map((step, stepIndex) => (
+                                <Tag key={`${step.name}-${stepIndex}`} color="red">
+                                  {step.name || '-'} {step.status ? `(${step.status})` : ''}
+                                </Tag>
+                              ))}
+                            </Space>
+                          </div>
+                        ) : (
+                          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                            未记录失败步骤，可点击「打开」查看 GitHub 日志。
+                          </Text>
+                        )}
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="暂无 Job 明细"
+                    description="该运行可能尚未同步 Job 数据，可点击上方 Run 链接到 GitHub 查看具体失败 Job 与日志。"
+                  />
+                )
+              ) : (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={ALERT_TYPE_ZH[detail.alert_type] || detail.alert_type}
+                  description={detail.message || '-'}
+                />
+              )}
+            </div>
+          )
+        })()}
       </Drawer>
 
       <Modal
