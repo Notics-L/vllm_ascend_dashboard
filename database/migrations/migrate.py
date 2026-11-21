@@ -34,6 +34,7 @@ from database.migrations.github_workflow_run_metadata import (
 from database.migrations.image_build_monitor import run as migrate_image_build_monitor
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
+from database.migrations.notifications import run as migrate_notifications
 from database.migrations.npu_occupancy import run as migrate_npu_occupancy
 from database.migrations.npu_occupancy_current_snapshot import (
     run as migrate_npu_occupancy_current_snapshot,
@@ -115,13 +116,14 @@ async def migrate() -> None:
     release_groups_result = await migrate_release_build_groups_columns()
     release_tp_url_result = await migrate_release_third_party_repository_url()
     image_build_monitor_result = await migrate_image_build_monitor()
+    notifications_result = await migrate_notifications()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s",
+        "Migration completed; users=%d permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s notifications=%s",
         users_after,
         permission_result,
         test_board_result,
@@ -143,6 +145,7 @@ async def migrate() -> None:
         release_groups_result,
         release_tp_url_result,
         image_build_monitor_result,
+        notifications_result,
     )
 
 

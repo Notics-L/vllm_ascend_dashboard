@@ -1286,6 +1286,20 @@ class ImageBuildMonitorService:
                 html_content=html,
                 recipients=recipients,
                 config=smtp_config,
+                source="image_build_monitor",
+                event_type="/".join(sorted({a.alert_type for a in alerts})),
+                severity="critical" if any(a.severity == "critical" for a in alerts) else "warning",
+                title=f"{wf.repo_name}/{wf.workflow_name} 镜像构建告警",
+                summary="；".join(a.title for a in alerts),
+                payload={
+                    "workflow_id": wf.id,
+                    "alert_ids": [a.id for a in alerts],
+                    "run_ids": [a.github_run_id for a in alerts if a.github_run_id],
+                },
+                dedupe_key=(
+                    f"image_build_monitor:email:{wf.id}:"
+                    + ",".join(str(a.id) for a in sorted(alerts, key=lambda item: item.id or 0))
+                ),
             )
             success = bool(result.get("success"))
             error = result.get("error")

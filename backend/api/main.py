@@ -40,6 +40,7 @@ from api.v1 import (
     logs,
     model_sync_configs,
     models,
+    notifications,
     npu_occupancy,
     npu_queue,
     performance,
@@ -671,6 +672,7 @@ def create_app() -> FastAPI:
     app.include_router(contributor_board.router, prefix="/api/v1/contributor-board", tags=["贡献者看板"])
     app.include_router(contributor_scoring.router, prefix="/api/v1/contributor-board/scoring", tags=["贡献者评分/权重版本"])
     app.include_router(release_management.router, prefix="/api/v1", tags=["发布件管理"])
+    app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["通知中心"])
 
     @app.get("/health")
     async def health_check():

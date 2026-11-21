@@ -657,6 +657,13 @@ class DailyReportService:
                 cc_recipients=cc_recipients,
                 images=chart_images or None,
                 config=smtp_config,
+                source="daily_report",
+                event_type="daily_report",
+                severity="info",
+                title=history.subject,
+                summary=f"每日运行报告 {history.report_date}",
+                payload={"report_id": history.id, "report_date": history.report_date},
+                dedupe_key=f"daily_report:email:{history.id}",
             )
         except Exception as exc:
             history.status = "failed"
@@ -813,6 +820,13 @@ class DailyReportService:
                 cc_recipients=cc_recipients,
                 images=chart_images if chart_images else None,
                 config=smtp_config,
+                source="daily_report",
+                event_type="daily_report",
+                severity="info",
+                title=subject,
+                summary=f"每日运行报告 {report_date.isoformat()}",
+                payload={"report_id": history.id, "report_date": report_date.isoformat()},
+                dedupe_key=f"daily_report:email:{history.id}",
             )
 
             if result["success"]:

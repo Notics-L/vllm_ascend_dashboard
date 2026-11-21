@@ -119,11 +119,12 @@ class AlertEvaluator:
                 node_name=rule.node_name, condition_details=rec["condition_details"],
                 triggered_at=now,
             )
+            self.db.add(history)
+            await self.db.flush()
             if rule.notify_email:
                 success, error = await self._send_notification(rule, history)
                 history.notification_sent = success
                 history.notification_error = error
-            self.db.add(history)
 
         return True
 
@@ -212,6 +213,21 @@ class AlertEvaluator:
                 html_content=html,
                 recipients=[recipient_email],
                 config=smtp_config,
+                source="alert_rules",
+                event_type="resource_alert",
+                severity="critical",
+                title=rule.name,
+                summary=(
+                    f"实际值 {history.actual_value}，{cluster_info}，"
+                    f"触发时间 {history.triggered_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                ),
+                payload={
+                    "rule_id": rule.id,
+                    "history_id": history.id,
+                    "cluster_id": history.cluster_id,
+                    "node_name": history.node_name,
+                },
+                dedupe_key=f"alert_rules:email:{history.id}",
             )
             if result.get("success"):
                 return True, None

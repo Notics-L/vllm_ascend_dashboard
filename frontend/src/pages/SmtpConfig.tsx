@@ -11,6 +11,8 @@ import type { SmtpConfigUpdate } from '../services/smtpConfig'
 import { testSmtpConnection } from '../services/smtpConfig'
 import type { SmtpTestResult } from '../services/smtpConfig'
 import { useCurrentUser } from '../hooks/useCurrentUser'
+import ContactsPanel from '../components/notifications/ContactsPanel'
+import DeliveriesPanel from '../components/notifications/DeliveriesPanel'
 
 const { Text, Title } = Typography
 
@@ -92,6 +94,8 @@ function SmtpConfigPage() {
           style={{ marginTop: 16, marginBottom: -16 }}
           items={[
             { key: 'email', label: '邮件' },
+            { key: 'contacts', label: '联系人' },
+            { key: 'deliveries', label: '发送记录' },
             { key: 'sms', label: '短信' },
             { key: 'voice', label: '语音电话' },
           ]}
@@ -239,6 +243,10 @@ function SmtpConfigPage() {
           </>
         )}
       </Card>
+      ) : activeTab === 'contacts' ? (
+        <ContactsPanel />
+      ) : activeTab === 'deliveries' ? (
+        <DeliveriesPanel />
       ) : (
         <Card>
           <Alert
