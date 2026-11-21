@@ -236,3 +236,41 @@ export const listIvrActions = async (): Promise<IvrAction[]> => {
   const { data } = await api.get<{ items: IvrAction[] }>('/notifications/actions')
   return data.items
 }
+
+export interface NotificationPolicy {
+  quiet_hours_enabled: boolean
+  quiet_hours_start: string
+  quiet_hours_end: string
+  cooldown_minutes: number
+  storm_window_minutes: number
+  storm_threshold: number
+  escalation_enabled: boolean
+  escalation_group_ids: number[]
+  oncall_group_id: number | null
+}
+
+export interface NotificationMetrics {
+  days: number
+  events: number
+  deliveries: number
+  sent: number
+  failed: number
+  success_rate: number
+  channels: Record<string, { total: number; sent: number; failed: number; pending: number; success_rate: number }>
+  actions: Record<string, { total: number; success: number; failed: number }>
+}
+
+export const getPolicy = async (): Promise<NotificationPolicy> => {
+  const { data } = await api.get<NotificationPolicy>('/notifications/policy')
+  return data
+}
+
+export const updatePolicy = async (payload: Partial<NotificationPolicy>): Promise<NotificationPolicy> => {
+  const { data } = await api.put<NotificationPolicy>('/notifications/policy', payload)
+  return data
+}
+
+export const getMetrics = async (days = 7): Promise<NotificationMetrics> => {
+  const { data } = await api.get<NotificationMetrics>('/notifications/metrics', { params: { days } })
+  return data
+}

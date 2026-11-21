@@ -10,14 +10,16 @@ from __future__ import annotations
 import html as html_lib
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.email import get_smtp_config, send_email
 from infrastructure.persistence.models import (
+    NotificationAction,
     NotificationContact,
     NotificationDelivery,
     NotificationEvent,
@@ -190,6 +192,7 @@ class NotificationDispatcher:
         voice_recipients = voice_recipients or sms_recipients
 
         planned = list(channels or ["email"])
+        requested_channels = list(planned)
         if "sms" in planned and (
             not sms_config.get("enabled") or not sms_text or not sms_recipients
         ):
@@ -200,6 +203,17 @@ class NotificationDispatcher:
             planned = [channel for channel in planned if channel != "voice"]
         if not planned:
             return {"success": False, "error": "没有可用的通知渠道"}
+
+        from notifications.policy import get_policy_config
+
+        policy = await get_policy_config(self.db)
+        suppressed_reasons = await self._policy_suppression_reasons(
+            source=source, dedupe_key=dedupe_key, policy=policy
+        )
+        if suppressed_reasons:
+            planned = [channel for channel in planned if channel == "email"]
+            if not planned:
+                planned = ["email"]
 
         event = await self._get_or_create_event(
             source=source,
@@ -252,6 +266,53 @@ class NotificationDispatcher:
                 used_channel = channel
                 break
 
+        escalated = False
+        if not any_success and policy.get("escalation_enabled"):
+            group_ids = [int(g) for g in (policy.get("escalation_group_ids") or [])]
+            esc_emails, esc_phones = await self._group_recipients(group_ids)
+            if esc_emails or esc_phones:
+                for channel in requested_channels:
+                    if channel == "email":
+                        if not (email_subject and email_html and esc_emails):
+                            continue
+                        result, ids = await self._send_email_channel(
+                            event=event,
+                            subject=email_subject,
+                            html_content=email_html,
+                            recipients=esc_emails,
+                            cc_recipients=[],
+                            images=images,
+                            config=config,
+                        )
+                    elif channel == "sms":
+                        if not (sms_text and esc_phones and sms_config.get("enabled")):
+                            continue
+                        result, ids = await self._send_sms_channel(
+                            event=event,
+                            recipients=esc_phones,
+                            text=sms_text,
+                            config=sms_config,
+                        )
+                    elif channel == "voice":
+                        if not (voice_text and esc_phones and voice_config.get("enabled")):
+                            continue
+                        result, ids = await self._send_voice_channel(
+                            event=event,
+                            recipients=esc_phones,
+                            text=voice_text,
+                            config=voice_config,
+                        )
+                    else:
+                        continue
+                    result = {**result, "channel": channel, "escalation": True}
+                    results.append(result)
+                    delivery_ids.extend(ids)
+                    if result.get("success"):
+                        any_success = True
+                        used_channel = f"escalation:{channel}"
+                        escalated = True
+                        break
+
         event.status = "sent" if any_success else "failed"
         await self.db.flush()
         last_error = next(
@@ -264,7 +325,68 @@ class NotificationDispatcher:
             "event_id": event.id,
             "delivery_ids": delivery_ids,
             "results": results,
+            "suppressed": bool(suppressed_reasons),
+            "suppressed_reasons": suppressed_reasons,
+            "escalated": escalated,
         }
+
+    async def _group_recipients(self, group_ids: list[int]) -> tuple[list[str], list[str]]:
+        if not group_ids:
+            return [], []
+        rows = (
+            await self.db.execute(
+                select(NotificationContact)
+                .join(
+                    NotificationGroupMember,
+                    NotificationGroupMember.contact_id == NotificationContact.id,
+                )
+                .where(
+                    NotificationGroupMember.group_id.in_(group_ids),
+                    NotificationContact.enabled.is_(True),
+                )
+            )
+        ).scalars().all()
+        emails = sorted({contact.email for contact in rows if contact.email})
+        phones = sorted({contact.phone for contact in rows if contact.phone})
+        return emails, phones
+
+    async def _policy_suppression_reasons(
+        self, *, source: str, dedupe_key: str | None, policy: dict[str, Any]
+    ) -> list[str]:
+        reasons: list[str] = []
+        now = datetime.now(UTC)
+        if policy.get("quiet_hours_enabled"):
+            local = now.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%H:%M")
+            start = str(policy.get("quiet_hours_start") or "22:00")
+            end = str(policy.get("quiet_hours_end") or "08:00")
+            in_quiet = start <= local < end if start <= end else (local >= start or local < end)
+            if in_quiet:
+                reasons.append("quiet_hours")
+
+        cooldown = int(policy.get("cooldown_minutes") or 0)
+        if dedupe_key and cooldown > 0:
+            existing = (
+                await self.db.execute(
+                    select(NotificationEvent).where(NotificationEvent.dedupe_key == dedupe_key)
+                )
+            ).scalar_one_or_none()
+            if existing and existing.created_at and existing.created_at > now - timedelta(minutes=cooldown):
+                reasons.append("cooldown")
+
+        window = int(policy.get("storm_window_minutes") or 0)
+        threshold = int(policy.get("storm_threshold") or 0)
+        if window > 0 and threshold > 0:
+            count = (
+                await self.db.execute(
+                    select(func.count(NotificationEvent.id)).where(
+                        NotificationEvent.source == source,
+                        NotificationEvent.created_at >= now - timedelta(minutes=window),
+                    )
+                )
+            ).scalar_one()
+            if int(count) >= threshold:
+                reasons.append("storm")
+        return reasons
 
     async def _phones_for_emails(self, emails: list[str]) -> list[str]:
         if not emails:
@@ -490,6 +612,67 @@ class NotificationDispatcher:
         event.status = "sent" if success else "failed"
         await self.db.flush()
         return {**result, "event_id": event.id, "delivery_ids": [new_delivery.id]}
+
+    async def get_metrics(self, days: int = 7) -> dict[str, Any]:
+        since = datetime.now(UTC) - timedelta(days=days)
+        deliveries = (
+            await self.db.execute(
+                select(NotificationDelivery, NotificationEvent)
+                .join(NotificationEvent, NotificationDelivery.event_id == NotificationEvent.id)
+                .where(NotificationEvent.created_at >= since)
+            )
+        ).all()
+        events_count = int(
+            (
+                await self.db.execute(
+                    select(func.count(NotificationEvent.id)).where(
+                        NotificationEvent.created_at >= since
+                    )
+                )
+            ).scalar_one()
+        )
+        actions = (
+            await self.db.execute(
+                select(NotificationAction).where(NotificationAction.created_at >= since)
+            )
+        ).scalars().all()
+
+        channels: dict[str, dict[str, int]] = {}
+        for delivery, _event in deliveries:
+            stat = channels.setdefault(
+                delivery.channel, {"total": 0, "sent": 0, "failed": 0, "pending": 0}
+            )
+            stat["total"] += 1
+            if delivery.status in ("sent", "delivered", "answered"):
+                stat["sent"] += 1
+            elif delivery.status == "failed":
+                stat["failed"] += 1
+            else:
+                stat["pending"] += 1
+        for stat in channels.values():
+            stat["success_rate"] = round(stat["sent"] / stat["total"] * 100, 1) if stat["total"] else 0
+
+        action_stats: dict[str, dict[str, int]] = {}
+        for action in actions:
+            stat = action_stats.setdefault(action.action, {"total": 0, "success": 0, "failed": 0})
+            stat["total"] += 1
+            if action.status == "success":
+                stat["success"] += 1
+            elif action.status == "failed":
+                stat["failed"] += 1
+
+        total_deliveries = sum(item["total"] for item in channels.values())
+        total_sent = sum(item["sent"] for item in channels.values())
+        return {
+            "days": days,
+            "events": events_count,
+            "deliveries": total_deliveries,
+            "sent": total_sent,
+            "failed": sum(item["failed"] for item in channels.values()),
+            "success_rate": round(total_sent / total_deliveries * 100, 1) if total_deliveries else 0,
+            "channels": channels,
+            "actions": action_stats,
+        }
 
     # ------------------------------------------------------------------
     # Contacts

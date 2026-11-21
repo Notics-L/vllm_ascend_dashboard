@@ -15,6 +15,8 @@ import ContactsPanel from '../components/notifications/ContactsPanel'
 import DeliveriesPanel from '../components/notifications/DeliveriesPanel'
 import SmsPanel from '../components/notifications/SmsPanel'
 import VoicePanel from '../components/notifications/VoicePanel'
+import PolicyPanel from '../components/notifications/PolicyPanel'
+import MetricsPanel from '../components/notifications/MetricsPanel'
 
 const { Text, Title } = Typography
 
@@ -98,6 +100,8 @@ function SmtpConfigPage() {
             { key: 'email', label: '邮件' },
             { key: 'contacts', label: '联系人' },
             { key: 'deliveries', label: '发送记录' },
+            { key: 'policy', label: '通知策略' },
+            { key: 'metrics', label: '运营指标' },
             { key: 'sms', label: '短信' },
             { key: 'voice', label: '语音电话' },
           ]}
@@ -249,6 +253,10 @@ function SmtpConfigPage() {
         <ContactsPanel />
       ) : activeTab === 'deliveries' ? (
         <DeliveriesPanel />
+      ) : activeTab === 'policy' ? (
+        <PolicyPanel />
+      ) : activeTab === 'metrics' ? (
+        <MetricsPanel />
       ) : activeTab === 'sms' ? (
         <SmsPanel />
       ) : (

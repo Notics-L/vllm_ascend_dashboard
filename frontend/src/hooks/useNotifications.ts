@@ -94,3 +94,17 @@ export const useTestVoice = () => useMutation({
 
 export const useIvrActions = () =>
   useQuery({ queryKey: ['notification-ivr-actions'], queryFn: api.listIvrActions })
+
+export const usePolicy = () =>
+  useQuery({ queryKey: ['notification-policy'], queryFn: api.getPolicy })
+
+export const useUpdatePolicy = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.updatePolicy,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-policy'] }),
+  })
+}
+
+export const useMetrics = (days = 7) =>
+  useQuery({ queryKey: ['notification-metrics', days], queryFn: () => api.getMetrics(days) })

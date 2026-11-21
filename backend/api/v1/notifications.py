@@ -13,11 +13,13 @@ from contracts.schemas.notifications import (
     GroupCreate,
     GroupUpdate,
     SmsConfigUpdate,
+    PolicyUpdate,
     SmsTestRequest,
     VoiceConfigUpdate,
     VoiceTestRequest,
 )
 from notifications.ivr import IvrService
+from notifications.policy import get_policy_config, save_policy_config
 from notifications.service import NotificationDispatcher
 from notifications.sms import get_public_sms_config, save_sms_config
 from notifications.voice import get_public_voice_config, save_voice_config
@@ -25,6 +27,35 @@ from notifications.voice import get_public_voice_config, save_voice_config
 router = APIRouter()
 
 
+
+
+# ----------------------------------------------------------------------
+# Policy & metrics
+# ----------------------------------------------------------------------
+
+@router.get("/policy")
+async def get_policy(db: DbSession, _: CurrentAdminUser) -> dict[str, Any]:
+    return await get_policy_config(db)
+
+
+@router.put("/policy")
+async def update_policy(
+    payload: PolicyUpdate,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    result = await save_policy_config(db, payload.model_dump(exclude_unset=True))
+    await db.commit()
+    return result
+
+
+@router.get("/metrics")
+async def get_metrics(
+    db: DbSession,
+    _: CurrentAdminUser,
+    days: int = Query(default=7, ge=1, le=90),
+) -> dict[str, Any]:
+    return await NotificationDispatcher(db).get_metrics(days)
 
 # ----------------------------------------------------------------------
 # SMS channel

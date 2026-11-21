@@ -147,3 +147,15 @@ class VoiceConfigUpdate(BaseModel):
 class VoiceTestRequest(BaseModel):
     phones: list[str] = Field(min_length=1)
     text: str = "vLLM Ascend 通知服务语音测试"
+
+
+class PolicyUpdate(BaseModel):
+    quiet_hours_enabled: bool | None = None
+    quiet_hours_start: str | None = None
+    quiet_hours_end: str | None = None
+    cooldown_minutes: int | None = None
+    storm_window_minutes: int | None = None
+    storm_threshold: int | None = None
+    escalation_enabled: bool | None = None
+    escalation_group_ids: list[int] | None = None
+    oncall_group_id: int | None = None
