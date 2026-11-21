@@ -327,15 +327,16 @@ function App() {
                   </AdminRoute>
                 }
               />
-              {/* SMTP 邮件服务器（管理员） */}
+              {/* 通知服务（管理员） */}
               <Route
-                path="admin/smtp-config"
+                path="admin/notifications"
                 element={
                   <AdminRoute>
                     <SmtpConfig />
                   </AdminRoute>
                 }
               />
+              <Route path="admin/smtp-config" element={<Navigate to="/admin/notifications" replace />} />
               {/* 每日运行报告（管理员） */}
               <Route
                 path="admin/daily-report"

@@ -97,6 +97,7 @@ class UserBase(BaseModel):
     """用户基础 Schema"""
     username: str = Field(..., min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$')
     email: str | None = Field(None, max_length=100)
+    phone: str | None = Field(None, max_length=32)
 
     @field_validator('email')
     @classmethod
@@ -122,6 +123,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     """更新用户 Schema"""
     email: str | None = None
+    phone: str | None = None
     role: str | None = None
     is_active: bool | None = None
 

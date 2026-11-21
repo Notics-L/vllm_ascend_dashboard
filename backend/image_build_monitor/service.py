@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
-from infrastructure.core.email import get_smtp_config, send_email
 from infrastructure.persistence.models import (
     ImageBuildAlert,
     ImageBuildMonitorTarget,
@@ -26,6 +25,7 @@ from infrastructure.persistence.models import (
     ReleaseBuildRun,
     ReleaseWorkflow,
 )
+from notifications.service import NotificationDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -1159,13 +1159,14 @@ class ImageBuildMonitorService:
                 alert.notification_error = "未配置收件人邮箱"
             return 0
 
-        smtp_config = await get_smtp_config(self.db)
+        dispatcher = NotificationDispatcher(self.db)
+        smtp_config = await dispatcher.get_email_config()
         if not smtp_config or not smtp_config.get("smtp_host"):
             for alert in alerts:
                 alert.last_notified_at = now
                 alert.notification_success = False
                 alert.notification_error = (
-                    "SMTP 未配置：请先在「管理 → 邮件服务」填写 SMTP 服务器、"
+                    "SMTP 未配置：请先在「管理 → 通知服务」填写 SMTP 服务器、"
                     "端口、账号和发件人邮箱后再测试"
                 )
             return 0
@@ -1276,17 +1277,33 @@ class ImageBuildMonitorService:
 </div>
 </body></html>"""
 
+        severity = "critical" if any(a.severity == "critical" for a in alerts) else "warning"
+        sms_text = (
+            f"【镜像构建告警】{wf.workflow_name} 共 {len(alerts)} 条："
+            + "；".join(a.title for a in alerts[:2])
+        )[:180]
         try:
-            result = await send_email(
-                subject=subject,
-                html_content=html,
-                recipients=recipients,
-                smtp_host=smtp_config.get("smtp_host", ""),
-                smtp_port=smtp_config.get("smtp_port", 587),
-                smtp_username=smtp_config.get("smtp_username", ""),
-                smtp_password=smtp_config.get("smtp_password", ""),
-                smtp_use_tls=smtp_config.get("smtp_use_tls", True),
-                from_email=smtp_config.get("from_email") or smtp_config.get("report_from_email", ""),
+            result = await dispatcher.dispatch(
+                email_subject=subject,
+                email_html=html,
+                email_recipients=recipients,
+                config=smtp_config,
+                sms_text=sms_text,
+                channels=await dispatcher.resolve_channels(severity),
+                source="image_build_monitor",
+                event_type="/".join(sorted({a.alert_type for a in alerts})),
+                severity=severity,
+                title=f"{wf.repo_name}/{wf.workflow_name} 镜像构建告警",
+                summary="；".join(a.title for a in alerts),
+                payload={
+                    "workflow_id": wf.id,
+                    "alert_ids": [a.id for a in alerts],
+                    "run_ids": [a.github_run_id for a in alerts if a.github_run_id],
+                },
+                dedupe_key=(
+                    f"image_build_monitor:{wf.id}:"
+                    + ",".join(str(a.id) for a in sorted(alerts, key=lambda item: item.id or 0))
+                ),
             )
             success = bool(result.get("success"))
             error = result.get("error")

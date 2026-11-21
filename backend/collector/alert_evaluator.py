@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infrastructure.core.email import get_smtp_config, send_email
 from infrastructure.persistence.models import (
     AlertCondition,
     AlertConditionGroup,
@@ -20,6 +19,7 @@ from infrastructure.persistence.models import (
     ResourceNpuMetrics,
     User,
 )
+from notifications.service import NotificationDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +119,12 @@ class AlertEvaluator:
                 node_name=rule.node_name, condition_details=rec["condition_details"],
                 triggered_at=now,
             )
+            self.db.add(history)
+            await self.db.flush()
             if rule.notify_email:
                 success, error = await self._send_notification(rule, history)
                 history.notification_sent = success
                 history.notification_error = error
-            self.db.add(history)
 
         return True
 
@@ -189,7 +190,8 @@ class AlertEvaluator:
             else:
                 return False, f"User {rule.user_id} has no email"
 
-        smtp_config = await get_smtp_config(self.db)
+        dispatcher = NotificationDispatcher(self.db)
+        smtp_config = await dispatcher.get_email_config()
         if not smtp_config or not smtp_config.get("smtp_host"):
             return False, "SMTP not configured"
 
@@ -205,12 +207,30 @@ class AlertEvaluator:
 </table>
 <p style="color:#888;font-size:12px;">vLLM Ascend Dashboard 自动发送</p></body></html>"""
 
+        summary = (
+            f"实际值 {history.actual_value}，{cluster_info}，"
+            f"触发时间 {history.triggered_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
         try:
-            result = await send_email(
-                subject=subject, html_content=html, recipients=[recipient_email],
-                smtp_host=smtp_config.get("smtp_host", ""), smtp_port=smtp_config.get("smtp_port", 587),
-                smtp_username=smtp_config.get("smtp_username", ""), smtp_password=smtp_config.get("smtp_password", ""),
-                smtp_use_tls=smtp_config.get("smtp_use_tls", True), from_email=smtp_config.get("report_from_email", ""),
+            result = await dispatcher.dispatch(
+                email_subject=subject,
+                email_html=html,
+                email_recipients=[recipient_email],
+                config=smtp_config,
+                sms_text=f"【vLLM Ascend 告警】{rule.name}：{summary}"[:180],
+                channels=await dispatcher.resolve_channels("critical"),
+                source="alert_rules",
+                event_type="resource_alert",
+                severity="critical",
+                title=rule.name,
+                summary=summary,
+                payload={
+                    "rule_id": rule.id,
+                    "history_id": history.id,
+                    "cluster_id": history.cluster_id,
+                    "node_name": history.node_name,
+                },
+                dedupe_key=f"alert_rules:{history.id}",
             )
             if result.get("success"):
                 return True, None

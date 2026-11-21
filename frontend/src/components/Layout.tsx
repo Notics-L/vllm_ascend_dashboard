@@ -28,7 +28,7 @@ import {
   LeftOutlined,
   LockOutlined,
   LogoutOutlined,
-  MailOutlined,
+  NotificationOutlined,
   MenuOutlined,
   PullRequestOutlined,
   PlayCircleOutlined,
@@ -105,7 +105,7 @@ const adminNavigation: NavigationItem = {
   children: [
     { key: '/user-stats', icon: <BarChartOutlined />, label: '用户统计' },
     { key: '/admin', icon: <SettingOutlined />, label: '系统配置' },
-    { key: '/admin/smtp-config', icon: <MailOutlined />, label: '邮件服务' },
+    { key: '/admin/notifications', icon: <NotificationOutlined />, label: '通知服务' },
     { key: '/admin/daily-report', icon: <SendOutlined />, label: '每日运行报告' },
   ],
 }
@@ -133,7 +133,7 @@ const routeMeta = [
   { prefix: '/release-management', title: '发布件管理', section: '研发交付' },
   { prefix: '/logs', title: '日志中心', section: '资源与响应' },
   { prefix: '/user-stats', title: '用户统计', section: '管理中心' },
-  { prefix: '/admin/smtp-config', title: '邮件服务', section: '管理中心' },
+  { prefix: '/admin/notifications', title: '通知服务', section: '管理中心' },
   { prefix: '/admin/daily-report', title: '每日运行报告', section: '管理中心' },
   { prefix: '/admin/ci-board-config', title: 'CI 看板配置', section: '管理中心' },
   { prefix: '/admin/model-board-config', title: '模型看板配置', section: '管理中心' },

@@ -353,8 +353,8 @@ function DailyReportConfigPage() {
               icon={<InfoCircleOutlined />}
               message={
                 <span>
-                  SMTP 邮件服务器配置已提取至独立页面，每日报告和告警规则共用。
-                  <a href="/admin/smtp-config" style={{ marginLeft: 8 }}>前往配置 →</a>
+                  通知服务配置已提取至独立页面，邮件通道供每日报告和告警规则共用。
+                  <a href="/admin/notifications" style={{ marginLeft: 8 }}>前往配置 →</a>
                 </span>
               }
               style={{ marginBottom: 16 }}
