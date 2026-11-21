@@ -2,7 +2,7 @@
 
 - 设计文档：`docs/notification-center-design.md`
 - 创建日期：2026-11-21
-- 当前阶段：Phase 0 已完成
+- 当前阶段：Phase 1 已完成
 - 分支：`feature/ci-image-build-monitor`
 
 ## 阶段进度总览
@@ -10,7 +10,7 @@
 | 阶段 | 内容 | 状态 | 完成日期 |
 | --- | --- | --- | --- |
 | Phase 0 | 改名与邮件入口收敛 | 已完成 | 2026-11-21 |
-| Phase 1 | 联系人 + 投递记录 | 未开始 | - |
+| Phase 1 | 联系人 + 投递记录 | 已完成 | 2026-11-21 |
 | Phase 2 | 短信 + 降级 | 未开始 | - |
 | Phase 3 | 语音播报 | 未开始 | - |
 | Phase 4 | IVR 按键动作 | 未开始 | - |
@@ -111,15 +111,125 @@
 - Git 提交：`e9597ab`（feat(notifications): phase 0 unify email dispatch under notification service）
 - 远程分支：`origin/feature/ci-image-build-monitor`
 
-## Phase 1：联系人 + 投递记录（待开始）
+## Phase 1：联系人 + 投递记录
 
-计划内容：
+### 目标
 
-- 新增 `notification_contacts`、`notification_groups`、`notification_group_members`
-- `User` 增加手机号
-- 新增 `notification_events`、`notification_deliveries`
-- 邮件发送写入投递记录
+- 新增联系人、联系人组及成员关系
+- 用户模型增加手机号
+- 新增通知事件与投递记录
+- 邮件发送自动写入事件与投递记录
 - 前端增加「联系人」「发送记录」Tab
+
+### 完成内容
+
+1. 数据模型与迁移：
+   - `backend/infrastructure/persistence/models/notifications.py`
+     - `NotificationContact`
+     - `NotificationGroup`
+     - `NotificationGroupMember`
+     - `NotificationEvent`
+     - `NotificationDelivery`
+   - `backend/infrastructure/persistence/models/__init__.py` 注册模型，`User` 增加 `phone`
+   - `database/migrations/notifications.py` 创建通知表并为 `users` 增加 `phone`
+   - `database/migrations/migrate.py` 注册迁移入口
+
+2. 通知服务层：
+   - `backend/notifications/service.py`
+     - 邮件发送创建/复用 `notification_events`
+     - 每个收件人写入 `notification_deliveries`
+     - 记录发送成功/失败、错误原因、尝试次数
+     - 联系人、联系人组 CRUD
+     - 事件与投递记录分页查询
+     - 邮件投递重试
+
+3. 业务事件上下文：
+   - 镜像构建告警传入 `source/event_type/severity/title/summary/payload/dedupe_key`
+   - 资源告警传入规则、历史、集群、节点信息
+   - 每日报告传入报告 ID 与报告日期
+   - 修复资源告警历史未先落库导致去重键为 `None` 的问题
+
+4. API：
+   - `backend/api/v1/notifications.py`
+     - `GET/POST/PUT/DELETE /api/v1/notifications/contacts`
+     - `GET/POST/PUT/DELETE /api/v1/notifications/groups`
+     - `GET /api/v1/notifications/events`
+     - `GET /api/v1/notifications/deliveries`
+     - `POST /api/v1/notifications/deliveries/{id}/retry`
+   - `backend/contracts/schemas/notifications.py`
+   - `backend/api/main.py` 注册通知中心路由
+   - 用户 Schema 增加 `phone`
+
+5. 前端：
+   - `frontend/src/services/notifications.ts`
+   - `frontend/src/hooks/useNotifications.ts`
+   - `frontend/src/components/notifications/ContactsPanel.tsx`
+     - 联系人增删改查
+     - 联系人组增删改查与成员维护
+   - `frontend/src/components/notifications/DeliveriesPanel.tsx`
+     - 发送记录列表、来源/渠道/状态过滤、分页、失败重试
+   - `frontend/src/pages/SmtpConfig.tsx`
+     - 新增「联系人」「发送记录」Tab
+
+### 变更文件清单
+
+后端：
+
+- `backend/infrastructure/persistence/models/notifications.py`（新增）
+- `backend/infrastructure/persistence/models/__init__.py`
+- `backend/notifications/service.py`
+- `backend/collector/alert_evaluator.py`
+- `backend/image_build_monitor/service.py`
+- `backend/reporting/daily_report.py`
+- `backend/contracts/schemas/notifications.py`（新增）
+- `backend/contracts/schemas/__init__.py`
+- `backend/api/v1/notifications.py`（新增）
+- `backend/api/main.py`
+- `database/migrations/notifications.py`（新增）
+- `database/migrations/migrate.py`
+
+前端：
+
+- `frontend/src/services/notifications.ts`（新增）
+- `frontend/src/hooks/useNotifications.ts`（新增）
+- `frontend/src/components/notifications/ContactsPanel.tsx`（新增）
+- `frontend/src/components/notifications/DeliveriesPanel.tsx`（新增）
+- `frontend/src/pages/SmtpConfig.tsx`
+
+文档：
+
+- `docs/notification-center-progress.md`
+
+### 验证记录
+
+- 后端语法检查：相关文件 `python -m py_compile` 通过。
+- 迁移验证：开发库成功创建 `notification_contacts`、`notification_groups`、`notification_group_members`、`notification_events`、`notification_deliveries`，并为 `users` 增加 `phone`。
+- API 验证：
+  - 登录 admin 后成功创建/查询/更新/删除联系人和联系人组
+  - 联系人组与联系人双向关联成功
+  - `/api/v1/notifications/deliveries` 可查询投递记录
+- 投递落库验证：使用不可达 SMTP 配置发送测试邮件，成功生成 `notification_events` 与 `notification_deliveries`，状态为 `failed`，错误原因正确记录，随后清理测试数据。
+- 前端构建：`pnpm build`（含 `tsc`）通过。
+- 容器状态：`dev-backend-1`、`dev-frontend-1` 均为 healthy，`/health` 返回 200。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 可维护联系人邮箱与手机号 | 已完成 |
+| 可维护联系人组及成员 | 已完成 |
+| 每次通知可查渠道、接收人、状态、失败原因 | 已完成 |
+| 邮件发送写入投递记录 | 已完成 |
+| 旧邮件发送行为保持不变 | 已完成 |
+| 前端新增联系人与发送记录 Tab | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase1`
+- 实施日期：2026-11-21
+- 关联需求：联系人体系、投递记录、发送可追溯
+- Git 提交：`9db375e`（feat(notifications): phase 1 add contacts and delivery records）
+- 远程分支：`origin/feature/ci-image-build-monitor`
 
 ## 变更记录
 
@@ -128,3 +238,4 @@
 | 2026-11-21 | Phase 0 | 完成通知服务改名、邮件 Tab 化、NotificationDispatcher 收敛 |
 | 2026-11-21 | Phase 0 | 修复 Dockerfile 未复制 `backend/notifications/` 导致后端容器重启 |
 | 2026-11-21 | Phase 0 | 提交并推送到 `origin/feature/ci-image-build-monitor`（`e9597ab`） |
+| 2026-11-21 | Phase 1 | 完成联系人、联系人组、通知事件与投递记录 |
