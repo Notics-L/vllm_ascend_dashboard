@@ -2,7 +2,7 @@
 
 - 设计文档：`docs/notification-center-design.md`
 - 创建日期：2026-11-21
-- 当前阶段：Phase 4 已完成
+- 当前阶段：Phase 5 已完成
 - 分支：`feature/ci-image-build-monitor`
 
 ## 阶段进度总览
@@ -14,7 +14,7 @@
 | Phase 2 | 短信 + 降级 | 已完成 | 2026-11-21 |
 | Phase 3 | 语音播报 | 已完成 | 2026-11-21 |
 | Phase 4 | IVR 按键动作 | 已完成 | 2026-11-21 |
-| Phase 5 | 升级与运营 | 未开始 | - |
+| Phase 5 | 升级与运营 | 已完成 | 2026-11-21 |
 
 ## Phase 0：改名与邮件入口收敛
 
@@ -529,6 +529,95 @@
 - Git 提交：`702f96c`（feat(notifications): phase 4 add ivr callbacks and actions）
 - 远程分支：`origin/feature/ci-image-build-monitor`
 
+## Phase 5：升级与运营
+
+### 目标
+
+- 静默时段、冷却与告警风暴抑制
+- 主渠道失败后升级到备用联系人组
+- 值班组配置
+- 通知成功率、渠道表现、IVR 动作指标
+- 前端策略配置与运营指标展示
+
+### 完成内容
+
+1. 通知策略：
+   - `backend/notifications/policy.py`
+     - `notification_policy_config` 读取/保存
+     - 静默时段：静默期内跳过语音/短信，保留邮件
+     - 冷却时间：相同 `dedupe_key` 冷却期内跳过语音/短信
+     - 风暴抑制：同来源事件数超过阈值时跳过语音/短信
+     - 升级链：主渠道全部失败后使用升级联系人组继续尝试
+     - 值班组配置
+
+2. 调度器：
+   - `dispatch()` 增加策略判断与抑制原因返回
+   - 增加 `_group_recipients()` 解析联系人组邮箱/手机号
+   - 主渠道失败后按 `requested_channels` 对升级组重试语音/短信/邮件
+   - 返回 `suppressed/suppressed_reasons/escalated`
+   - 新增 `get_metrics()` 统计事件、投递、渠道成功率、IVR 动作
+
+3. API：
+   - `GET/PUT /api/v1/notifications/policy`
+   - `GET /api/v1/notifications/metrics?days=7`
+
+4. 前端：
+   - `PolicyPanel.tsx`：静默时段、冷却、风暴阈值、值班组、升级组
+   - `MetricsPanel.tsx`：事件数、投递数、成功率、渠道表现、IVR 动作
+   - 「通知策略」「运营指标」Tab
+
+### 变更文件清单
+
+后端：
+
+- `backend/notifications/policy.py`（新增）
+- `backend/notifications/service.py`
+- `backend/api/v1/notifications.py`
+- `backend/contracts/schemas/notifications.py`
+
+前端：
+
+- `frontend/src/components/notifications/PolicyPanel.tsx`（新增）
+- `frontend/src/components/notifications/MetricsPanel.tsx`（新增）
+- `frontend/src/hooks/useNotifications.ts`
+- `frontend/src/services/notifications.ts`
+- `frontend/src/pages/SmtpConfig.tsx`
+
+文档：
+
+- `docs/notification-center-progress.md`
+
+### 验证记录
+
+- 后端相关文件 `python -m py_compile` 通过。
+- 前端 `pnpm build`（含 `tsc`）通过。
+- API 验证：策略读写、指标查询正常。
+- 静默抑制：`quiet_hours` 场景下语音/短信被跳过，仅保留邮件。
+- 风暴抑制：同来源事件达到阈值后返回 `storm`，语音/短信被跳过。
+- 升级链：主渠道失败后成功使用升级组手机号发送短信，返回 `escalated=true`。
+- 修复升级链丢失短信/语音渠道的问题。
+- 测试数据已清理，策略与通道配置已恢复默认关闭。
+- 前后端容器均 healthy。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 静默时段生效 | 已完成 |
+| 冷却与风暴抑制生效 | 已完成 |
+| 失败升级到备用联系人组 | 已完成 |
+| 值班组/升级组可配置 | 已完成 |
+| 渠道成功率与 IVR 指标可查 | 已完成 |
+| 前端策略与指标页面 | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase5`
+- 实施日期：2026-11-21
+- 关联需求：升级链、运营指标、告警风暴抑制
+- Git 提交：`77b567f`（feat(notifications): phase 5 add policies escalation and metrics）
+- 远程分支：`origin/feature/ci-image-build-monitor`
+
 ## 变更记录
 
 | 日期 | 阶段 | 说明 |
@@ -540,3 +629,4 @@
 | 2026-11-21 | Phase 2 | 完成短信通道、配置测试与短信失败降级邮件 |
 | 2026-11-21 | Phase 3 | 完成语音通道、测试呼叫与语音失败降级 |
 | 2026-11-21 | Phase 4 | 完成 IVR 回调、按键动作、二次确认与审计 |
+| 2026-11-21 | Phase 5 | 完成静默/冷却/风暴抑制、升级链与运营指标 |
