@@ -2,7 +2,7 @@
 
 - 设计文档：`docs/notification-center-design.md`
 - 创建日期：2026-11-21
-- 当前阶段：Phase 5 已完成
+- 当前阶段：Phase 6.1 已完成（生产化阶段暂停）
 - 分支：`feature/ci-image-build-monitor`
 
 ## 阶段进度总览
@@ -15,6 +15,8 @@
 | Phase 3 | 语音播报 | 已完成 | 2026-11-21 |
 | Phase 4 | IVR 按键动作 | 已完成 | 2026-11-21 |
 | Phase 5 | 升级与运营 | 已完成 | 2026-11-21 |
+| Phase 6 | 通知服务页面重构 | 已完成 | 2026-11-21 |
+| Phase 7 | 生产化落地 | 暂停（等待团队申请结果） | - |
 
 ## Phase 0：改名与邮件入口收敛
 
@@ -618,6 +620,147 @@
 - Git 提交：`77b567f`（feat(notifications): phase 5 add policies escalation and metrics）
 - 远程分支：`origin/feature/ci-image-build-monitor`
 
+## Phase 6：通知服务页面重构
+
+### 背景
+
+生产化落地需要等待团队完成组邮箱、短信签名、语音模板和公网回调等申请，因此暂停 Phase 7，先对通知服务模块进行页面设计重构，解决配置页面拥挤、输入框过长、层次不清晰的问题。
+
+### 目标
+
+- 统一通知服务页面设计语言
+- 建立清晰的页面标题、状态概览、导航、面板层级
+- 限制表单宽度，使用栅格布局
+- 提升可读性、可操作性和信息密度
+
+### 完成内容
+
+1. 新增页面样式 `frontend/src/pages/NotificationCenter.css`
+   - 页面最大宽度、居中布局
+   - 顶部标题区、页面图标、状态标签
+   - 胶囊式 Tab 导航
+   - 面板标题、描述、操作区统一样式
+   - 12 栅格表单布局与响应式断点
+   - 分区标题、提示区统一样式
+
+2. 重构通知服务主页面 `SmtpConfig.tsx`
+   - 新增页面级标题与说明
+   - 顶部显示邮件/短信/语音配置状态标签
+   - Tab 增加图标与胶囊式导航
+   - 邮件面板改为统一面板头 + 状态提示 + 分区表单
+   - SMTP 配置改为栅格布局：地址/端口、用户名/密码、发件人/TLS
+   - 表单最大宽度限制，避免输入框过长
+
+3. 统一子面板样式与组件排布
+   - 新增 `ui.tsx`：`PanelHeader`、`SectionCard`、`ToggleRow` 统一面板结构
+   - 联系人、发送记录、通知策略、运营指标、短信、语音面板统一 `nc-panel`
+   - 短信/语音拆分为「启用策略 / 服务商参数 / 接收人与测试 / IVR」分区卡片
+   - 通知策略拆分为静默、冷却与风暴、升级链分区卡片，时间字段改为 TimePicker
+   - 邮件通道拆分为连接参数、发件身份分区卡片
+   - 高频开关改为左右对齐的 ToggleRow，表单采用 12 栅格紧凑排布
+   - 测试手机号、回调 Token、升级组等长字段限制最大宽度
+   - 表格页面保持现有信息密度
+
+### 变更文件清单
+
+前端：
+
+- `frontend/src/pages/NotificationCenter.css`（新增）
+- `frontend/src/components/notifications/ui.tsx`（新增）
+- `frontend/src/pages/SmtpConfig.tsx`
+- `frontend/src/components/notifications/ContactsPanel.tsx`
+- `frontend/src/components/notifications/DeliveriesPanel.tsx`
+- `frontend/src/components/notifications/SmsPanel.tsx`
+- `frontend/src/components/notifications/VoicePanel.tsx`
+- `frontend/src/components/notifications/PolicyPanel.tsx`
+- `frontend/src/components/notifications/MetricsPanel.tsx`
+
+文档：
+
+- `docs/notification-center-progress.md`
+
+### 验证记录
+
+- 前端 `pnpm build`（含 `tsc`）通过。
+- 新前端镜像已启动，`dev-frontend-1` 状态 healthy。
+- 页面结构、Tab、表单栅格与样式类已完成接入。
+- 未修改后端接口与数据结构。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 页面标题与状态概览清晰 | 已完成 |
+| 导航层次分明 | 已完成 |
+| 配置表单宽度合理 | 已完成 |
+| 子面板样式统一 | 已完成 |
+| 不影响已有功能 | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase6-ui`
+- 实施日期：2026-11-21
+- 关联需求：通知服务页面设计重构
+- Git 提交：未提交（等待用户指令）
+
+## Phase 7：生产化落地（暂停）
+
+因团队需要先完成组邮箱、短信签名与模板、语音 TTS 模板、公网回调地址等申请，Phase 7 暂停，等待配置答复后继续。
+
+## Phase 6.1：交互优化、多服务商配置与演示数据
+
+### 目标
+
+- 将短信/语音的测试入口统一收敛到面板顶部按钮，点击弹出测试弹窗。
+- 优化开关控件的排布与视觉呈现。
+- 短信与语音支持维护多套服务商配置，可选择其中一套启用。
+- 为联系人、发送记录、运营指标提供演示数据，便于本地预览。
+
+### 完成内容
+
+- 后端 `notifications/sms.py`、`notifications/voice.py` 改造为多服务商配置结构，兼容历史单配置数据并自动迁移读取。
+- 契约层为 `SmsConfigUpdate`、`VoiceConfigUpdate` 增加 `providers` 与 `active_provider_id`。
+- 短信/语音面板改为服务商卡片列表，可新增、删除、切换启用配置，密钥留空保留原值。
+- 测试功能移至面板顶部按钮并弹出 Modal，测试结果在弹窗内展示。
+- `ToggleRow` 改为独立卡片式条目，开关右对齐并垂直居中，增加 hover 反馈。
+- `database/seed_local_demo.py` 新增 `seed_notifications`，写入 4 位联系人、值班组、14 条事件与 34 条投递记录，支持幂等重跑。
+
+### 变更文件
+
+- `backend/notifications/sms.py`
+- `backend/notifications/voice.py`
+- `backend/contracts/schemas/notifications.py`
+- `frontend/src/services/notifications.ts`
+- `frontend/src/components/notifications/ui.tsx`
+- `frontend/src/components/notifications/SmsPanel.tsx`
+- `frontend/src/components/notifications/VoicePanel.tsx`
+- `frontend/src/pages/NotificationCenter.css`
+- `database/seed_local_demo.py`
+
+### 验证记录
+
+- 前端 `docker compose build frontend`（含 `tsc`）通过。
+- Python 变更文件 `py_compile` 通过。
+- 本地执行 `seed_local_demo.py --skip-files` 成功。
+- `/channels/sms`、`/channels/voice` 返回 `providers` 列表与 `active_provider_id`。
+- `/deliveries` 返回 34 条演示投递；`/metrics?days=7` 返回 14 个事件、34 次投递。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 测试功能位于顶部按钮并弹窗 | 已完成 |
+| 开关位置与展示优化 | 已完成 |
+| 短信支持多配置切换 | 已完成 |
+| 语音支持多配置切换 | 已完成 |
+| 联系人/发送记录/指标有演示数据 | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase6.1-interaction`
+- 实施日期：2026-11-21
+- Git 提交：未提交（等待用户指令）
+
 ## 变更记录
 
 | 日期 | 阶段 | 说明 |
@@ -630,3 +773,8 @@
 | 2026-11-21 | Phase 3 | 完成语音通道、测试呼叫与语音失败降级 |
 | 2026-11-21 | Phase 4 | 完成 IVR 回调、按键动作、二次确认与审计 |
 | 2026-11-21 | Phase 5 | 完成静默/冷却/风暴抑制、升级链与运营指标 |
+| 2026-11-21 | Phase 6 | 完成通知服务页面布局、表单宽度与视觉层级重构 |
+| 2026-11-21 | Phase 6.1 | 测试入口改为顶部按钮弹窗，开关卡片化优化 |
+| 2026-11-21 | Phase 6.1 | 短信/语音支持多服务商配置新增与切换启用 |
+| 2026-11-21 | Phase 6.1 | 新增联系人、投递记录、运营指标演示数据种子 |
+| 2026-11-21 | Phase 7 | 生产化落地暂停，等待团队申请结果 |
