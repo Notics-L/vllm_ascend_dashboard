@@ -31,6 +31,11 @@ DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "fallback_enabled": True,
     "apply_to": "critical",
     "test_phones": [],
+    "ivr_enabled": False,
+    "callback_token": "",
+    "ivr_actions": {"1": "retry", "2": "abort", "3": "ack", "9": "ignore"},
+    "ivr_allowed_sources": ["image_build_monitor"],
+    "ivr_allowed_phones": [],
 }
 
 _PUBLIC_FIELDS = {
@@ -45,6 +50,11 @@ _PUBLIC_FIELDS = {
     "fallback_enabled",
     "apply_to",
     "test_phones",
+    "ivr_enabled",
+    "callback_token",
+    "ivr_actions",
+    "ivr_allowed_sources",
+    "ivr_allowed_phones",
 }
 
 

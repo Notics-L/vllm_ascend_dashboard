@@ -175,6 +175,11 @@ export interface VoiceConfig {
   fallback_enabled: boolean
   apply_to: 'critical' | 'all'
   test_phones: string[]
+  ivr_enabled: boolean
+  callback_token: string
+  ivr_actions: Record<string, string>
+  ivr_allowed_sources: string[]
+  ivr_allowed_phones: string[]
 }
 
 export interface VoiceConfigUpdate {
@@ -190,6 +195,25 @@ export interface VoiceConfigUpdate {
   fallback_enabled?: boolean
   apply_to?: 'critical' | 'all'
   test_phones?: string[]
+  ivr_enabled?: boolean
+  callback_token?: string
+  ivr_actions?: Record<string, string>
+  ivr_allowed_sources?: string[]
+  ivr_allowed_phones?: string[]
+}
+
+export interface IvrAction {
+  id: number
+  provider_call_id: string
+  digit: string
+  action: string
+  stage: string
+  status: string
+  result: Record<string, unknown> | null
+  event_title: string
+  event_source: string
+  created_at: string | null
+  executed_at: string | null
 }
 
 export const getVoiceConfig = async (): Promise<VoiceConfig> => {
@@ -205,4 +229,10 @@ export const updateVoiceConfig = async (payload: VoiceConfigUpdate): Promise<Voi
 export const testVoice = async (phones: string[], text?: string): Promise<{ success: boolean; error?: string; results?: Array<Record<string, unknown>> }> => {
   const { data } = await api.post('/notifications/channels/voice/test', { phones, text })
   return data
+}
+
+
+export const listIvrActions = async (): Promise<IvrAction[]> => {
+  const { data } = await api.get<{ items: IvrAction[] }>('/notifications/actions')
+  return data.items
 }

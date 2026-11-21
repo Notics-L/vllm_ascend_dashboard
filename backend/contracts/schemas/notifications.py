@@ -137,6 +137,11 @@ class VoiceConfigUpdate(BaseModel):
     fallback_enabled: bool | None = None
     apply_to: str | None = None
     test_phones: list[str] | None = None
+    ivr_enabled: bool | None = None
+    callback_token: str | None = None
+    ivr_actions: dict[str, str] | None = None
+    ivr_allowed_sources: list[str] | None = None
+    ivr_allowed_phones: list[str] | None = None
 
 
 class VoiceTestRequest(BaseModel):

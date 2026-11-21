@@ -17,6 +17,7 @@ from contracts.schemas.notifications import (
     VoiceConfigUpdate,
     VoiceTestRequest,
 )
+from notifications.ivr import IvrService
 from notifications.service import NotificationDispatcher
 from notifications.sms import get_public_sms_config, save_sms_config
 from notifications.voice import get_public_voice_config, save_voice_config
@@ -237,6 +238,26 @@ async def list_deliveries(
     return await NotificationDispatcher(db).list_deliveries(
         page=page, page_size=page_size, status=status, channel=channel, source=source
     )
+
+
+@router.get("/actions")
+async def list_actions(
+    db: DbSession,
+    _: CurrentAdminUser,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    return {"items": await IvrService(db).list_actions(limit)}
+
+
+@router.post("/voice/callback")
+async def voice_callback(
+    payload: dict[str, Any],
+    db: DbSession,
+    token: str = Query(default=""),
+) -> dict[str, Any]:
+    result = await IvrService(db).handle_callback(payload, token)
+    await db.commit()
+    return result
 
 
 @router.post("/deliveries/{delivery_id}/retry")

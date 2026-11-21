@@ -134,3 +134,31 @@ class NotificationDelivery(Base):
     __table_args__ = (
         Index("ix_notification_deliveries_event_channel", "event_id", "channel"),
     )
+
+
+class NotificationAction(Base):
+    """语音 IVR 按键动作与审计记录。"""
+
+    __tablename__ = "notification_actions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    delivery_id = Column(
+        BigInteger,
+        ForeignKey("notification_deliveries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider_call_id = Column(String(255), nullable=False, index=True)
+    digit = Column(String(10), nullable=False)
+    action = Column(String(20), nullable=False)
+    stage = Column(String(20), nullable=False, default="execute")
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    result = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    executed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_call_id", "digit", "stage", name="uq_notification_actions_callback"
+        ),
+    )

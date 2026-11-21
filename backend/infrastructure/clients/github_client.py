@@ -215,7 +215,7 @@ class GitHubClient:
                 response.raise_for_status()
 
                 # 返回 JSON 数据
-                if response.status_code == 204:
+                if response.status_code in (201, 204) and not response.content:
                     return {}
                 return response.json()
 
@@ -619,6 +619,20 @@ class GitHubClient:
         """
         result = await self._request("GET", "/rate_limit")
         return result.get("resources", {})
+
+    async def rerun_failed_jobs(self, run_id: int) -> dict[str, Any]:
+        """重跑指定 run 中失败的 jobs。"""
+        return await self._request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/rerun-failed-jobs",
+        )
+
+    async def cancel_run(self, run_id: int) -> dict[str, Any]:
+        """取消指定 run。"""
+        return await self._request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/cancel",
+        )
 
     async def close(self) -> None:
         """关闭 HTTP 客户端"""

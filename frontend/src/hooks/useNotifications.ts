@@ -90,3 +90,7 @@ export const useUpdateVoiceConfig = () => {
 export const useTestVoice = () => useMutation({
   mutationFn: (payload: { phones: string[]; text?: string }) => api.testVoice(payload.phones, payload.text),
 })
+
+
+export const useIvrActions = () =>
+  useQuery({ queryKey: ['notification-ivr-actions'], queryFn: api.listIvrActions })

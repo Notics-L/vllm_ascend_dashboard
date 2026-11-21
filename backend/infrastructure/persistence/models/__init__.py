@@ -53,7 +53,7 @@ __all__ = [
     "ReleaseThirdPartyVersion", "ReleaseThirdPartyBaseline",
     "ReleaseAIEvaluation", "ReleaseAnalysisTask",
     "NotificationContact", "NotificationGroup", "NotificationGroupMember",
-    "NotificationEvent", "NotificationDelivery",
+    "NotificationEvent", "NotificationDelivery", "NotificationAction",
 ]
 
 
@@ -73,6 +73,7 @@ from infrastructure.persistence.models.image_build_monitor import (
     ImageBuildMonitorTarget,
 )
 from infrastructure.persistence.models.notifications import (
+    NotificationAction,
     NotificationContact,
     NotificationDelivery,
     NotificationEvent,

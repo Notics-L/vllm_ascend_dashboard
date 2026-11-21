@@ -150,6 +150,31 @@ async def run() -> dict[str, int]:
             created["notification_deliveries"] = 1
             logger.info("Created notification_deliveries")
 
+
+        if not await _table_exists(db, "notification_actions"):
+            await db.execute(text("""
+                CREATE TABLE notification_actions (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    delivery_id BIGINT NOT NULL,
+                    provider_call_id VARCHAR(255) NOT NULL,
+                    digit VARCHAR(10) NOT NULL,
+                    action VARCHAR(20) NOT NULL,
+                    stage VARCHAR(20) NOT NULL DEFAULT 'execute',
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    result JSON DEFAULT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    executed_at DATETIME DEFAULT NULL,
+                    UNIQUE KEY uq_notification_actions_callback (provider_call_id, digit, stage),
+                    KEY ix_notification_actions_delivery (delivery_id),
+                    KEY ix_notification_actions_call (provider_call_id),
+                    KEY ix_notification_actions_status (status),
+                    CONSTRAINT fk_notification_actions_delivery FOREIGN KEY (delivery_id)
+                        REFERENCES notification_deliveries(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知 IVR 按键动作'
+            """))
+            created["notification_actions"] = 1
+            logger.info("Created notification_actions")
+
         if await _table_exists(db, "users") and not await _column_exists(db, "users", "phone"):
             await db.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(32) DEFAULT NULL"))
             created["users.phone"] = 1

@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react'
 import {
-  Alert, Button, Card, Divider, Form, Input, InputNumber, Select, Space, Switch, Tag, Typography, message,
+  Alert, Button, Card, Divider, Form, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd'
 import { PhoneOutlined, SaveOutlined } from '@ant-design/icons'
-import { useTestVoice, useUpdateVoiceConfig, useVoiceConfig } from '../../hooks/useNotifications'
+import { useIvrActions, useTestVoice, useUpdateVoiceConfig, useVoiceConfig } from '../../hooks/useNotifications'
 import type { VoiceConfigUpdate } from '../../services/notifications'
 
-const { Text } = Typography
+const { Text, Paragraph } = Typography
 
 export default function VoicePanel() {
   const { data, isLoading, refetch } = useVoiceConfig()
   const updateConfig = useUpdateVoiceConfig()
   const testVoice = useTestVoice()
+  const actionsQuery = useIvrActions()
   const [form] = Form.useForm()
   const [testPhones, setTestPhones] = useState('')
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -133,6 +134,39 @@ export default function VoicePanel() {
         <Form.Item name="test_phones_text" label="默认测试手机号" extra="多个手机号用逗号或空格分隔">
           <Input placeholder="+8613800000000" />
         </Form.Item>
+        <Divider orientation="left" plain>IVR 按键操作</Divider>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="默认按键：1 重试失败 Job，2 取消运行，3 确认告警，9 忽略告警"
+          description="重试/取消需要再次按 1 确认、按 0 取消；仅允许配置的来源事件执行高风险动作。"
+        />
+        <Space size={24} wrap>
+          <Form.Item name="ivr_enabled" label="启用 IVR" valuePropName="checked" style={{ marginBottom: 12 }}>
+            <Switch />
+          </Form.Item>
+          <Form.Item name="callback_token" label="回调 Token" style={{ minWidth: 320, marginBottom: 12 }}>
+            <Input.Password placeholder="自定义回调校验 token" visibilityToggle />
+          </Form.Item>
+        </Space>
+        <Form.Item name="ivr_allowed_sources" label="允许操作的来源">
+          <Select mode="tags" placeholder="image_build_monitor" options={[
+            { value: 'image_build_monitor', label: '镜像构建监控' },
+            { value: 'alert_rules', label: '资源告警' },
+            { value: 'daily_report', label: '每日报告' },
+          ]} />
+        </Form.Item>
+        <Form.Item name="ivr_allowed_phones" label="允许操作的手机号" extra="留空表示不限制；建议配置值班手机号白名单">
+          <Select mode="tags" placeholder="+8613800000000" />
+        </Form.Item>
+        {data?.callback_token && (
+          <Form.Item label="服务商回调地址">
+            <Paragraph copyable style={{ marginBottom: 0, wordBreak: 'break-all' }}>
+              {`/api/v1/notifications/voice/callback?token=${data.callback_token}`}
+            </Paragraph>
+          </Form.Item>
+        )}
       </Form>
 
       <Divider orientation="left" plain>发起测试呼叫</Divider>
@@ -145,6 +179,28 @@ export default function VoicePanel() {
           {testResult}
         </Text>
       )}
+
+      <Divider orientation="left" plain>最近 IVR 操作</Divider>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={actionsQuery.isLoading}
+        dataSource={actionsQuery.data ?? []}
+        pagination={false}
+        columns={[
+          { title: '事件', dataIndex: 'event_title', ellipsis: true },
+          { title: '按键', dataIndex: 'digit', width: 60 },
+          {
+            title: '动作', dataIndex: 'action', width: 90,
+            render: (v: string) => ({ retry: '重试', abort: '取消', ack: '确认', ignore: '忽略' }[v] || v),
+          },
+          {
+            title: '状态', dataIndex: 'status', width: 100,
+            render: (v: string) => <Tag color={v === 'success' ? 'green' : v === 'failed' ? 'red' : 'gold'}>{v}</Tag>,
+          },
+          { title: '时间', dataIndex: 'created_at', width: 165, render: (v: string) => v ? v.replace('T', ' ').slice(0, 19) : '-' },
+        ]}
+      />
     </Card>
   )
 }
