@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from contributor_board.ai_report_engine import build_report_context, generate_ai_report
 from contributor_board.scoring_version_schemas import (
@@ -233,9 +232,11 @@ async def export_comprehensive_pdf(
     生成并返回综合 PDF 报告 (pdf_bytes, filename)。
     可选 AI 评价(若可用 LLM 配置)；否则仅数据+模板。
     """
-    from contributor_board.comprehensive_report_exporter import export_comprehensive_pdf as _do_export
-    from infrastructure.persistence.models import ContributorProfile
+    from contributor_board.comprehensive_report_exporter import (
+        export_comprehensive_pdf as _do_export,
+    )
     from contributor_board.llm_helpers import get_active_llm_config
+    from infrastructure.persistence.models import ContributorProfile
 
     # 1. 查询贡献者
     stmt = select(ContributorProfile).where(ContributorProfile.total_score > 0)
@@ -299,7 +300,6 @@ async def export_comprehensive_pdf(
     if llm_config:
         try:
             from contributor_board.llm_client import LLMClient
-            from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 
             client = LLMClient()
             top_n_brief = "\n".join(
@@ -333,7 +333,8 @@ async def export_comprehensive_pdf(
                 temperature=0.3,
                 max_tokens=2000,
             )
-            import json, re
+            import json
+            import re
             content = getattr(result_llm, "content", "") or ""
             # 提取 JSON
             m = re.search(r"\{[\s\S]*\}", content)

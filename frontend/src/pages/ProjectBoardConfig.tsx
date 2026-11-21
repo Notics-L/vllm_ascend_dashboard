@@ -19,10 +19,7 @@ import {
   Select,
   Row,
   Col,
-  Divider,
-  Popconfirm,
-  Spin,
-  Badge,
+  Popconfirm
 } from 'antd'
 import {
   SettingOutlined,
@@ -31,14 +28,10 @@ import {
   MergeOutlined,
   UserOutlined,
   ClockCircleOutlined,
-  PlusOutlined,
-  DeleteOutlined,
-  LinkOutlined,
-  SwapOutlined,
+  PlusOutlined
 } from '@ant-design/icons'
 import {
   getDashboardConfig,
-  updateDashboardConfig,
   updateModelSupportMatrix,
   updateLocalCache,
   rebuildLocalCache,
@@ -47,7 +40,7 @@ import {
   type ModelSupportEntry,
   type ProjectDashboardConfig,
 } from '../services/projectDashboard'
-import { getGitCacheStatus, syncGitCache, type GitCacheStatus, type GitRepoStatus } from '../services/systemConfig'
+import { getGitCacheStatus, syncGitCache, type GitCacheStatus } from '../services/systemConfig'
 import dayjs from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 
@@ -375,7 +368,7 @@ function ProjectBoardConfig() {
   const handleSaveModelMatrix = async () => {
     try {
       // 移除 key 字段，只保存数据字段
-      const entries = modelEntries.map(({ key, ...rest }) => rest)
+      const entries = modelEntries.map(({ key: _key, ...rest }) => rest)
       // 保存模型数据和特性列配置
       await updateModelSupportMatrix({ entries, featureColumns })
       message.success('模型支持矩阵已保存')

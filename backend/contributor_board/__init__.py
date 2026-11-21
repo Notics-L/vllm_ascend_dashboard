@@ -1,7 +1,7 @@
 from contributor_board.build_optimizer import BuildPlan, evaluate_build_plan
 from contributor_board.classifier import (
-    CLASSIFIERS,
     CHIP_PATTERNS,
+    CLASSIFIERS,
     CORE_MODULES,
     ClassificationResult,
     CommitType,

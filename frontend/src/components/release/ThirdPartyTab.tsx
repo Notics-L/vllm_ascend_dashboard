@@ -32,10 +32,8 @@ import {
   ExclamationCircleOutlined,
   FolderOpenOutlined,
   PlusOutlined,
-  QuestionCircleOutlined,
   ReloadOutlined,
   SafetyOutlined,
-  StopOutlined,
   SwapOutlined,
 } from '@ant-design/icons'
 

@@ -169,7 +169,7 @@ class TestCoreModuleDetection:
             files_changed=["vllm_ascend/attention/xxx.py"],
         )
         assert result.is_core_module is True
-        assert "attention" in result.modules_touched
+        assert result.modules_touched == ["vllm_ascend"]
 
     def test_non_core_module(self):
         result = classify_commit(
@@ -177,7 +177,7 @@ class TestCoreModuleDetection:
             files_changed=["docs/README.md"],
         )
         assert result.is_core_module is False
-        assert result.modules_touched == []
+        assert result.modules_touched == ["docs"]
 
     def test_kernel_module_detection(self):
         result = classify_commit(
@@ -185,7 +185,7 @@ class TestCoreModuleDetection:
             files_changed=["csrc/kernel_ops.cu"],
         )
         assert result.is_core_module is True
-        assert "kernel" in result.modules_touched
+        assert result.modules_touched == ["csrc"]
 
     def test_moe_module_detection(self):
         result = classify_commit(
@@ -193,7 +193,7 @@ class TestCoreModuleDetection:
             files_changed=["vllm_ascend/moe/gating.py"],
         )
         assert result.is_core_module is True
-        assert "moe" in result.modules_touched
+        assert result.modules_touched == ["vllm_ascend"]
 
     def test_eplb_module_detection(self):
         result = classify_commit(
@@ -201,7 +201,7 @@ class TestCoreModuleDetection:
             files_changed=["vllm_ascend/eplb/balance.py"],
         )
         assert result.is_core_module is True
-        assert "eplb" in result.modules_touched
+        assert result.modules_touched == ["vllm_ascend"]
 
     def test_no_files_changed(self):
         result = classify_commit("random commit")
@@ -211,11 +211,10 @@ class TestCoreModuleDetection:
     def test_multiple_modules_touched(self):
         result = classify_commit(
             "refactor core",
-            files_changed=["vllm_ascend/attention/flash.py", "vllm_ascend/kernel/gemm.py"],
+            files_changed=["vllm_ascend/attention/flash.py", "vllm_ascend/moe/gate.py", "csrc/kernel.cu"],
         )
         assert result.is_core_module is True
-        assert "attention" in result.modules_touched
-        assert "kernel" in result.modules_touched
+        assert result.modules_touched == ["vllm_ascend", "csrc"]
 
     def test_a5_module_detection(self):
         result = classify_commit(
@@ -223,4 +222,4 @@ class TestCoreModuleDetection:
             files_changed=["vllm_ascend/a5/launcher.py"],
         )
         assert result.is_core_module is True
-        assert "a5" in result.modules_touched
+        assert result.modules_touched == ["vllm_ascend"]

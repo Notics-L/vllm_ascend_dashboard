@@ -13,8 +13,6 @@ from zoneinfo import ZoneInfo
 
 import jinja2
 
-from reporting.ci_daily_report_builder import CONCLUSION_ZH, format_conclusion_zh
-
 logger = logging.getLogger(__name__)
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")

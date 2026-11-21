@@ -8,12 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.deps import CurrentSuperAdminUser, DbSession
-from contracts.schemas.contributor_board import ScoringWeightsConfig
-from contributor_board.auto_weight_engine import compute_weights
 from contributor_board.scoring_version_schemas import (
     CalculateAutoWeightsResponse,
     ScoreSnapshotResponse,
-    ScoreUpdateAuditResponse,
     ScoringVersionCreateRequest,
     ScoringVersionResponse,
     VersionCompareResponse,
@@ -136,8 +133,8 @@ async def ai_analyze_weights(
     model: str | None = Query(None, description="指定 LLM 模型名"),
 ):
     """AI 辅助权重分析 — 调用 LLM 给出权重建议并创建新版本"""
-    from contributor_board.auto_weight_engine import compute_weights_from_db
     from contributor_board.ai_weight_engine import analyze_weights_with_ai
+    from contributor_board.auto_weight_engine import compute_weights_from_db
 
     _, _, data_summary = await compute_weights_from_db(db)
     if not data_summary.get("contributor_count"):
@@ -171,6 +168,7 @@ async def export_excel(
     snapshot_id: int | None = Query(None, description="export specific snapshot, else latest"),
 ):
     from fastapi.responses import StreamingResponse
+
     from contributor_board.report_exporter import export_excel as do_export_excel
 
     svc = _get_service()
@@ -183,7 +181,6 @@ async def export_excel(
     if not snap:
         raise HTTPException(status_code=404, detail="No score snapshots found")
 
-    active = await svc.get_active_version(db)
     data, filename = await do_export_excel(db, snap.scores, snap.version_id)
 
     return StreamingResponse(
@@ -200,6 +197,7 @@ async def export_pdf(
     snapshot_id: int | None = Query(None, description="export specific snapshot, else latest"),
 ):
     from fastapi.responses import StreamingResponse
+
     from contributor_board.report_exporter import export_pdf as do_export_pdf
 
     svc = _get_service()

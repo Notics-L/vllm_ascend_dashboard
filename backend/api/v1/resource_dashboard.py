@@ -13,8 +13,8 @@ from contracts.schemas import (
     KubernetesClusterTestResponse,
     KubernetesClusterUpdate,
     Message,
-    ResourceDashboardResponse,
     PodSchedulingDiagnosticsResponse,
+    ResourceDashboardResponse,
     ResourcePodTimelineResponse,
 )
 from infrastructure.clients.kubernetes_client import encrypt_kubeconfig

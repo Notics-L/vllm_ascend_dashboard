@@ -22,6 +22,15 @@
 | `GITHUB_TOKEN` | GitHub API 访问 | `.env.production` | 可读取 vllm-ascend 仓库 |
 | `JWT_SECRET` | API Token 签名 | `.env.production` | 可伪造任意用户 Token |
 | `LITELLM_MASTER_KEY` | LLM 网关管理 | `.env.production` | 可修改 LLM 配置 |
+| `WORKFLOW_ACTIONS_ENCRYPTION_KEY` | Actions 专用 GitHub Token 的 Fernet 主密钥 | 外部生产环境配置，不存 MySQL | 同时获得主密钥与数据库密文后可还原 Actions Token |
+
+### Actions 专用 Token 与主密钥恢复
+
+- 使用 `openssl rand -hex 32` 生成独立的 `WORKFLOW_ACTIONS_ENCRYPTION_KEY`，不要复用 `JWT_SECRET` 或 `KUBECONFIG_ENCRYPTION_KEY`。
+- API 与 Scheduler 必须使用相同主密钥。部署脚本会拒绝缺失、占位或短于 32 字符的配置。
+- 主密钥必须与数据库备份分开、同地安全保存；仅恢复数据库而没有主密钥时，无法解密 Actions Token。
+- 轮换主密钥前先保存旧密钥，使用旧密钥解密已有 Token，再用新密钥重新加密保存。丢失主密钥后只能在授权页面重新录入 GitHub Token。
+- 部署后应在“Actions 权限”页面检查专用 Token 的 configured 状态并执行连接测试，同时确认 Scheduler 已注册启用的 Cron 任务。
 
 ### SSH 密钥
 

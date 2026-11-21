@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Card, Collapse, Typography, Space, Tag, Button, message, Descriptions } from 'antd'
+import { Card, Collapse, Typography, Space, Tag, Button, message } from 'antd'
 import {
   CopyOutlined,
   CheckOutlined,
@@ -37,7 +37,6 @@ const HARDWARE_LABELS: Record<string, string> = {
  * 支持多维度展示（版本 × 场景 × 硬件）
  */
 export function StartupCommandDisplay({
-  modelId,
   commands,
   editable = false,
 }: StartupCommandDisplayProps) {

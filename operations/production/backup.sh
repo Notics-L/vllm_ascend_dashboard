@@ -191,14 +191,10 @@ if $VERIFY_RESTORE; then
         verify_dbs="$verify_dbs $verify_db"
         sed_args+=( -e "s/\`$db\`/\`$verify_db\`/g" )
     done
-    cleanup_verify() {
-        for verify_db in $verify_dbs; do
-            compose exec -T mysql sh -c \
-                'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS \`$1\`"' sh "$verify_db" \
-                >/dev/null 2>&1 || true
-        done
-    }
-    trap cleanup_verify EXIT
+    source "$SCRIPT_DIR/backup-verification-cleanup.sh"
+    trap cleanup_verify_on_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     # 去掉 GTID_PURGED 语句（verify 用独立临时库，不需要 GTID）
     decompress "$backup_file" | sed '/^SET @@GLOBAL.GTID_PURGED=/d' | sed "${sed_args[@]}" | \
@@ -222,8 +218,8 @@ if $VERIFY_RESTORE; then
 
     [[ "$backup_users" = "$pre_users" ]] || die "restore verification user count mismatch: $pre_users -> $backup_users"
     [[ "$backup_tables" = "$pre_tables_total" ]] || die "restore verification table count mismatch: $pre_tables_total -> $backup_tables"
-    cleanup_verify
-    trap - EXIT
+    cleanup_verify || die "verification database cleanup failed"
+    trap - EXIT INT TERM
 fi
 
 checksum="$(sha256sum "$backup_file" | awk '{print $1}')"

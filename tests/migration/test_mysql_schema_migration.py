@@ -1,9 +1,9 @@
 from database.migrations.mysql_schema import (
+    _FORWARDING_VIEW_SOURCE,
     CREATE_TABLE_MIGRATIONS,
     INDEX_MIGRATIONS,
     MIGRATION_VERSION,
     TABLE_COLUMN_MIGRATIONS,
-    _FORWARDING_VIEW_SOURCE,
 )
 
 
@@ -16,6 +16,9 @@ def test_mysql_migration_manifest_is_mysql_only_and_complete():
         "issues_found",
         "suspected_test_issue_count",
         "is_flaky_manual",
+        "auto_issues_found",
+        "auto_suspected_test_issue_count",
+        "issues_found_override",
     }
     assert all(
         "sqlite" not in definition.lower()

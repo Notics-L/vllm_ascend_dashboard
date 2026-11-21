@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Card,
   Descriptions,
@@ -17,12 +17,9 @@ import {
   Tabs,
   Table,
   Collapse,
-  Timeline,
-  Empty,
   Divider,
   Row,
   Col,
-  Badge,
   Popconfirm,
   Progress,
   Spin,
@@ -42,7 +39,6 @@ import {
   MessageOutlined,
   ReloadOutlined,
   ExperimentOutlined,
-  MergeOutlined,
   PlusOutlined,
   RocketOutlined,
   CodeOutlined,
@@ -66,12 +62,9 @@ import { useSyncProgress } from '../hooks/useCI'
 import { getGitCacheStatus, syncGitCache, type GitCacheStatus } from '../services/systemConfig'
 import { listSkills, getSkillDetail, refreshSkills, type SkillInfo, type SkillDetail } from '../services/skills'
 import {
-  getDashboardConfig,
   updateLocalCache,
   rebuildLocalCache,
-  fixLocalCache,
-  getForceMergeRecords,
-  type ProjectDashboardConfig,
+  fixLocalCache
 } from '../services/projectDashboard'
 import { getAgentAnalysisConfig, updateAgentAnalysisConfig } from '../services/systemConfig'
 

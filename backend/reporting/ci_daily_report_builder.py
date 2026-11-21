@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -958,7 +958,6 @@ class CIDailyReportBuilder:
 
         返回 { triggered, skipped, total_failures, errors }；单条入队失败不中断整体。
         """
-        from sqlalchemy import and_ as _and
 
         from failure_analysis.failure_analysis import FailureAnalysisService
         from infrastructure.persistence.models import JobFailureAnalysis as _JFA
@@ -1363,7 +1362,6 @@ class CIDailyReportBuilder:
     def _case_stats(case_runs) -> dict[str, Any]:
         if not case_runs:
             return {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "pass_rate": 0.0}
-        passed = sum(1 for c in case_runs if (c.result or "").lower() in PASSED_RESULTS | SKIPPED_RESULTS)
         failed = sum(1 for c in case_runs if (c.result or "").lower() in FAILED_RESULTS)
         skipped = sum(1 for c in case_runs if (c.result or "").lower() in SKIPPED_RESULTS)
         exec_total = len(case_runs) - skipped

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Card, Table, Space, Select, Tag, Tooltip, Button, Alert, message, Typography } from 'antd'
-import { SyncOutlined, CheckCircleOutlined, MinusOutlined } from '@ant-design/icons'
+import { SyncOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnsType } from 'antd/es/table'
 import { getSupportMatrix, getSyncStatus, triggerUpstreamSync } from '../services/models'

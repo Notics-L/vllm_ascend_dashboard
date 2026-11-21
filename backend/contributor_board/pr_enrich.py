@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from contracts.schemas.pr_pipeline import PRPipelineContributor
 from infrastructure.persistence.models import PullRequest
 from tooling.company_detector import detect_company
 
@@ -492,10 +493,7 @@ async def get_pr_based_ranking(
     """
     from datetime import UTC, datetime
 
-    from sqlalchemy import case, func, select
-
     from pr_pipeline.pr_pipeline_service import PRPipelineService
-    from contracts.schemas.pr_pipeline import PRPipelineContributor
 
     owner, repo = parse_repo_name(repo_name)
     svc = PRPipelineService()
@@ -580,7 +578,7 @@ async def _fetch_pr_extra_fields(
     if not logins:
         return {}
 
-    from sqlalchemy import case, func, select
+    from sqlalchemy import case, select
 
     # Author 维度：pending / ci_failure
     author_stmt = (
@@ -638,7 +636,7 @@ async def _fetch_pr_extra_fields(
 
 async def _build_contributor_score_map(
     db: AsyncSession,
-    items: list["PRPipelineContributor"],
+    items: list[PRPipelineContributor],
     extra_map: dict[str, dict[str, Any]],
     repo_name: str | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -651,12 +649,12 @@ async def _build_contributor_score_map(
     if not items:
         return {}
 
+    from contracts.schemas.contributor_board import ScoringWeightsConfig  # noqa: F401
     from contributor_board.quadrant_engine import calculate_quadrants
     from contributor_board.scoring_engine import (
         calculate_contribution_score,
         get_default_weights,
     )
-    from contracts.schemas.contributor_board import ScoringWeightsConfig  # noqa: F401
     from infrastructure.persistence.models import ContributorBoardSettings
 
     # 1) 权重
@@ -674,8 +672,6 @@ async def _build_contributor_score_map(
     #    Y 轴 = low_activity_score（低产出/低活动，越低越好），
     #    综合衡量所有类型贡献者的"质量/健康度"，比 CI 失败更客观。
     from contributor_board.quadrant_engine import compute_low_activity_score
-    from datetime import UTC, datetime
-    now = datetime.now(UTC)
     metrics: list[dict[str, Any]] = []
     for it in items:
         extra = extra_map.get(it.username, {})
@@ -775,10 +771,12 @@ async def _get_pr_based_items_direct(
     owner: str,
     repo: str,
     days: int,
-) -> tuple[list["PRPipelineContributor"], list["PRPipelineContributor"]]:
+) -> tuple[list[PRPipelineContributor], list[PRPipelineContributor]]:
     """降级实现：直接用 pull_requests 表聚合 author 和 reviewer 列表。"""
     from datetime import UTC, datetime
-    from sqlalchemy import select, func
+
+    from sqlalchemy import select
+
     from contracts.schemas.pr_pipeline import PRPipelineContributor
 
     since = datetime.now(UTC) - timedelta(days=days)

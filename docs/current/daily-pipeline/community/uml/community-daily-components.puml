@@ -1,0 +1,48 @@
+@startuml
+title 第一部分：社区 Daily 流水线系统组件图
+top to bottom direction
+skinparam defaultFontName Microsoft YaHei
+skinparam componentStyle uml2
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam defaultFontSize 13
+skinparam ArrowColor #64748B
+skinparam componentBackgroundColor #FFFFFF
+skinparam componentBorderColor #94A3B8
+skinparam packageBackgroundColor #F8FAFC
+skinparam packageBorderColor #CBD5E1
+
+package "vLLM Ascend 社区：第一部分" {
+  package "流水线执行层" {
+    component "Daily 主流水线\nschedule_daily_test.yaml" as Main <<workflow>>
+    component "测试路径 A\n现有 Job / 子工作流" as A
+    component "测试路径 B\n现有 Job / 子工作流" as B
+    component "测试 Step\n失败上报脚本 A" as ReportA
+    component "测试 Step\n失败上报脚本 B" as ReportB
+    component "Issue 更新流水线" as Update <<workflow>>
+    component "Issue 更新 Job" as Job
+    component "Issue 更新脚本" as Script
+  }
+  package "结果记录层" {
+    artifact "本轮 Daily Issue" as Issue
+  }
+}
+Main ..> A : 调度，传递本轮标识
+Main ..> B : 调度，传递同一本轮标识
+A ..> ReportA : 执行测试 Step
+B ..> ReportB : 执行测试 Step
+ReportA ..> Update : workflow_dispatch\n本轮标识、失败信息
+ReportB ..> Update : workflow_dispatch\n本轮标识、失败信息
+Update ..> Job : 运行更新任务\n按本轮标识控制并发
+Job ..> Script : 调用
+Script ..> Issue : GitHub API\n查找、首次创建、合并更新
+note right of Update
+  并发控制属于更新 workflow / Job 的配置，
+  不单独建设服务或并发组件。
+  查找、创建、读取、合并、写回均在串行范围内。
+end note
+note bottom of Main
+  A/B 是测试路径示意，不限制实际 Job 或子工作流数量。
+  不增加独立的“用例执行组件”。
+end note
+@enduml

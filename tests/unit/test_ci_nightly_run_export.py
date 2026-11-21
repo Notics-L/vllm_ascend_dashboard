@@ -1,8 +1,7 @@
+from datetime import datetime
 from io import BytesIO
 
 from openpyxl import load_workbook
-
-from datetime import datetime
 
 from api.v1.ci import _build_nightly_runs_xlsx, _nightly_export_run_time_bounds
 

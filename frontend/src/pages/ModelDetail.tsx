@@ -9,7 +9,6 @@ import {
   Tag,
   Typography,
   Tabs,
-  Divider,
   Skeleton,
   message,
   Row,
@@ -31,7 +30,7 @@ import {
   getStartupCommands,
   compareReports,
 } from '../services/models'
-import type { ModelConfig, ModelReport } from '../types/models'
+import type { ModelReport } from '../types/models'
 import { ReportDetailModal } from '../components/ReportDetailModal'
 import { StartupCommandDisplay } from '../components/StartupCommandDisplay'
 import { ModelTrendChart } from '../components/charts/ModelTrendChart'

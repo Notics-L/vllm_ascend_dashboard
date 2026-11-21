@@ -8,7 +8,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # 状态码枚举
 # ---------------------------------------------------------------------------
@@ -53,7 +52,7 @@ class StatusCode(int, Enum):
         return int(self), msg
 
     @classmethod
-    def from_http_status(cls, code: int) -> "StatusCode":
+    def from_http_status(cls, code: int) -> StatusCode:
         """从 HTTP 状态码反查枚举，找不到则返回 INTERNAL"""
         for member in cls:
             if member.http_code == code:

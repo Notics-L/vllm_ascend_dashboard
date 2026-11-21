@@ -15,8 +15,7 @@ import {
   LinkOutlined,
   AppstoreOutlined,
   TableOutlined,
-  HeatMapOutlined,
-  FileTextOutlined,
+  HeatMapOutlined
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnsType } from 'antd/es/table'

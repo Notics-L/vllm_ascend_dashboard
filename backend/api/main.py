@@ -32,6 +32,7 @@ from api.v1 import (
     commit_analysis,
     contributor_board,
     contributor_scoring,
+    daily_pipeline,
     daily_report,
     daily_summary,
     image_build_monitor,
@@ -53,8 +54,10 @@ from api.v1 import (
     system_config,
     test_board,
     users,
+    workflow_actions,
     workflows,
 )
+from daily_pipeline.logging import setup_daily_file_logging
 from infrastructure.core.config import settings
 from infrastructure.core.logging import setup_db_logging
 from infrastructure.db.base import engine
@@ -106,173 +109,6 @@ async def init_db():
 
     # 清理启动前遗留的僵尸分析记录（>1h 还在 analyzing 的标记为 failed）
     await _cleanup_stale_analyses()
-
-
-async def legacy_schema_upgrade_test_case_columns():
-    """Ensure test_cases table has lifetime counters and admin-maintained columns.
-
-    create_all won't ALTER existing tables, so add missing columns for existing DBs.
-    """
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with async_session() as db:
-            def _get_columns(sync_session):
-                rows = sync_session.execute(text(
-                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'test_cases'"
-                )).fetchall()
-                return [r[0] for r in rows]
-            existing_cols = await db.run_sync(_get_columns)
-
-            # (column_name, mysql_type)
-            new_columns = [
-                ("lifetime_runs", "INT DEFAULT 0"),
-                ("lifetime_failures", "INT DEFAULT 0"),
-                ("issues_found", "INT DEFAULT 0"),
-                ("suspected_test_issue_count", "INT DEFAULT 0"),
-                ("is_flaky_manual", "BOOLEAN DEFAULT FALSE"),
-                ("auto_issues_found", "INT DEFAULT 0"),
-                ("auto_suspected_test_issue_count", "INT DEFAULT 0"),
-                ("issues_found_override", "BOOLEAN DEFAULT FALSE"),
-            ]
-
-            added = []
-            for col_name, col_type in new_columns:
-                if col_name not in existing_cols:
-                    logger.info("Adding missing column '%s' to test_cases", col_name)
-                    await db.execute(text(f"ALTER" f" TABLE test_cases ADD COLUMN {col_name} {col_type}"))
-                    added.append(col_name)
-
-            if added:
-                await db.commit()
-                logger.info("Added test_cases columns: %s", ", ".join(added))
-
-            # 回填生命周期计数：仅能从 test_runs 保留期（默认 90 天）内的数据回填，
-            # 不包含更早的历史，因此迁移前老用例的值为近似值；之后的新增采集中会持续累加。
-            if "lifetime_runs" in added:
-                await db.execute(text(
-                    "UPDATE test_cases SET lifetime_runs = ("
-                    "  SELECT COUNT(*) FROM test_runs WHERE test_runs.test_case_id = test_cases.id"
-                    ") WHERE lifetime_runs IS NULL OR lifetime_runs = 0"
-                ))
-                await db.execute(text(
-                    "UPDATE test_cases SET lifetime_failures = ("
-                    "  SELECT COUNT(*) FROM test_runs WHERE test_runs.test_case_id = test_cases.id"
-                    "    AND test_runs.result = 'failed'"
-                    ") WHERE lifetime_failures IS NULL OR lifetime_failures = 0"
-                ))
-                await db.commit()
-                logger.info("Backfilled lifetime_runs / lifetime_failures from test_runs")
-
-            # 为 is_flaky_manual 创建索引（MySQL < 8.0.29 不支持 IF NOT EXISTS，先查再建）
-            if "is_flaky_manual" in added:
-                try:
-                    idx_exists = (await db.execute(text(
-                        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'test_cases' "
-                        "AND INDEX_NAME = 'ix_test_cases_is_flaky_manual'"
-                    ))).scalar()
-                    if not idx_exists:
-                        await db.execute(text(
-                            "CREATE INDEX ix_test_cases_is_flaky_manual ON test_cases (is_flaky_manual)"
-                        ))
-                    await db.commit()
-                except Exception as idx_err:
-                    logger.warning("is_flaky_manual index creation skipped (non-fatal): %s", idx_err)
-
-    except Exception as e:
-        logger.warning(f"test_cases column migration skipped (non-fatal): {e}")
-
-
-async def legacy_schema_upgrade_model_fo_master_columns():
-    """Allow model_fo_master.model_fo to be NULL (FO 可后续手动补录)."""
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with async_session() as db:
-            def _get_nullable(sync_session):
-                row = sync_session.execute(text(
-                    "SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_fo_master' "
-                    "AND COLUMN_NAME = 'model_fo'"
-                )).fetchone()
-                return row[0] if row else None
-
-            is_nullable = await db.run_sync(_get_nullable)
-            if is_nullable == "NO":
-                logger.info("Altering model_fo_master.model_fo to allow NULL")
-                await db.execute(text(
-                    "ALTER TABLE model_fo_master MODIFY COLUMN model_fo VARCHAR(100) NULL"
-                ))
-                await db.commit()
-    except Exception as e:
-        logger.warning(f"model_fo_master column migration skipped (non-fatal): {e}")
-
-
-async def legacy_schema_upgrade_third_party_columns():
-    """Ensure release_third_party_versions table has repository_url column."""
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with async_session() as db:
-            def _get_columns(sync_session):
-                rows = sync_session.execute(text(
-                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'release_third_party_versions'"
-                )).fetchall()
-                return [r[0] for r in rows]
-            existing_cols = await db.run_sync(_get_columns)
-
-            if "repository_url" not in existing_cols:
-                logger.info("Adding missing column 'repository_url' to release_third_party_versions")
-                await db.execute(text(
-                    "ALTER TABLE release_third_party_versions ADD COLUMN repository_url VARCHAR(500) DEFAULT NULL"
-                ))
-                await db.commit()
-    except Exception as e:
-        logger.warning(f"release_third_party_versions column migration skipped (non-fatal): {e}")
-
-
-async def legacy_schema_upgrade_contributor_metrics_columns():
-    """Ensure contributor_metrics table has PR-efficiency columns for recalc-from-prs."""
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-        async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with async_session() as db:
-            def _get_columns(sync_session):
-                rows = sync_session.execute(text(
-                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'contributor_metrics'"
-                )).fetchall()
-                return [r[0] for r in rows]
-            existing_cols = await db.run_sync(_get_columns)
-
-            new_columns = [
-                ("ci_failure_count", "INT DEFAULT 0"),
-                ("first_review_hours_avg", "FLOAT DEFAULT NULL"),
-                ("merge_hours_avg", "FLOAT DEFAULT NULL"),
-                ("ci_duration_hours_avg", "FLOAT DEFAULT NULL"),
-            ]
-            added = []
-            for col_name, col_type in new_columns:
-                if col_name not in existing_cols:
-                    logger.info("Adding missing column '%s' to contributor_metrics", col_name)
-                    await db.execute(text(f"ALTER TABLE contributor_metrics ADD COLUMN {col_name} {col_type}"))
-                    added.append(col_name)
-            if added:
-                await db.commit()
-                logger.info("Added contributor_metrics columns: %s", ", ".join(added))
-    except Exception as e:
-        logger.warning(f"contributor_metrics column migration skipped (non-fatal): {e}")
 
 
 async def _warmup_claude_code_cli():
@@ -530,9 +366,6 @@ async def lifespan(app: FastAPI):
     # 启动时初始化数据库（含 app_logs 表）
     await init_db()
 
-    await legacy_schema_upgrade_third_party_columns()
-    await legacy_schema_upgrade_contributor_metrics_columns()
-    await legacy_schema_upgrade_model_fo_master_columns()
 
     try:
         from infrastructure.core.app_runtime_config import load_app_runtime_config
@@ -542,6 +375,11 @@ async def lifespan(app: FastAPI):
         await load_github_runtime_config()
     except Exception as exc:
         logger.warning("Failed to load shared runtime configuration: %s", exc)
+
+    try:
+        setup_daily_file_logging(settings.DATA_DIR, component="api")
+    except OSError:
+        logger.exception("Could not initialize Daily pipeline log files")
 
     # 安装 DB 日志处理器，将应用日志持久化到数据库
     # 放在 init_db 之后：确保 app_logs 表已创建，worker 首次 flush 即可成功
@@ -557,9 +395,10 @@ async def lifespan(app: FastAPI):
 
     # 回收重启前遗留的 running 贡献者同步记录（进程被杀后 status 永久卡 running）
     try:
-        from infrastructure.db.base import engine as _eng
-        from sqlalchemy.ext.asyncio import AsyncSession
         from sqlalchemy import text as _text
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        from infrastructure.db.base import engine as _eng
 
         async with AsyncSession(bind=_eng) as _db:
             rows = await _db.execute(_text("""
@@ -648,12 +487,14 @@ def create_app() -> FastAPI:
         tags=["镜像构建监控"],
     )
     app.include_router(commit_analysis.router, prefix="/api/v1/commit-analysis", tags=["Commit 分析"])
+    app.include_router(daily_pipeline.router, prefix="/api/v1")
     app.include_router(daily_summary.router, prefix="/api/v1", tags=["每日总结"])
     app.include_router(models.router, prefix="/api/v1/models", tags=["模型管理"])
     app.include_router(model_sync_configs.router, prefix="/api/v1/model-sync-configs", tags=["模型同步配置"])
     app.include_router(performance.router, prefix="/api/v1/performance", tags=["性能数据"])
     app.include_router(users.router, prefix="/api/v1/users", tags=["用户管理"])
     app.include_router(workflows.router, prefix="/api/v1/workflows", tags=["Workflow 配置"])
+    app.include_router(workflow_actions.router, prefix="/api/v1/workflow-actions", tags=["Actions 操作"])
     app.include_router(job_owners.router, prefix="/api/v1/job-owners", tags=["Job 责任人"])
     app.include_router(system_config.router, prefix="/api/v1/system/config", tags=["系统配置"])
     app.include_router(project_dashboard.router, prefix="/api/v1/project-dashboard", tags=["项目看板"])
@@ -691,9 +532,10 @@ def create_app() -> FastAPI:
         全局异常处理器，返回统一 JSON 格式：
         {"code": int, "msg": str, "data": null}
         """
+        import traceback
+
         from fastapi import HTTPException as FastAPIHTTPException
         from fastapi.responses import JSONResponse
-        import traceback
 
         from infrastructure.core.exceptions import BusinessException, StatusCode
 

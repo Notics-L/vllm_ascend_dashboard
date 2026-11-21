@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph Community["第一部分：vLLM Ascend 社区 Daily 流水线系统"]
+        subgraph Execution["流水线执行层"]
+            Main["«workflow» Daily 主流水线"]
+            A["«workflow / job» 测试路径 A"]
+            B["«workflow / job» 测试路径 B"]
+            ReportA["测试 Step：失败上报脚本"]
+            ReportB["测试 Step：失败上报脚本"]
+            Update["«workflow» Issue 更新流水线"]
+            Job["Issue 更新 Job"]
+            Script["Issue 更新脚本"]
+            Main -.->|调度，传递本轮标识| A
+            Main -.->|调度，传递同一本轮标识| B
+            A -.->|运行| ReportA
+            B -.->|运行| ReportB
+            ReportA -.->|workflow_dispatch：本轮标识、失败信息| Update
+            ReportB -.->|workflow_dispatch：本轮标识、失败信息| Update
+            Update -.->|运行并按本轮标识控制并发| Job
+            Job -.->|调用| Script
+        end
+        subgraph Record["结果记录层"]
+            Issue["«artifact» 本轮 Daily Issue"]
+        end
+        Script -.->|GitHub API：查找、首次创建、合并更新| Issue
+    end

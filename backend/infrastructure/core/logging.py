@@ -47,7 +47,7 @@ class DBLogHandler(logging.Handler):
                 "line_number": record.lineno,
                 "message": self.format(record),
                 "traceback": (
-                    traceback.format_exc() if record.exc_info else None
+                    "".join(traceback.format_exception(*record.exc_info)) if record.exc_info else None
                 ),
             }
             try:
@@ -117,10 +117,11 @@ async def _flush_batch(entries: list[dict]) -> None:
             raise
 
 
-def setup_db_logging() -> None:
+def setup_db_logging(*, level: int | None = None, logger_prefixes: tuple[str, ...] = ()) -> None:
     """Install the DB log handler and start the background worker.
 
     Safe to call multiple times — subsequent calls are no-ops.
+    Dedicated workers can set a level and logger prefixes for their own events.
 
     DB 端日志级别默认 WARNING：INFO/DEBUG 仍会输出到 stdout（docker logs），
     但不写库。历史教训：DEBUG 级入库曾让 app_logs 膨胀到 780 万行 / 2GB，
@@ -133,7 +134,9 @@ def setup_db_logging() -> None:
 
     handler = DBLogHandler()
     db_log_level = os.environ.get("DB_LOG_LEVEL", "WARNING").upper()
-    handler.setLevel(getattr(logging, db_log_level, logging.WARNING))
+    handler.setLevel(level if level is not None else getattr(logging, db_log_level, logging.WARNING))
+    if logger_prefixes:
+        handler.addFilter(lambda record: record.name.startswith(logger_prefixes))
     handler.setFormatter(logging.Formatter("%(message)s"))
 
     root = logging.getLogger()

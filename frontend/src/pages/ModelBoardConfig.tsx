@@ -19,7 +19,6 @@ import {
   Upload,
   Divider,
   Collapse,
-  UploadFile,
   Descriptions,
 } from 'antd'
 import {
@@ -27,7 +26,6 @@ import {
   EditOutlined,
   DeleteOutlined,
   SyncOutlined,
-  ExperimentOutlined,
   DatabaseOutlined,
   UploadOutlined,
   CopyOutlined,
@@ -50,8 +48,7 @@ import {
   getModelReports,
   uploadReport,
   syncReports,
-  deleteReport,
-  updateReport,
+  deleteReport
 } from '../services/models'
 import type {
   ModelSyncConfig,
@@ -1202,7 +1199,7 @@ function ModelBoardConfig() {
   // 触发同步配置同步
   const syncConfigMutation = useMutation({
     mutationFn: triggerSync,
-    onSuccess: (data, configId) => {
+    onSuccess: (data, _configId) => {
       message.success(data.message || '同步已触发')
       queryClient.invalidateQueries({ queryKey: ['model-sync-configs'] })
     },
@@ -1456,7 +1453,7 @@ function ModelBoardConfig() {
     onMutate: ({ reportId }) => {
       setDeletingReportId(reportId)
     },
-    onSuccess: (data) => {
+    onSuccess: (_data) => {
       message.success('报告已删除')
       setDeletingReportId(null)
       if (reportListModelId) {

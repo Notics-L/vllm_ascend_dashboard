@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DASHBOARD_BACKEND_VOLUME=vllm_ascend_dashboard_backend_data
+0 4 * * * root /usr/local/sbin/dashboard-cleanup-downloads 2>&1 | /usr/bin/logger -t dashboard-download-cleanup

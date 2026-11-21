@@ -5,7 +5,7 @@ import io
 import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 
@@ -14,13 +14,13 @@ class BuildPlanFilterOptions(BaseModel):
     build_types: list[str]
 
 from api.deps import CurrentSuperAdminUser, DbSession
-from infrastructure.persistence.models import ContributorSyncRecord
 from contracts.schemas.contributor_board import (
     BuildOptimizationStats,
     BuildPlanEvaluateRequest,
     BuildPlanListResponse,
     BuildPlanResponse,
-    ClassificationSummary,
+    ContributorBoardSetting,
+    ContributorBoardSettingsResponse,
     ContributorDetailResponse,
     ContributorDistributionResponse,
     ContributorHeatmapResponse,
@@ -28,27 +28,26 @@ from contracts.schemas.contributor_board import (
     ContributorListResponse,
     ContributorOverviewStats,
     ContributorRankingResponse,
-    ContributorTimelineResponse,
-    ContributorTrendResponse,
     ContributorSyncHistoryResponse,
     ContributorSyncRecordResponse,
     ContributorSyncRequest,
     ContributorSyncResponse,
-    ContributorSyncSummary,
     ContributorSyncScheduleConfig,
     ContributorSyncScheduleUpdateRequest,
+    ContributorSyncSummary,
+    ContributorTimelineResponse,
+    ContributorTrendResponse,
     ExtendedTrendResponse,
     ModuleHotspotResponse,
     PolicyResultResponse,
     QuadrantDataResponse,
     RoleStats,
-    ContributorBoardSetting,
-    ContributorBoardSettingsResponse,
     UpdateQuadrantConfigRequest,
-    UpdateScoringWeightsRequest,
     UpdateRoleThresholdsRequest,
+    UpdateScoringWeightsRequest,
 )
 from contributor_board.service import get_contributor_board_service
+from infrastructure.persistence.models import ContributorSyncRecord
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +272,7 @@ async def trigger_sync(
     异步执行：立即返回 record_id，同步任务在后台执行
     """
     import logging
+
     from fastapi import HTTPException
 
     logger = logging.getLogger(__name__)
@@ -407,8 +407,11 @@ async def cancel_sync(
 ):
     """取消/终止正在运行的同步任务（管理员可见）"""
     from datetime import UTC, datetime
+
+    from sqlalchemy import text
+    from sqlalchemy import update as sa_update
+
     from infrastructure.tasks.background_task import BackgroundTaskTracker
-    from sqlalchemy import update as sa_update, text
 
     sync_record = await db.get(ContributorSyncRecord, record_id)
     if not sync_record:
@@ -601,10 +604,9 @@ async def get_sync_schedule(db: DbSession):
 @router.put("/settings/sync-schedule", response_model=ContributorSyncScheduleConfig)
 async def update_sync_schedule(db: DbSession, request: ContributorSyncScheduleUpdateRequest):
     """更新定时同步设置
-    
+
     保存后会通知 Scheduler 进程重载定时任务配置。
     """
-    from infrastructure.tasks.scheduler_config import persist_scheduler_runtime_config
     import json
     import uuid
 
@@ -695,7 +697,6 @@ async def get_contributor_timeline(
 # 评分权重版本管理 (C-3 ~ C-7)
 # =====================================================================
 
-from contributor_board.scoring_version_service import ScoringVersionService
 from contributor_board.scoring_version_schemas import (
     AIReportDetailResponse,
     AIReportGenerateRequest,
@@ -704,10 +705,9 @@ from contributor_board.scoring_version_schemas import (
     ScoreSnapshotResponse,
     ScoringVersionCreateRequest,
     ScoringVersionResponse,
-    ScoreUpdateAuditResponse,
     VersionCompareResponse,
 )
-
+from contributor_board.scoring_version_service import ScoringVersionService
 
 # ---- C-3: 权重版本 CRUD + 应用 + 对比 ----
 
@@ -816,8 +816,8 @@ async def ai_evaluate_weights(
     provider: str | None = Query(None, description="指定 LLM 提供商"),
 ):
     """执行 AI 权重评估"""
-    from contributor_board.auto_weight_engine import compute_weights_from_db
     from contributor_board.ai_weight_engine import analyze_weights_with_ai
+    from contributor_board.auto_weight_engine import compute_weights_from_db
 
     _, _, data_summary = await compute_weights_from_db(db, repo_name)
     ai_weights, ai_analysis, ai_model = await analyze_weights_with_ai(db, data_summary, model, provider=provider)
@@ -872,10 +872,11 @@ async def export_snapshots_pdf(
     version_id: int = Query(..., description="权重版本 ID"),
 ):
     """导出分数快照为 PDF — 全量数据，包含所有贡献者"""
-    from contributor_board.scoring_version_service import ScoringVersionService
-    from contributor_board.report_exporter import export_pdf
     from fastapi import HTTPException
     from fastapi.responses import StreamingResponse
+
+    from contributor_board.report_exporter import export_pdf
+    from contributor_board.scoring_version_service import ScoringVersionService
 
     svc = ScoringVersionService()
     version = await svc.get_version(db, version_id)

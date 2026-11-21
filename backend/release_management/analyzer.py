@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from infrastructure.persistence.models import (
     ReleaseBuildGroup,
     ReleaseBuildRun,
-    ReleaseWorkflow,
 )
 
 logger = logging.getLogger(__name__)

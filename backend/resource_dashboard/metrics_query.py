@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,8 @@ from contracts.schemas import (
     ResourcePodTimelineResponse,
     ResourceQuantity,
 )
+from infrastructure.clients.github_client import GitHubClient
+from infrastructure.core.config import settings
 from infrastructure.persistence.models import (
     CIResult,
     KubernetesClusterConfig,
@@ -25,6 +28,8 @@ from infrastructure.persistence.models import (
     ResourceNpuMetrics,
 )
 from resource_dashboard.service import parse_job_workflow_ref
+
+logger = logging.getLogger(__name__)
 
 
 class PersistedResourceMetricsService:
@@ -163,6 +168,15 @@ class PersistedResourceMetricsService:
                 for row in metadata_rows
                 if row["workflow_name"]
             }
+            missing_run_metadata = {
+                run_id: metadata
+                for metadata in metadata_by_key.values()
+                if (run_id := metadata.get("workflow_run_id")) not in github_workflow_names_by_run_id
+                and isinstance(run_id, int)
+            }
+            github_workflow_names_by_run_id.update(
+                await self._backfill_missing_workflow_names(db, missing_run_metadata)
+            )
         for pod in pods:
             metadata = metadata_by_key.get((pod.namespace, pod.name))
             if metadata is None:
@@ -181,6 +195,65 @@ class PersistedResourceMetricsService:
             )
             if workflow_name:
                 pod.workflow_path = workflow_name
+
+    @staticmethod
+    async def _backfill_missing_workflow_names(
+        db: AsyncSession,
+        metadata_by_run_id: dict[int, dict],
+    ) -> dict[int, str]:
+        """Resolve a bounded number of uncached Run names from GitHub.
+
+        The resource timeline previously only *read* the shared Workflow Run
+        cache.  A first visit could therefore expose a YAML filename until a
+        separate Occupancy sync happened to populate it.
+        """
+        if not settings.GITHUB_TOKEN:
+            return {}
+        resolved: dict[int, str] = {}
+        clients: dict[tuple[str, str], GitHubClient] = {}
+        try:
+            for run_id, metadata in list(metadata_by_run_id.items())[:10]:
+                repository = str(metadata.get("repository") or "").strip("/")
+                if "/" not in repository:
+                    continue
+                owner, repo = repository.split("/", 1)
+                if not owner or not repo:
+                    continue
+                client = clients.setdefault(
+                    (owner, repo), GitHubClient(settings.GITHUB_TOKEN, owner=owner, repo=repo)
+                )
+                try:
+                    run = await client.get_workflow_run(run_id)
+                    workflow_name = str(run.get("name") or "").strip()
+                except Exception as exc:
+                    logger.info("Workflow Run metadata lookup failed for %s: %s", run_id, exc)
+                    continue
+                if not workflow_name:
+                    continue
+                resolved[run_id] = workflow_name
+                await db.execute(
+                    text("""
+                        INSERT INTO github_workflow_run_metadata
+                          (run_id, organization, repository, workflow_name, fetch_status)
+                        VALUES (:run_id, :organization, :repository, :workflow_name, 'success')
+                        ON DUPLICATE KEY UPDATE
+                          organization=VALUES(organization), repository=VALUES(repository),
+                          workflow_name=VALUES(workflow_name), fetch_status='success',
+                          error_message=NULL, fetched_at=UTC_TIMESTAMP()
+                    """),
+                    {
+                        "run_id": run_id,
+                        "organization": owner,
+                        "repository": repo,
+                        "workflow_name": workflow_name,
+                    },
+                )
+            if resolved:
+                await db.commit()
+        finally:
+            for client in clients.values():
+                await client.close()
+        return resolved
 
     @staticmethod
     def _history_metadata_by_pod_key(payloads: Iterable[object]) -> dict[tuple[str, str], dict]:

@@ -5,24 +5,21 @@ import logging
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from contributor_board.scoring_engine import calculate_score
-from contributor_board.quadrant_engine import determine_quadrant
 from contributor_board.scoring_version_schemas import (
     ScoreSnapshotResponse,
+    ScoreUpdateAuditResponse,
     ScoringVersionCreateRequest,
     ScoringVersionResponse,
     VersionCompareResponse,
-    ScoreUpdateAuditResponse,
-    CalculateAutoWeightsResponse,
 )
-from contributor_board.constants import QUADRANT_RANK
 from infrastructure.persistence.models import (
     ContributorProfile,
-    ContributorScoringVersion,
     ContributorScoreSnapshot,
     ContributorScoreUpdateAudit,
+    ContributorScoringVersion,
 )
 
 logger = logging.getLogger(__name__)
@@ -395,9 +392,9 @@ class ScoringVersionService:
         if not weights or not isinstance(weights, dict):
             return
         from sqlalchemy import select
-        from infrastructure.persistence.models import ContributorBoardSettings
 
         from contributor_board.scoring_engine import DEFAULT_WEIGHTS
+        from infrastructure.persistence.models import ContributorBoardSettings
         # 规范化：只保留 7 维 key 并对齐默认权重
         weights = {k: float(weights.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
 

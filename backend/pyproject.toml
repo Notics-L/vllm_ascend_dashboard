@@ -17,11 +17,11 @@ dependencies = [
     "pymysql>=1.0.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
-    "python-jose[cryptography]>=3.3.0",
+    "PyJWT[crypto]>=2.13.0,<3.0.0",
     "cryptography>=50.0.0",
     "passlib[bcrypt]>=1.7.4",
     "httpx>=0.25.2",
-    "aiohttp>=3.14.3",
+    "aiohttp>=3.14.4",
     "click>=8.3.3",
     "apscheduler>=3.10.4",
     "python-multipart>=0.0.6",
@@ -35,9 +35,9 @@ dependencies = [
     "markdown>=3.5",
     "openpyxl>=3.1.5,<4",
     "matplotlib>=3.8",
-    "weasyprint>=60.0",
+    "weasyprint>=70.0",
     "smolagents[litellm]>=1.26.0,<2.0.0",
-    "litellm>=1.84.0,<1.85.0",
+    "litellm>=1.96.2,<2.0.0",
     "chompjs>=1.3.0",
     "coverage>=7.15.2,<8",
 ]
@@ -56,6 +56,19 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+constraint-dependencies = [
+    "brotli>=1.2.1",
+    "certifi>=2026.10.18",
+    "filelock>=4.2.1",
+    "msgpack>=1.2.3",
+    "multidict>=6.9.1",
+    "pillow>=13.0.0",
+    "pyasn1>=0.6.5",
+    "urllib3>=2.8.0",
+    "virtualenv>=21.14.9",
+]
 
 [tool.uv.extra-build-dependencies]
 litellm = ["maturin"]
@@ -83,6 +96,7 @@ packages = [
     "support_matrix",
     "test_board",
     "tooling",
+    "workflow_actions",
 ]
 
 [tool.ruff]
@@ -125,10 +139,6 @@ warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = "passlib.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "jose.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

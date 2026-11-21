@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { Card, Tabs, Table, Statistic, Row, Col, Tag, Empty, Typography, Select, Spin, message, Button, Input, Space, Alert, Modal, Breadcrumb, Tooltip, Popover } from 'antd'
-import { CodeOutlined, DownloadOutlined, SyncOutlined, ArrowRightOutlined, ThunderboltOutlined, FileTextOutlined, FunctionOutlined, BarsOutlined, GithubOutlined, LinkOutlined, ArrowLeftOutlined } from '@ant-design/icons'
+import { CodeOutlined, DownloadOutlined, SyncOutlined, ArrowRightOutlined, ThunderboltOutlined, FileTextOutlined, FunctionOutlined, BarsOutlined, GithubOutlined, LinkOutlined } from '@ant-design/icons'
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend,

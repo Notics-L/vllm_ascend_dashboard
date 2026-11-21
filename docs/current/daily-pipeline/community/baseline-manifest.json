@@ -1,0 +1,13 @@
+{
+  "baseline_date": "2026-11-13",
+  "scope": "第一部分：社区 Daily 流水线系统",
+  "files": {
+    "mermaid/community-daily-activity.mmd": "f58112ab345abbd973f7e647977d9f638bc0de707198fc6e3deb70d2ae485074",
+    "mermaid/community-daily-components.mmd": "265060b8f80e0269aef008680e37a856f0b4555dad25b355ce974eb64a324ced",
+    "mermaid/community-daily-sequence.mmd": "84dddce6d3f6d0ad110fb5e469967d9ba5917125482c2358330564dc97190750",
+    "README.md": "f8619a28f92c23ff37d70d7247874fd06f1bb5956353be883415f93cc38af940",
+    "uml/community-daily-activity.puml": "8966dd4415f6686dbc6357248a042467a5d0782a47c80500607c8e4da91a76bb",
+    "uml/community-daily-components.puml": "eec7f8e64e88fcce704a0702a63bdddeaef0a601c9799e14a572f5e390a50bee",
+    "uml/community-daily-sequence.puml": "ccbc7cee6bf9f366918aa1db3b1820b03606262d07a1439ca5ba026a209f633a"
+  }
+}

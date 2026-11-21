@@ -23,6 +23,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from contributor_board.classifier import classify_commit
 from contributor_board.role_analytics import detect_roles
 from contributor_board.scoring_engine import (
@@ -46,8 +49,6 @@ from infrastructure.persistence.models import (
     ImageBuildPlan,
 )
 from infrastructure.tasks.background_task import BackgroundTaskTracker
-from sqlalchemy import delete, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 # ── 日度明细补录常量 ─────────────────────────────────────────────
 DAILY_FLUSH_EVERY = 50   # 每处理 N 个 PR 提交一次 DB（避免 session 长期持有大量未提交对象）
@@ -583,7 +584,7 @@ class ContributorSyncCollector:
 
         title = pr.get("title") or f"PR #{pr_number}"
         html_url = pr.get("html_url") or f"https://github.com/{project}/pull/{pr_number}"
-        labels = [l.get("name") for l in (pr.get("labels") or []) if l.get("name")]
+        labels = [label.get("name") for label in (pr.get("labels") or []) if label.get("name")]
         body = pr.get("body") or ""
 
         if row is None:
@@ -644,8 +645,6 @@ class ContributorSyncCollector:
 
         pr_title = pr.get("title") or f"PR #{pr_number}"
         pr_desc = pr.get("body") or ""
-        html_url_pr = pr.get("html_url") or f"https://github.com/{project}/pull/{pr_number}"
-
         for commit in commits:
             sha = commit.get("sha", "")
             if not sha:
@@ -974,13 +973,13 @@ class ContributorSyncCollector:
 
     @staticmethod
     def _extract_employee_id(user_info: dict[str, Any], email: str) -> str | None:
-        for text in (
+        for candidate in (
             email, user_info.get("email", ""), user_info.get("bio", ""),
             user_info.get("company", ""), user_info.get("name", ""),
             user_info.get("login", ""),
         ):
-            if text:
-                matches = _EMPLOYEE_ID_RE.findall(text)
+            if candidate:
+                matches = _EMPLOYEE_ID_RE.findall(candidate)
                 if matches:
                     return matches[0]
         return None
@@ -1310,9 +1309,6 @@ class ContributorSyncCollector:
     def _derive_build_plan(
         commit_types: list[str], files_changed: list[str], additions: int, deletions: int
     ) -> tuple[str, float, str]:
-        has_doc = "Doc" in commit_types
-        has_test = "Test" in commit_types
-        has_misc = "Misc" in commit_types
         has_ci = "CI" in commit_types
         has_revert = "Revert" in commit_types
         has_perf = "Performance" in commit_types
@@ -2025,7 +2021,9 @@ async def backfill_daily_task_func(params: dict, tracker) -> None:
     签名匹配 BackgroundTaskTracker.start() 的 task_func 要求：
         async def task_func(params: dict, tracker: BackgroundTaskTracker)
     """
-    from datetime import date as _date, datetime as _dt, UTC as _UTC
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
     from infrastructure.db.base import SessionLocal as _SL
     from infrastructure.persistence.models import ContributorSyncRecord as _CSR
 

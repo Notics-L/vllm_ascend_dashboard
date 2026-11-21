@@ -7,6 +7,7 @@ from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -18,7 +19,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import backref, declarative_base, relationship
 from sqlalchemy.types import JSON
 
@@ -28,7 +31,9 @@ Base = declarative_base()
 # 导出所有模型类，方便其他地方导入
 __all__ = [
     "Base", "User", "ModelConfig", "ModelReport", "CIResult", "CIJob",
-    "DailyFailureRecord",
+    "DailyFailureRecord", "DailyPipelineTestCase", "DailyPipelineScheduledTask", "DailyPipelineConfig",
+    "DailyPipelineTriggerHistory", "DailyPipelineCollectionRun",
+    "DailyPipelineCollectionNode", "DailyPipelineMergedPR",
     "WorkflowConfig", "PerformanceData", "JobOwner", "NightlyTestCase", "ModelFoMapping", "ModelFoMaster",
     "ModelSyncConfig", "ProjectDashboardConfig", "KubernetesClusterConfig",
     "DailyPR", "DailyIssue", "DailyCommit", "DailySummary", "LLMProviderConfig",
@@ -51,13 +56,25 @@ __all__ = [
     "ReleaseWorkflow", "ReleaseBuildRun", "ReleaseBuildGroup",
     "ImageBuildMonitorTarget", "ImageBuildAlert",
     "ReleaseThirdPartyVersion", "ReleaseThirdPartyBaseline",
+    "WorkflowActionLog", "WorkflowActionPermission",
+    "WorkflowActionSchedule", "WorkflowSchedulePermission",
     "ReleaseAIEvaluation", "ReleaseAnalysisTask",
     "NotificationContact", "NotificationGroup", "NotificationGroupMember",
     "NotificationEvent", "NotificationDelivery", "NotificationAction",
 ]
 
 
+from infrastructure.persistence.models.daily_pipeline_collection import (
+    DailyPipelineCollectionNode,
+    DailyPipelineCollectionRun,
+    DailyPipelineMergedPR,
+)
+
 # 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
+from infrastructure.persistence.models.image_build_monitor import (
+    ImageBuildAlert,
+    ImageBuildMonitorTarget,
+)
 from infrastructure.persistence.models.release_management import (
     ReleaseAIEvaluation,
     ReleaseAnalysisTask,
@@ -68,9 +85,11 @@ from infrastructure.persistence.models.release_management import (
     ReleaseThirdPartyVersion,
     ReleaseWorkflow,
 )
-from infrastructure.persistence.models.image_build_monitor import (
-    ImageBuildAlert,
-    ImageBuildMonitorTarget,
+from infrastructure.persistence.models.workflow_actions import (
+    WorkflowActionLog,
+    WorkflowActionPermission,
+    WorkflowActionSchedule,
+    WorkflowSchedulePermission,
 )
 from infrastructure.persistence.models.notifications import (
     NotificationAction,
@@ -377,6 +396,92 @@ class JobOwner(Base):
     __table_args__ = (
         UniqueConstraint('workflow_name', 'job_name', name='uq_job_owner_workflow_job'),
     )
+
+
+class DailyPipelineConfig(Base):
+    __tablename__ = "daily_pipeline_config"
+    __table_args__ = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_key = Column(String(128), nullable=False, unique=True)
+    config_value = Column(Text, nullable=True)
+
+
+class DailyPipelineScheduledTask(Base):
+    """Schedule configuration for a named Daily pipeline task."""
+
+    __tablename__ = "daily_pipeline_scheduled_tasks"
+    __table_args__ = (
+        CheckConstraint("LENGTH(TRIM(cron_expression)) > 0", name="ck_daily_task_cron"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
+
+    task_key = Column(String(64), primary_key=True)
+    enabled = Column(Boolean, nullable=False, server_default="1")
+    cron_expression = Column(String(128), nullable=False)
+    timezone = Column(String(64), nullable=False, server_default="Asia/Shanghai")
+    updated_at = Column(
+        mysql.DATETIME(fsp=6), nullable=False,
+        server_default=text("CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)"),
+    )
+
+
+class DailyPipelineTriggerHistory(Base):
+    """A completed Daily dispatch attempt and its selected-case snapshot."""
+
+    __tablename__ = "daily_pipeline_trigger_history"
+    __table_args__ = (
+        CheckConstraint(
+            "event IN ('定时触发', '手动触发')", name="ck_daily_trigger_history_event",
+        ),
+        CheckConstraint(
+            "result IN ('触发成功', '触发失败')", name="ck_daily_trigger_history_result",
+        ),
+        CheckConstraint(
+            "(result = '触发成功' AND run_id IS NOT NULL AND run_id > 0) OR "
+            "(result = '触发失败' AND run_id IS NULL)",
+            name="ck_daily_trigger_history_run",
+        ),
+        Index("ix_daily_trigger_history_time", "triggered_at", "id"),
+        Index("ix_daily_trigger_history_run", "run_id"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # MySQL DATETIME stores these values in UTC without a timezone offset.
+    triggered_at = Column(mysql.DATETIME(fsp=6), nullable=False)
+    event = Column(String(16), nullable=False)
+    result = Column(String(16), nullable=False)
+    repository = Column(String(255), nullable=False)
+    source_branch = Column(String(255), nullable=False)
+    workflow = Column(String(255), nullable=False)
+    cron_expression = Column(String(120), nullable=True)
+    daily_cases = Column(JSON, nullable=False, default=list)
+    run_id = Column(BigInteger, nullable=True)
+    logs = Column(JSON, nullable=False, default=list)
+    is_deleted = Column(Boolean, nullable=False, server_default="0")
+    # NULL denotes a history row created before merged-PR collection was enabled.
+    merged_prs_synced = Column(Boolean, nullable=True)
+
+
+class DailyPipelineTestCase(Base):
+    """Nightly catalog and Daily selection keyed by the workflow case identity."""
+
+    __tablename__ = "daily_pipeline_test_cases"
+    __table_args__ = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
+
+    name = Column(String(255, collation="utf8mb4_bin"), primary_key=True)
+    hardware = Column(String(32), primary_key=True)
+    source_branch = Column(String(255), nullable=False)
+    test_type = Column(String(32), nullable=False)
+    tags = Column(JSON, nullable=False, default=list)
+    enabled = Column(Boolean, nullable=False, server_default="1")
+    is_daily = Column(Boolean, nullable=False, server_default="0")
+    success_count = Column(Integer, nullable=False, server_default="0")
+    failure_count = Column(Integer, nullable=False, server_default="0")
+    auto_disabled = Column(Boolean, nullable=False, server_default="0")
+    # Explicit enable overrides existing failures, but not subsequently discovered failures.
+    manual_enabled_at = Column(mysql.DATETIME(fsp=6))
 
 
 class NightlyTestCase(Base):
@@ -1379,3 +1484,14 @@ class ContributorAIReport(Base):
         Index("idx_ai_report_period", "period_start", "period_end"),
         Index("idx_ai_report_created", "generated_at"),
     )
+
+from infrastructure.persistence.models.daily_pipeline_notifications import (
+    DailyPipelineNotificationRecipient,
+)
+from infrastructure.persistence.models.daily_pipeline_tracking import (
+    DailyPipelineFailure,
+    DailyPipelineIssue,
+    DailyPipelineProcessNode,
+    DailyPipelineProcessNodeExecution,
+    DailyPipelineVersionFlow,
+)

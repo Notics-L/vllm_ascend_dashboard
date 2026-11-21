@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import {
-  Card, Row, Col, Table, Tag, Select, Space, Button, Spin, Empty,
+  Card, Row, Col, Table, Tag, Select, Space, Spin, Empty,
 } from 'antd'
 import {
-  ReloadOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
   MinusOutlined,
@@ -257,7 +256,7 @@ export default function ComparisonTab() {
                   yAxis: { type: 'value', name: '%' },
                   series: [{
                     type: 'bar',
-                    data: comparison.map((c, i) => ({
+                    data: comparison.map((c, _i) => ({
                       value: c.stats.cv_exec,
                       itemStyle: { color: c.stats.cv_exec > 50 ? '#ff4d4f' : c.stats.cv_exec > 30 ? '#faad14' : '#52c41a' },
                     })),

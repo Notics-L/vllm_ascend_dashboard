@@ -7,7 +7,6 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-
 # ============ Contributor Schemas ============
 
 class ContributorBase(BaseModel):

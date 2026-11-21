@@ -26,20 +26,15 @@ export const longTimeoutApiClient = axios.create({
   withCredentials: false,
 })
 
-// 为长超时客户端添加 token 拦截器
-longTimeoutApiClient.interceptors.request.use(
-  (config) => {
+for (const client of [apiClient, longTimeoutApiClient]) {
+  client.interceptors.request.use((config) => {
+    // Breakpoints can pause the entire API worker during local development.
+    if (import.meta.env.DEV) config.timeout = 0
     const token = localStorage.getItem('access_token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`
     return config
-  },
-  (error) => {
-    console.error('Long timeout request interceptor error:', error)
-    return Promise.reject(error)
-  }
-)
+  })
+}
 
 // 是否正在刷新 token 的标志
 let isRefreshing = false
@@ -68,20 +63,10 @@ const onTokenRefreshFailed = (error: unknown) => {
   refreshSubscribers = []
 }
 
-// 请求拦截器 - 添加 Token
-apiClient.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('access_token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => {
-    console.error('Request interceptor error:', error)
-    return Promise.reject(error)
-  }
-)
+export function credentialsRejected(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false
+  return error.response?.status === 401 || error.response?.status === 403
+}
 
 // 响应拦截器 - 处理错误和 token 刷新
 apiClient.interceptors.response.use(
@@ -149,11 +134,12 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest)
       } catch (refreshError) {
         onTokenRefreshFailed(refreshError)
-        // 刷新失败，清除 token 并跳转登录页
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        if (!window.location.pathname.endsWith('/login')) {
-          window.location.href = appUrl('/login')
+        if (credentialsRejected(refreshError)) {
+          localStorage.removeItem('access_token')
+          localStorage.removeItem('refresh_token')
+          if (!window.location.pathname.endsWith('/login')) {
+            window.location.href = appUrl('/login')
+          }
         }
         return Promise.reject(refreshError)
       } finally {

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     GITHUB_OWNER: str = "vllm-project"
     GITHUB_REPO: str = "vllm-ascend"
 
+    # Daily 模块独立调度服务的内部控制地址。
+    DAILY_PIPELINE_SCHEDULER_URL: str = "http://daily-catalog:9001"
+
     # 数据库配置
     DATABASE_URL: str = "mysql+aiomysql://dashboard:dashboard123@localhost:3306/vllm_dashboard"
     DB_POOL_SIZE: int = 5
@@ -39,6 +42,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 小时
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     KUBECONFIG_ENCRYPTION_KEY: str | None = None
+    WORKFLOW_ACTIONS_ENCRYPTION_KEY: str | None = None
 
     # Resource metrics can be collected through the production API when the
     # local Docker host cannot reach the Kubernetes API networks directly.

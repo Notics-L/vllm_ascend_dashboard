@@ -21,11 +21,26 @@ repository_root = Path(__file__).resolve().parents[1]
 application_root = repository_root / "backend"
 if not application_root.is_dir():
     application_root = repository_root
+sys.path.insert(0, str(repository_root))
 sys.path.insert(0, str(application_root))
 
 from infrastructure.core.security import hash_password
 from infrastructure.db.base import SessionLocal, engine
 from infrastructure.persistence.models import Base, User
+
+from database.migrations.daily_pipeline_case_counts import run as migrate_daily_case_counts
+from database.migrations.daily_pipeline_collection import run as migrate_daily_collection
+from database.migrations.daily_pipeline_config import run as seed_daily_pipeline_config
+from database.migrations.daily_pipeline_issue_reopen import run as migrate_daily_issue_reopen
+from database.migrations.daily_pipeline_manual_processing import (
+    run as migrate_daily_manual_processing,
+)
+from database.migrations.daily_pipeline_merged_pr import run as migrate_daily_merged_pr
+from database.migrations.daily_pipeline_notifications import run as migrate_daily_notifications
+from database.migrations.daily_pipeline_retryable_nodes import run as migrate_daily_retryable_nodes
+from database.migrations.daily_pipeline_scheduled_tasks import run as migrate_daily_schedules
+from database.migrations.daily_pipeline_tracking import run as migrate_daily_tracking
+from database.migrations.daily_pipeline_trigger_history import run as migrate_daily_trigger_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("database_bootstrap")
@@ -66,7 +81,11 @@ async def create_tables_with_latest_schema() -> None:
     """Create model tables and the non-ORM GitHub cache table in MySQL."""
     if engine.dialect.name != "mysql":
         raise RuntimeError(f"MySQL bootstrap requires MySQL, got {engine.dialect.name}")
+    from database.migrations.daily_pipeline_process_nodes import run as rename_process_nodes
+    await rename_process_nodes()
     async with engine.begin() as connection:
+        from database.migrations.view_backed_user_permissions import ensure_view_backed_user_permissions
+        await ensure_view_backed_user_permissions(connection)
         await connection.run_sync(Base.metadata.create_all)
     await _ensure_github_cache()
 
@@ -102,6 +121,17 @@ async def mark_version_applied(version: str, description: str = "") -> None:
 
 
 async def run_upgrades() -> None:
+    await migrate_daily_schedules()
+    await seed_daily_pipeline_config()
+    await migrate_daily_trigger_history()
+    await migrate_daily_collection()
+    await migrate_daily_case_counts()
+    await migrate_daily_tracking()
+    await migrate_daily_merged_pr()
+    await migrate_daily_manual_processing()
+    await migrate_daily_notifications()
+    await migrate_daily_issue_reopen()
+    await migrate_daily_retryable_nodes()
     await ensure_version_table()
     if await get_current_version() == "0.0.0":
         await mark_version_applied("current", "Current MySQL schema bootstrap")

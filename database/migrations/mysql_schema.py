@@ -58,6 +58,9 @@ TABLE_COLUMN_MIGRATIONS = {
         "issues_found": "INT NOT NULL DEFAULT 0",
         "suspected_test_issue_count": "INT NOT NULL DEFAULT 0",
         "is_flaky_manual": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "auto_issues_found": "INT NOT NULL DEFAULT 0",
+        "auto_suspected_test_issue_count": "INT NOT NULL DEFAULT 0",
+        "issues_found_override": "BOOLEAN NOT NULL DEFAULT FALSE",
     },
     # 每日失败用例跟踪：物化记录需带上来源分支与人工处理字段，
     # 否则 _populate_daily_failure_records 写入会因 Unknown column 报 1054 被静默吞掉。
@@ -304,6 +307,17 @@ async def migrate() -> None:
                     SET tc.lifetime_runs = COALESCE(totals.run_count, 0),
                         tc.lifetime_failures = COALESCE(totals.failure_count, 0)
                 """))
+
+            model_fo_target = await _resolve_table_target(db, "model_fo_master")
+            model_fo_schema = model_fo_target.physical_schema or await _current_schema(db)
+            model_fo_nullable = (await db.execute(text("""
+                SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table AND COLUMN_NAME = 'model_fo'
+            """), {"schema": model_fo_schema, "table": model_fo_target.physical_table})).scalar_one()
+            if model_fo_nullable == "NO":
+                table = f"{_quoted_identifier(model_fo_schema)}.{_quoted_identifier(model_fo_target.physical_table)}"
+                await db.execute(text(f"ALTER TABLE {table} MODIFY COLUMN model_fo VARCHAR(100) NULL"))
+                await _refresh_forwarding_view(db, model_fo_target)
 
             # 唯一索引替换（drop 旧 + add 新），幂等：drop 缺失索引忽略，add 已存在索引忽略
             for repl in INDEX_REPLACEMENTS:

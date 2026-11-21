@@ -13,6 +13,7 @@ async def get_active_llm_config(db: Any, model: str | None = None, provider: str
     3. enabled=True 且配置了 API Key 的 provider（兜底）
     """
     from sqlalchemy import select as sa_select
+
     from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 
     # 精确匹配指定 provider

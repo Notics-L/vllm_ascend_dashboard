@@ -568,7 +568,7 @@ export function JobHistoryWorkspace({ job, workflowName }: { job: CIJob; workflo
                 }}
               />
             )}
-            {timeline.map((record, index) => {
+            {timeline.map((record, _index) => {
               const selectedAsStart = startJobId === record.job_id
               const selectedAsEnd = endJobId === record.job_id
               return (

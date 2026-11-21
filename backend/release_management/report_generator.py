@@ -1,7 +1,6 @@
 """
 报告生成器 - PDF 和 Excel 报告生成
 """
-import json
 import logging
 from datetime import UTC, datetime
 from io import BytesIO
@@ -56,7 +55,8 @@ class ReportGenerator:
     # Column spec shortcuts
     _s = str  # string passthrough
     _f = float
-    _r2 = lambda v: round(v, 2) if isinstance(v, (int, float)) else 0
+    def _r2(v):
+        return round(v, 2) if isinstance(v, (int, float)) else 0
     _int = int
     _fmt = fmt_duration
 
@@ -396,10 +396,10 @@ class ReportGenerator:
         run_breakdown: list[dict[str, Any]] | None = None,
     ) -> tuple[bytes, str]:
         """生成 PDF 分析报告"""
+        import importlib.resources as resources
+
         from jinja2 import Template
         from weasyprint import HTML
-
-        import importlib.resources as resources
 
         template_path = resources.files("release_management").joinpath("pdf_template.html")
         template_source = template_path.read_text(encoding="utf-8")

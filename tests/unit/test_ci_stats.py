@@ -7,9 +7,9 @@ import pytest
 from sqlalchemy.dialects import mysql
 
 from api.v1.ci import (
-    _build_log_root_cause_context,
     _apply_benchmark_config,
     _benchmark_config_reference,
+    _build_log_root_cause_context,
     _extract_log_error_summary,
     _extract_merged_pr_number,
     _extract_revert_target,
