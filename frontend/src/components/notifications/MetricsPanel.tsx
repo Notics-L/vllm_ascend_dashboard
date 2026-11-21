@@ -15,6 +15,7 @@ export default function MetricsPanel() {
 
   return (
     <Card
+      className="nc-panel"
       size="small"
       title={<Space><BarChartOutlined /><span>运营指标</span></Space>}
       extra={

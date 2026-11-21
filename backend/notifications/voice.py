@@ -1,4 +1,4 @@
-"""语音电话通道配置与阿里云语音通知实现。"""
+"""语音电话通道配置（支持多服务商配置切换）与阿里云语音通知实现。"""
 from __future__ import annotations
 
 import json
@@ -18,8 +18,28 @@ logger = logging.getLogger(__name__)
 
 VOICE_CONFIG_KEY = "voice_config"
 
+PROVIDER_FIELDS = (
+    "provider",
+    "access_key_id",
+    "called_show_number",
+    "tts_code",
+    "tts_param_key",
+    "region_id",
+)
+
 DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "enabled": False,
+    "fallback_enabled": True,
+    "apply_to": "critical",
+    "test_phones": [],
+    "play_times": 2,
+    "ivr_enabled": False,
+    "callback_token": "",
+    "ivr_actions": {"1": "retry", "2": "abort", "3": "ack", "9": "ignore"},
+    "ivr_allowed_sources": ["image_build_monitor"],
+    "ivr_allowed_phones": [],
+    "active_provider_id": "",
+    "providers": [],
     "provider": "aliyun",
     "access_key_id": "",
     "access_key_secret": "",
@@ -27,35 +47,32 @@ DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "tts_code": "",
     "tts_param_key": "content",
     "region_id": "cn-hangzhou",
-    "play_times": 2,
-    "fallback_enabled": True,
-    "apply_to": "critical",
-    "test_phones": [],
-    "ivr_enabled": False,
-    "callback_token": "",
-    "ivr_actions": {"1": "retry", "2": "abort", "3": "ack", "9": "ignore"},
-    "ivr_allowed_sources": ["image_build_monitor"],
-    "ivr_allowed_phones": [],
 }
 
-_PUBLIC_FIELDS = {
+_GLOBAL_FIELDS = {
     "enabled",
-    "provider",
-    "access_key_id",
-    "called_show_number",
-    "tts_code",
-    "tts_param_key",
-    "region_id",
-    "play_times",
     "fallback_enabled",
     "apply_to",
     "test_phones",
+    "play_times",
     "ivr_enabled",
     "callback_token",
     "ivr_actions",
     "ivr_allowed_sources",
     "ivr_allowed_phones",
+    "active_provider_id",
 }
+
+
+def _legacy_provider(stored: dict[str, Any]) -> dict[str, Any] | None:
+    if not any(stored.get(field) for field in PROVIDER_FIELDS):
+        return None
+    return {
+        "id": "default",
+        "name": "默认配置",
+        **{field: stored.get(field, DEFAULT_VOICE_CONFIG[field]) for field in PROVIDER_FIELDS},
+        "access_key_secret_encrypted": stored.get("access_key_secret_encrypted", ""),
+    }
 
 
 async def get_voice_config(db) -> dict[str, Any]:
@@ -68,16 +85,55 @@ async def get_voice_config(db) -> dict[str, Any]:
     ).scalar_one_or_none()
     stored = dict(row.config_value) if (row and row.config_value) else {}
     config = {**DEFAULT_VOICE_CONFIG, **stored}
-    config.pop("access_key_secret_encrypted", None)
-    encrypted = stored.get("access_key_secret_encrypted") or ""
-    config["access_key_secret"] = decrypt_api_key(encrypted) if encrypted else ""
+    providers = stored.get("providers") or []
+    if not providers:
+        legacy = _legacy_provider(stored)
+        providers = [legacy] if legacy else []
+    if providers:
+        active_id = stored.get("active_provider_id") or providers[0].get("id")
+        active = next((p for p in providers if p.get("id") == active_id), providers[0])
+        config["active_provider_id"] = active.get("id", "")
+        for field in PROVIDER_FIELDS:
+            config[field] = active.get(field) or DEFAULT_VOICE_CONFIG[field]
+        encrypted = active.get("access_key_secret_encrypted") or ""
+        config["access_key_secret"] = decrypt_api_key(encrypted) if encrypted else ""
+    else:
+        encrypted = stored.get("access_key_secret_encrypted") or ""
+        config["access_key_secret"] = decrypt_api_key(encrypted) if encrypted else ""
+    config["providers"] = providers
     return config
 
 
 async def get_public_voice_config(db) -> dict[str, Any]:
     config = await get_voice_config(db)
-    public = {key: config.get(key) for key in _PUBLIC_FIELDS}
-    public["access_key_secret_set"] = bool(config.get("access_key_secret"))
+    providers = []
+    for provider in config.get("providers") or []:
+        item = {key: provider.get(key) for key in ("id", "name", *PROVIDER_FIELDS)}
+        item["access_key_secret_set"] = bool(provider.get("access_key_secret_encrypted"))
+        providers.append(item)
+    if not providers:
+        providers.append(
+            {
+                "id": "default",
+                "name": "默认配置",
+                "provider": config.get("provider", "aliyun"),
+                "access_key_id": config.get("access_key_id", ""),
+                "access_key_secret_set": bool(config.get("access_key_secret")),
+                "called_show_number": config.get("called_show_number", ""),
+                "tts_code": config.get("tts_code", ""),
+                "tts_param_key": config.get("tts_param_key", "content"),
+                "region_id": config.get("region_id", "cn-hangzhou"),
+            }
+        )
+    public = {key: config.get(key) for key in _GLOBAL_FIELDS}
+    public["providers"] = providers
+    if not public.get("active_provider_id"):
+        public["active_provider_id"] = providers[0]["id"]
+    active = next(
+        (p for p in providers if p["id"] == public["active_provider_id"]), providers[0]
+    )
+    public.update({key: active.get(key) for key in PROVIDER_FIELDS})
+    public["access_key_secret_set"] = bool(active.get("access_key_secret_set"))
     return public
 
 
@@ -90,13 +146,40 @@ async def save_voice_config(db, payload: dict[str, Any]) -> dict[str, Any]:
         )
     ).scalar_one_or_none()
     stored = dict(row.config_value) if (row and row.config_value) else {}
-    for key in _PUBLIC_FIELDS:
+    existing = {p.get("id"): p for p in (stored.get("providers") or [])}
+    legacy = _legacy_provider(stored)
+    if legacy:
+        existing.setdefault(legacy["id"], legacy)
+
+    if "providers" in payload:
+        providers = []
+        for raw in payload.get("providers") or []:
+            provider_id = raw.get("id") or uuid.uuid4().hex[:12]
+            item = {"id": provider_id, "name": raw.get("name") or "未命名配置"}
+            for field in PROVIDER_FIELDS:
+                item[field] = raw.get(field) or DEFAULT_VOICE_CONFIG[field]
+            secret = (raw.get("access_key_secret") or "").strip()
+            if secret:
+                item["access_key_secret_encrypted"] = encrypt_api_key(secret)
+            elif existing.get(provider_id, {}).get("access_key_secret_encrypted"):
+                item["access_key_secret_encrypted"] = existing[provider_id][
+                    "access_key_secret_encrypted"
+                ]
+            providers.append(item)
+        stored["providers"] = providers
+        if providers and not stored.get("active_provider_id"):
+            stored["active_provider_id"] = providers[0]["id"]
+
+    for key in _GLOBAL_FIELDS - {"active_provider_id"}:
         if key in payload:
             stored[key] = payload[key]
-    secret = (payload.get("access_key_secret") or "").strip()
-    if secret:
-        stored["access_key_secret_encrypted"] = encrypt_api_key(secret)
+    if payload.get("active_provider_id"):
+        stored["active_provider_id"] = payload["active_provider_id"]
     stored.pop("access_key_secret", None)
+    stored.pop("access_key_secret_encrypted", None)
+    for field in PROVIDER_FIELDS:
+        stored.pop(field, None)
+
     if row is None:
         row = ProjectDashboardConfig(
             config_key=VOICE_CONFIG_KEY,

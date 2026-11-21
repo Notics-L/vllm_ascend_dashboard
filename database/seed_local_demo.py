@@ -66,6 +66,12 @@ from infrastructure.persistence.models import (
     ModelReport,
     ModelSyncConfig,
     NightlyTestCase,
+    NotificationAction,
+    NotificationContact,
+    NotificationDelivery,
+    NotificationEvent,
+    NotificationGroup,
+    NotificationGroupMember,
     PerformanceData,
     ProjectDashboardConfig,
     PullRequest,
@@ -988,6 +994,96 @@ async def seed_clusters_and_resources(
     return clusters
 
 
+async def seed_notifications(db: Any, now: datetime) -> None:
+    """Seed demo contacts, groups, events and deliveries for the notification center."""
+    await db.execute(
+        delete(NotificationEvent).where(NotificationEvent.dedupe_key.like("local-demo-nc-%"))
+    )
+    await db.execute(
+        delete(NotificationContact).where(NotificationContact.email.like("%@demo.local"))
+    )
+    await db.execute(
+        delete(NotificationGroup).where(NotificationGroup.name.like("%local-demo%"))
+    )
+    await db.flush()
+
+    contacts: list[NotificationContact] = []
+    for name, email, phone in [
+        ("张伟（值班）", "zhangwei@demo.local", "+8613800000001"),
+        ("李娜（SRE）", "lina@demo.local", "+8613800000002"),
+        ("王强（研发）", "wangqiang@demo.local", "+8613800000003"),
+        ("赵敏（测试）", "zhaomin@demo.local", "+8613800000004"),
+    ]:
+        contact = NotificationContact(name=name, email=email, phone=phone, enabled=True)
+        db.add(contact)
+        contacts.append(contact)
+    await db.flush()
+
+    group = NotificationGroup(
+        name="[local-demo] 值班组",
+        description="演示用值班联系人组",
+        enabled=True,
+    )
+    db.add(group)
+    await db.flush()
+    for contact in contacts[:2]:
+        db.add(NotificationGroupMember(group_id=group.id, contact_id=contact.id))
+    await db.flush()
+
+    scenarios = [
+        ("image_build_monitor", "build_failed", "critical", "镜像构建失败：vllm-ascend A5 nightly"),
+        ("alert_rules", "resource_alert", "warning", "NPU 显存使用率超过阈值 90%"),
+        ("image_build_monitor", "build_failed", "critical", "镜像构建超时：310P full build"),
+        ("daily_report", "report_ready", "info", "每日运行报告已生成"),
+        ("alert_rules", "resource_alert", "critical", "节点 CPU 负载持续过高"),
+        ("image_build_monitor", "build_recovered", "info", "镜像构建恢复正常"),
+        ("alert_rules", "resource_alert", "warning", "磁盘使用率接近 85%"),
+    ]
+    events: list[NotificationEvent] = []
+    for index in range(14):
+        source, event_type, severity, title = scenarios[index % len(scenarios)]
+        event = NotificationEvent(
+            source=source,
+            event_type=event_type,
+            severity=severity,
+            title=title,
+            summary=f"[local-demo] 演示通知事件 #{index + 1}",
+            dedupe_key=f"local-demo-nc-{index + 1}",
+            status="sent" if index % 5 else "partial",
+            created_at=now - timedelta(hours=index * 3),
+        )
+        db.add(event)
+        events.append(event)
+    await db.flush()
+
+    channels = ["voice", "sms", "email"]
+    statuses = ["sent", "sent", "sent", "failed", "pending"]
+    for index, event in enumerate(events):
+        for offset, channel in enumerate(channels[: 3 if event.severity == "critical" else 2]):
+            if channel == "email":
+                recipient = contacts[index % len(contacts)].email or ""
+            else:
+                recipient = contacts[index % len(contacts)].phone or ""
+            status = statuses[(index + offset) % len(statuses)]
+            sent_at = event.created_at if status in ("sent", "failed") else None
+            db.add(
+                NotificationDelivery(
+                    event_id=event.id,
+                    channel=channel,
+                    recipient=recipient,
+                    attempt=1 if status != "failed" else 2,
+                    status=status,
+                    provider="mock" if channel != "email" else "smtp",
+                    provider_message_id=f"demo-{index}-{channel}",
+                    error="演示失败：模拟超时" if status == "failed" else None,
+                    sent_at=sent_at,
+                    delivered_at=sent_at if status == "sent" else None,
+                    created_at=event.created_at,
+                )
+            )
+    await db.flush()
+
+
 async def seed_alerts(
     db: Any,
     admin: User,
@@ -1639,6 +1735,7 @@ async def seed_database(skip_files: bool) -> None:
             await seed_pull_requests(db, now)
             clusters = await seed_clusters_and_resources(db, users["admin"], now)
             await seed_alerts(db, users["admin"], clusters, now)
+            await seed_notifications(db, now)
             await seed_failure_analysis(db, jobs, now)
             await seed_test_board(db, jobs, now)
             await seed_code_metrics(db, now)

@@ -58,6 +58,7 @@ export default function DeliveriesPanel() {
 
   return (
     <Card
+      className="nc-panel"
       size="small"
       title="发送记录"
       extra={

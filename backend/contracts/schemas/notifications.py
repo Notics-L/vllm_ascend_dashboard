@@ -105,6 +105,18 @@ class EventResponse(BaseModel):
     created_at: datetime | None
 
 
+class SmsProviderConfig(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    provider: str | None = None
+    access_key_id: str | None = None
+    access_key_secret: str | None = None
+    sign_name: str | None = None
+    template_code: str | None = None
+    template_param_key: str | None = None
+    region_id: str | None = None
+
+
 class SmsConfigUpdate(BaseModel):
     enabled: bool | None = None
     provider: str | None = None
@@ -117,11 +129,25 @@ class SmsConfigUpdate(BaseModel):
     fallback_enabled: bool | None = None
     apply_to: str | None = None
     test_phones: list[str] | None = None
+    active_provider_id: str | None = None
+    providers: list[SmsProviderConfig] | None = None
 
 
 class SmsTestRequest(BaseModel):
     phones: list[str] = Field(min_length=1)
     text: str = "vLLM Ascend 通知服务短信测试"
+
+
+class VoiceProviderConfig(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    provider: str | None = None
+    access_key_id: str | None = None
+    access_key_secret: str | None = None
+    called_show_number: str | None = None
+    tts_code: str | None = None
+    tts_param_key: str | None = None
+    region_id: str | None = None
 
 
 class VoiceConfigUpdate(BaseModel):
@@ -142,6 +168,8 @@ class VoiceConfigUpdate(BaseModel):
     ivr_actions: dict[str, str] | None = None
     ivr_allowed_sources: list[str] | None = None
     ivr_allowed_phones: list[str] | None = None
+    active_provider_id: str | None = None
+    providers: list[VoiceProviderConfig] | None = None
 
 
 class VoiceTestRequest(BaseModel):

@@ -119,6 +119,19 @@ export const retryDelivery = async (id: number): Promise<{ success: boolean }> =
   return data
 }
 
+export interface SmsProvider {
+  id: string
+  name: string
+  provider: string
+  access_key_id: string
+  access_key_secret?: string
+  access_key_secret_set?: boolean
+  sign_name: string
+  template_code: string
+  template_param_key: string
+  region_id: string
+}
+
 export interface SmsConfig {
   enabled: boolean
   provider: string
@@ -131,6 +144,8 @@ export interface SmsConfig {
   fallback_enabled: boolean
   apply_to: 'critical' | 'all'
   test_phones: string[]
+  active_provider_id: string
+  providers: SmsProvider[]
 }
 
 export interface SmsConfigUpdate {
@@ -145,6 +160,8 @@ export interface SmsConfigUpdate {
   fallback_enabled?: boolean
   apply_to?: 'critical' | 'all'
   test_phones?: string[]
+  active_provider_id?: string
+  providers?: SmsProvider[]
 }
 
 export const getSmsConfig = async (): Promise<SmsConfig> => {
@@ -160,6 +177,19 @@ export const updateSmsConfig = async (payload: SmsConfigUpdate): Promise<SmsConf
 export const testSms = async (phones: string[], text?: string): Promise<{ success: boolean; error?: string; results?: Array<Record<string, unknown>> }> => {
   const { data } = await api.post('/notifications/channels/sms/test', { phones, text })
   return data
+}
+
+export interface VoiceProvider {
+  id: string
+  name: string
+  provider: string
+  access_key_id: string
+  access_key_secret?: string
+  access_key_secret_set?: boolean
+  called_show_number: string
+  tts_code: string
+  tts_param_key: string
+  region_id: string
 }
 
 export interface VoiceConfig {
@@ -180,6 +210,8 @@ export interface VoiceConfig {
   ivr_actions: Record<string, string>
   ivr_allowed_sources: string[]
   ivr_allowed_phones: string[]
+  active_provider_id: string
+  providers: VoiceProvider[]
 }
 
 export interface VoiceConfigUpdate {
@@ -200,6 +232,8 @@ export interface VoiceConfigUpdate {
   ivr_actions?: Record<string, string>
   ivr_allowed_sources?: string[]
   ivr_allowed_phones?: string[]
+  active_provider_id?: string
+  providers?: VoiceProvider[]
 }
 
 export interface IvrAction {

@@ -76,6 +76,7 @@ export default function ContactsPanel() {
   return (
     <div>
       <Card
+        className="nc-panel"
         size="small"
         title={<Space><UserOutlined /><span>联系人</span></Space>}
         extra={<Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => openContact()}>新增联系人</Button>}
@@ -132,6 +133,7 @@ export default function ContactsPanel() {
       </Card>
 
       <Card
+        className="nc-panel"
         size="small"
         title={<Space><TeamOutlined /><span>联系人组</span></Space>}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={() => openGroup()}>新增联系人组</Button>}
