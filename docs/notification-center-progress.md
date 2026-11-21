@@ -2,7 +2,7 @@
 
 - 设计文档：`docs/notification-center-design.md`
 - 创建日期：2026-11-21
-- 当前阶段：Phase 2 已完成
+- 当前阶段：Phase 3 已完成
 - 分支：`feature/ci-image-build-monitor`
 
 ## 阶段进度总览
@@ -12,7 +12,7 @@
 | Phase 0 | 改名与邮件入口收敛 | 已完成 | 2026-11-21 |
 | Phase 1 | 联系人 + 投递记录 | 已完成 | 2026-11-21 |
 | Phase 2 | 短信 + 降级 | 已完成 | 2026-11-21 |
-| Phase 3 | 语音播报 | 未开始 | - |
+| Phase 3 | 语音播报 | 已完成 | 2026-11-21 |
 | Phase 4 | IVR 按键动作 | 未开始 | - |
 | Phase 5 | 升级与运营 | 未开始 | - |
 
@@ -331,6 +331,101 @@
 - Git 提交：`2eeda84`（feat(notifications): phase 2 add sms channel and fallback）
 - 远程分支：`origin/feature/ci-image-build-monitor`
 
+## Phase 3：语音播报
+
+### 目标
+
+- 接入语音电话服务商，支持配置与测试呼叫
+- critical 告警优先语音播报
+- 语音失败后自动降级短信/邮件
+- 投递记录支持语音渠道
+
+### 完成内容
+
+1. 语音通道：
+   - `backend/notifications/voice.py`
+     - `voice_config` 读取/保存
+     - AccessKey Secret 加密存储
+     - 阿里云语音通知 `SingleCallByTts` 调用
+     - `provider=mock` 本地联调模式
+   - 支持启用开关、主叫号码、TTS 模板、模板变量、Region、重复播报次数
+   - 支持 `apply_to=critical/all` 与 `fallback_enabled`
+
+2. 调度器与降级：
+   - `backend/notifications/service.py`
+     - 渠道顺序升级为 `语音 → 短信 → 邮件`
+     - 新增 `send_voice()` 与语音投递记录
+     - 语音接收人复用联系人手机号解析
+     - 语音成功即停止；语音失败继续短信/邮件
+     - 未启用的渠道自动跳过
+
+3. 业务接入：
+   - 镜像构建告警、资源告警的 critical 事件自动使用语音优先链路
+   - 每日报告仍保持邮件通道
+
+4. API：
+   - `GET /api/v1/notifications/channels/voice`
+   - `PUT /api/v1/notifications/channels/voice`
+   - `POST /api/v1/notifications/channels/voice/test`
+
+5. 前端：
+   - `frontend/src/components/notifications/VoicePanel.tsx`
+     - 语音配置、降级策略、测试呼叫
+   - 「通知服务 → 语音电话」Tab 由占位替换为可用面板
+   - 服务与 hooks 增加语音配置和测试能力
+
+### 变更文件清单
+
+后端：
+
+- `backend/notifications/voice.py`（新增）
+- `backend/notifications/service.py`
+- `backend/api/v1/notifications.py`
+- `backend/contracts/schemas/notifications.py`
+
+前端：
+
+- `frontend/src/components/notifications/VoicePanel.tsx`（新增）
+- `frontend/src/hooks/useNotifications.ts`
+- `frontend/src/services/notifications.ts`
+- `frontend/src/pages/SmtpConfig.tsx`
+
+文档：
+
+- `docs/notification-center-progress.md`
+
+### 验证记录
+
+- 后端相关文件 `python -m py_compile` 通过。
+- 前端 `pnpm build`（含 `tsc`）通过。
+- API 验证：
+  - 保存语音配置成功，Secret 不回显
+  - `provider=mock` 测试语音发起成功，生成语音投递记录
+- 链路验证：
+  - critical 渠道解析为 `["voice","email"]`（短信未启用时）
+  - mock 语音成功后停止，不再发送邮件
+  - 语音配置失败后继续尝试邮件，投递记录包含两个渠道结果
+- 测试数据已清理。
+- 容器状态：`dev-backend-1`、`dev-frontend-1` 均为 healthy。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 可配置语音服务商与 TTS 模板 | 已完成 |
+| 可发起测试语音呼叫 | 已完成 |
+| critical 告警语音优先 | 已完成 |
+| 语音失败自动降级短信/邮件 | 已完成 |
+| 语音投递可追溯 | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase3`
+- 实施日期：2026-11-21
+- 关联需求：语音播报、主动触达、多级降级
+- Git 提交：`869a409`（feat(notifications): phase 3 add voice channel and fallback）
+- 远程分支：`origin/feature/ci-image-build-monitor`
+
 ## 变更记录
 
 | 日期 | 阶段 | 说明 |
@@ -340,3 +435,4 @@
 | 2026-11-21 | Phase 0 | 提交并推送到 `origin/feature/ci-image-build-monitor`（`e9597ab`） |
 | 2026-11-21 | Phase 1 | 完成联系人、联系人组、通知事件与投递记录 |
 | 2026-11-21 | Phase 2 | 完成短信通道、配置测试与短信失败降级邮件 |
+| 2026-11-21 | Phase 3 | 完成语音通道、测试呼叫与语音失败降级 |
