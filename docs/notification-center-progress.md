@@ -2,7 +2,7 @@
 
 - 设计文档：`docs/notification-center-design.md`
 - 创建日期：2026-11-21
-- 当前阶段：Phase 3 已完成
+- 当前阶段：Phase 4 已完成
 - 分支：`feature/ci-image-build-monitor`
 
 ## 阶段进度总览
@@ -13,7 +13,7 @@
 | Phase 1 | 联系人 + 投递记录 | 已完成 | 2026-11-21 |
 | Phase 2 | 短信 + 降级 | 已完成 | 2026-11-21 |
 | Phase 3 | 语音播报 | 已完成 | 2026-11-21 |
-| Phase 4 | IVR 按键动作 | 未开始 | - |
+| Phase 4 | IVR 按键动作 | 已完成 | 2026-11-21 |
 | Phase 5 | 升级与运营 | 未开始 | - |
 
 ## Phase 0：改名与邮件入口收敛
@@ -426,6 +426,109 @@
 - Git 提交：`869a409`（feat(notifications): phase 3 add voice channel and fallback）
 - 远程分支：`origin/feature/ci-image-build-monitor`
 
+## Phase 4：IVR 按键动作
+
+### 目标
+
+- 接入语音服务商回调接口
+- 解析 DTMF 按键并执行动作
+- 回调 token、幂等、白名单与审计
+- 高危动作二次确认
+- 补充 GitHub 重试/取消能力
+
+### 完成内容
+
+1. IVR 数据与回调：
+   - 新增 `notification_actions` 表与 `NotificationAction` 模型
+     - 记录 call_id、按键、动作、阶段、状态、执行结果
+     - `(provider_call_id, digit, stage)` 唯一约束保证回调幂等
+   - 新增 `backend/notifications/ivr.py`
+     - 回调 token 校验
+     - 支持 `call_id/CallId`、`digit/Dtmf`、`phone/CalledNumber` 字段映射
+     - 手机号白名单校验
+     - 按 `provider_message_id` 关联语音投递记录
+
+2. 按键动作：
+   - 默认映射：`1=retry`、`2=abort`、`3=ack`、`9=ignore`
+   - `ack/ignore` 立即执行
+   - `retry/abort` 需二次确认：按 1 确认，按 0 取消
+   - 高危动作限制来源事件，默认仅 `image_build_monitor`
+   - 记录动作状态、结果与执行时间
+
+3. GitHub 能力：
+   - `GitHubClient.rerun_failed_jobs(run_id)`
+   - `GitHubClient.cancel_run(run_id)`
+   - 修复 `_request` 对 201/204 空响应体的处理
+
+4. API：
+   - `POST /api/v1/notifications/voice/callback?token=...`（公开回调 + token 校验）
+   - `GET /api/v1/notifications/actions`
+
+5. 前端：
+   - `VoicePanel` 增加 IVR 配置
+     - 启用 IVR、回调 Token、允许来源、允许手机号
+     - 展示回调地址
+   - 增加最近 IVR 操作审计表格
+
+### 变更文件清单
+
+后端：
+
+- `backend/notifications/ivr.py`（新增）
+- `backend/notifications/voice.py`
+- `backend/notifications/service.py`（Phase 4 未新增逻辑，沿用渠道链路）
+- `backend/api/v1/notifications.py`
+- `backend/contracts/schemas/notifications.py`
+- `backend/infrastructure/persistence/models/notifications.py`
+- `backend/infrastructure/persistence/models/__init__.py`
+- `backend/infrastructure/clients/github_client.py`
+- `database/migrations/notifications.py`
+
+前端：
+
+- `frontend/src/components/notifications/VoicePanel.tsx`
+- `frontend/src/hooks/useNotifications.ts`
+- `frontend/src/services/notifications.ts`
+
+文档：
+
+- `docs/notification-center-progress.md`
+
+### 验证记录
+
+- 后端相关文件 `python -m py_compile` 通过。
+- 前端 `pnpm build`（含 `tsc`）通过。
+- 迁移验证：`notification_actions` 表创建成功。
+- 回调验证：
+  - 错误 token 返回“回调 token 校验失败”
+  - `digit=3` 立即执行确认动作成功
+  - `digit=1` 对 `retry` 返回二次确认提示
+  - `digit=0` 成功取消待确认动作
+- 幂等约束：同一 `(call_id, digit, stage)` 重复回调复用记录。
+- 测试事件与动作已清理。
+- 前后端容器均 healthy。
+
+### 验收对照
+
+| 验收项 | 结果 |
+| --- | --- |
+| 语音回调可正确落库 | 已完成 |
+| 按键可触发确认/忽略 | 已完成 |
+| 重试/取消需二次确认 | 已完成 |
+| 回调 token 校验 | 已完成 |
+| 手机号来源白名单 | 已完成 |
+| 高危动作有来源限制 | 已完成 |
+| 重复回调幂等 | 已完成 |
+| 操作审计可查询 | 已完成 |
+
+### 溯源信息
+
+- 实施批次：`notifications-phase4`
+- 实施日期：2026-11-21
+- 关联需求：IVR 按键、二次确认、审计、GitHub 操作
+- Git 提交：`702f96c`（feat(notifications): phase 4 add ivr callbacks and actions）
+- 远程分支：`origin/feature/ci-image-build-monitor`
+
 ## 变更记录
 
 | 日期 | 阶段 | 说明 |
@@ -436,3 +539,4 @@
 | 2026-11-21 | Phase 1 | 完成联系人、联系人组、通知事件与投递记录 |
 | 2026-11-21 | Phase 2 | 完成短信通道、配置测试与短信失败降级邮件 |
 | 2026-11-21 | Phase 3 | 完成语音通道、测试呼叫与语音失败降级 |
+| 2026-11-21 | Phase 4 | 完成 IVR 回调、按键动作、二次确认与审计 |
