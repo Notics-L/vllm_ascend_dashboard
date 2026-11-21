@@ -336,6 +336,31 @@
   background: #eaf3ff;
 }
 
+.nc-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nc-phone-code {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 20px;
+  border-radius: 4px;
+  background: #f0f5ff;
+  border: 1px solid #d6e4ff;
+  color: #2f54eb;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.nc-phone-number {
+  color: #1f2937;
+  letter-spacing: 0.3px;
+}
+
 .nc-test-result {
   margin-top: 12px;
   padding: 10px 12px;

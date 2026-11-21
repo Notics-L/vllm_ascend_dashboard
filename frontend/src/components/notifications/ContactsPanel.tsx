@@ -10,6 +10,53 @@ import type { ContactPayload, GroupPayload, NotificationContact, NotificationGro
 
 const { Text } = Typography
 
+const COUNTRY_CODES = [
+  { value: '+86', label: '🇨🇳 +86' },
+  { value: '+852', label: '🇭🇰 +852' },
+  { value: '+853', label: '🇲🇴 +853' },
+  { value: '+886', label: '🇹🇼 +886' },
+  { value: '+1', label: '🇺🇸 +1' },
+  { value: '+81', label: '🇯🇵 +81' },
+  { value: '+82', label: '🇰🇷 +82' },
+  { value: '+65', label: '🇸🇬 +65' },
+  { value: '+44', label: '🇬🇧 +44' },
+  { value: '+49', label: '🇩🇪 +49' },
+  { value: '+33', label: '🇫🇷 +33' },
+  { value: '+61', label: '🇦🇺 +61' },
+  { value: '+91', label: '🇮🇳 +91' },
+]
+
+const DIAL_CODES = COUNTRY_CODES.map((c) => c.value).sort((a, b) => b.length - a.length)
+
+function splitPhone(phone?: string | null): { code: string; number: string } {
+  if (!phone) return { code: '+86', number: '' }
+  const code = DIAL_CODES.find((item) => phone.startsWith(item)) || '+86'
+  return { code, number: phone.slice(code.length) }
+}
+
+function formatPhoneText(phone?: string | null): string {
+  if (!phone) return '-'
+  const { code, number } = splitPhone(phone)
+  if (code === '+86' && number.length === 11) {
+    return `${code} ${number.slice(0, 3)} ${number.slice(3, 7)} ${number.slice(7)}`
+  }
+  return `${code} ${number.replace(/(\d{4})(?=\d)/g, '$1 ')}`.trim()
+}
+
+function PhoneCell({ phone }: { phone?: string | null }) {
+  if (!phone) return <Text type="secondary">-</Text>
+  const { code, number } = splitPhone(phone)
+  const formatted = code === '+86' && number.length === 11
+    ? `${number.slice(0, 3)} ${number.slice(3, 7)} ${number.slice(7)}`
+    : number.replace(/(\d{4})(?=\d)/g, '$1 ')
+  return (
+    <span className="nc-phone">
+      <span className="nc-phone-code">{code}</span>
+      <span className="nc-phone-number">{formatted}</span>
+    </span>
+  )
+}
+
 export default function ContactsPanel() {
   const contactsQuery = useContacts()
   const groupsQuery = useGroups()
@@ -30,19 +77,33 @@ export default function ContactsPanel() {
   const openContact = (row?: NotificationContact) => {
     setEditingContact(row ?? null)
     contactForm.resetFields()
+    const phoneParts = splitPhone(row?.phone)
     contactForm.setFieldsValue(row ? {
-      name: row.name, email: row.email, phone: row.phone, group_ids: row.group_ids, enabled: row.enabled,
-    } : { enabled: true, group_ids: [] })
+      name: row.name,
+      email: row.email,
+      phone_country_code: phoneParts.code,
+      phone_number: phoneParts.number,
+      group_ids: row.group_ids,
+      enabled: row.enabled,
+    } : { enabled: true, group_ids: [], phone_country_code: '+86', phone_number: '' })
     setContactOpen(true)
   }
 
   const submitContact = async () => {
     const values = await contactForm.validateFields()
-    if (!values.email && !values.phone) {
+    const phoneNumber = (values.phone_number || '').replace(/[\s-]/g, '')
+    const phone = phoneNumber ? `${values.phone_country_code || '+86'}${phoneNumber}` : null
+    if (!values.email && !phone) {
       message.error('邮箱和手机号至少填写一个')
       return
     }
-    const payload: ContactPayload = { ...values, email: values.email || null, phone: values.phone || null }
+    const payload: ContactPayload = {
+      name: values.name,
+      email: values.email || null,
+      phone,
+      group_ids: values.group_ids || [],
+      enabled: values.enabled,
+    }
     try {
       await saveContact.mutateAsync({ id: editingContact?.id, data: payload })
       message.success(editingContact ? '联系人已更新' : '联系人已创建')
@@ -97,7 +158,7 @@ export default function ContactsPanel() {
           columns={[
             { title: '姓名', dataIndex: 'name', width: 140, render: (v) => <Text strong>{v}</Text> },
             { title: '邮箱', dataIndex: 'email', render: (v) => v || '-' },
-            { title: '手机号', dataIndex: 'phone', width: 150, render: (v) => v || '-' },
+            { title: '手机号', dataIndex: 'phone', width: 200, render: (v) => <PhoneCell phone={v} /> },
             {
               title: '所属组', dataIndex: 'group_ids', width: 220,
               render: (ids: number[]) => (
@@ -194,8 +255,24 @@ export default function ContactsPanel() {
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}>
             <Input placeholder="owner@example.com" />
           </Form.Item>
-          <Form.Item name="phone" label="手机号" extra="建议使用 E.164 格式，例如 +8613800000000">
-            <Input placeholder="+8613800000000" />
+          <Form.Item label="手机号" extra="选择国家/地区代码后填写手机号，系统自动保存为 E.164 格式">
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="phone_country_code" noStyle>
+                <Select
+                  style={{ width: 120 }}
+                  options={COUNTRY_CODES}
+                  showSearch
+                  optionFilterProp="label"
+                />
+              </Form.Item>
+              <Form.Item
+                name="phone_number"
+                noStyle
+                rules={[{ pattern: /^[0-9\s-]*$/, message: '手机号只能包含数字' }]}
+              >
+                <Input placeholder="13800000000" style={{ flex: 1 }} />
+              </Form.Item>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="group_ids" label="所属联系人组">
             <Select mode="multiple" placeholder="可选" options={groups.map((g) => ({ value: g.id, label: g.name }))} />
@@ -227,7 +304,7 @@ export default function ContactsPanel() {
             <Select
               mode="multiple"
               placeholder="选择联系人"
-              options={contacts.map((c) => ({ value: c.id, label: `${c.name}${c.phone ? ` · ${c.phone}` : ''}` }))}
+              options={contacts.map((c) => ({ value: c.id, label: `${c.name}${c.phone ? ` · ${formatPhoneText(c.phone)}` : ''}` }))}
             />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked">
