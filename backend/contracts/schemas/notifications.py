@@ -103,3 +103,22 @@ class EventResponse(BaseModel):
     summary: str | None
     status: str
     created_at: datetime | None
+
+
+class SmsConfigUpdate(BaseModel):
+    enabled: bool | None = None
+    provider: str | None = None
+    access_key_id: str | None = None
+    access_key_secret: str | None = None
+    sign_name: str | None = None
+    template_code: str | None = None
+    template_param_key: str | None = None
+    region_id: str | None = None
+    fallback_enabled: bool | None = None
+    apply_to: str | None = None
+    test_phones: list[str] | None = None
+
+
+class SmsTestRequest(BaseModel):
+    phones: list[str] = Field(min_length=1)
+    text: str = "vLLM Ascend 通知服务短信测试"

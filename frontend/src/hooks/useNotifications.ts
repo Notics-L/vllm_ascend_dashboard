@@ -60,3 +60,18 @@ export const useRetryDelivery = () => {
   const invalidate = useInvalidate()
   return useMutation({ mutationFn: api.retryDelivery, onSuccess: invalidate })
 }
+
+export const useSmsConfig = () =>
+  useQuery({ queryKey: ['notification-sms-config'], queryFn: api.getSmsConfig })
+
+export const useUpdateSmsConfig = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.updateSmsConfig,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-sms-config'] }),
+  })
+}
+
+export const useTestSms = () => useMutation({
+  mutationFn: (payload: { phones: string[]; text?: string }) => api.testSms(payload.phones, payload.text),
+})

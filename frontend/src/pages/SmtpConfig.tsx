@@ -13,6 +13,7 @@ import type { SmtpTestResult } from '../services/smtpConfig'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import ContactsPanel from '../components/notifications/ContactsPanel'
 import DeliveriesPanel from '../components/notifications/DeliveriesPanel'
+import SmsPanel from '../components/notifications/SmsPanel'
 
 const { Text, Title } = Typography
 
@@ -247,17 +248,15 @@ function SmtpConfigPage() {
         <ContactsPanel />
       ) : activeTab === 'deliveries' ? (
         <DeliveriesPanel />
+      ) : activeTab === 'sms' ? (
+        <SmsPanel />
       ) : (
         <Card>
           <Alert
             type="info"
             showIcon
-            message={activeTab === 'sms' ? '短信通道规划中' : '语音电话通道规划中'}
-            description={
-              activeTab === 'sms'
-                ? '后续阶段将支持短信服务商配置、模板管理、测试发送与失败降级。'
-                : '后续阶段将支持语音播报、按键确认与未接听降级短信。'
-            }
+            message="语音电话通道规划中"
+            description="后续阶段将支持语音播报、按键确认与未接听降级短信。"
           />
         </Card>
       )}

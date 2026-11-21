@@ -12,11 +12,53 @@ from contracts.schemas.notifications import (
     ContactUpdate,
     GroupCreate,
     GroupUpdate,
+    SmsConfigUpdate,
+    SmsTestRequest,
 )
 from notifications.service import NotificationDispatcher
+from notifications.sms import get_public_sms_config, save_sms_config
 
 router = APIRouter()
 
+
+
+# ----------------------------------------------------------------------
+# SMS channel
+# ----------------------------------------------------------------------
+
+@router.get("/channels/sms")
+async def get_sms_channel(db: DbSession, _: CurrentAdminUser) -> dict[str, Any]:
+    return await get_public_sms_config(db)
+
+
+@router.put("/channels/sms")
+async def update_sms_channel(
+    payload: SmsConfigUpdate,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    result = await save_sms_config(db, payload.model_dump(exclude_unset=True))
+    await db.commit()
+    return result
+
+
+@router.post("/channels/sms/test")
+async def test_sms_channel(
+    payload: SmsTestRequest,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    result = await NotificationDispatcher(db).send_sms(
+        recipients=payload.phones,
+        text=payload.text,
+        source="notification_test",
+        event_type="sms_test",
+        severity="info",
+        title="短信通道测试",
+        dedupe_key=None,
+    )
+    await db.commit()
+    return result
 
 # ----------------------------------------------------------------------
 # Contacts

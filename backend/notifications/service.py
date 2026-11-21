@@ -58,51 +58,173 @@ class NotificationDispatcher:
         payload: dict[str, Any] | None = None,
         dedupe_key: str | None = None,
     ) -> dict[str, Any]:
-        """通过统一配置发送 HTML 邮件，并记录事件与投递结果。"""
-        if not recipients:
-            return {"success": False, "error": "No recipients configured"}
-
-        smtp_config = config if config is not None else await self.get_email_config()
-        event = await self._get_or_create_event(
+        """仅通过邮件通道发送（向后兼容入口）。"""
+        return await self.dispatch(
+            email_subject=subject,
+            email_html=html_content,
+            email_recipients=recipients,
+            cc_recipients=cc_recipients,
+            images=images,
+            config=config,
+            channels=["email"],
             source=source,
             event_type=event_type,
             severity=severity,
-            title=title or subject,
+            title=title,
             summary=summary,
             payload=payload,
             dedupe_key=dedupe_key,
         )
-        deliveries = []
-        for recipient in recipients + (cc_recipients or []):
-            deliveries.append(await self._create_delivery(event, "email", recipient, "smtp"))
 
-        result = await send_email(
-            subject=subject,
-            html_content=html_content,
-            recipients=recipients,
-            cc_recipients=cc_recipients,
-            smtp_host=smtp_config.get("smtp_host", ""),
-            smtp_port=int(smtp_config.get("smtp_port", 587)),
-            smtp_username=smtp_config.get("smtp_username", ""),
-            smtp_password=smtp_config.get("smtp_password", ""),
-            smtp_use_tls=bool(smtp_config.get("smtp_use_tls", True)),
-            from_email=smtp_config.get("from_email", ""),
-            images=images,
+    async def resolve_channels(self, severity: str) -> list[str]:
+        """根据短信配置返回渠道顺序；未启用短信时仅邮件。"""
+        from notifications.sms import get_sms_config
+
+        sms_config = await get_sms_config(self.db)
+        apply_to = sms_config.get("apply_to") or "critical"
+        if (
+            sms_config.get("enabled")
+            and sms_config.get("fallback_enabled", True)
+            and (apply_to == "all" or severity == "critical")
+        ):
+            return ["sms", "email"]
+        return ["email"]
+
+    async def send_sms(
+        self,
+        *,
+        recipients: list[str],
+        text: str,
+        source: str = "notification",
+        event_type: str = "sms",
+        severity: str = "info",
+        title: str | None = None,
+        summary: str | None = None,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
+        """仅通过短信通道发送。"""
+        return await self.dispatch(
+            sms_text=text,
+            sms_recipients=recipients,
+            channels=["sms"],
+            source=source,
+            event_type=event_type,
+            severity=severity,
+            title=title or text[:80],
+            summary=summary or text,
+            payload=payload,
+            dedupe_key=dedupe_key,
         )
-        success = bool(result.get("success"))
-        now = datetime.now(UTC)
-        for delivery in deliveries:
-            delivery.status = "sent" if success else "failed"
-            delivery.sent_at = now
-            delivery.delivered_at = now if success else None
-            delivery.error = None if success else result.get("error")
-        event.status = "sent" if success else "failed"
+
+    async def dispatch(
+        self,
+        *,
+        email_subject: str | None = None,
+        email_html: str | None = None,
+        email_recipients: list[str] | None = None,
+        cc_recipients: list[str] | None = None,
+        images: dict[str, bytes] | None = None,
+        config: dict[str, Any] | None = None,
+        sms_text: str | None = None,
+        sms_recipients: list[str] | None = None,
+        channels: list[str] | None = None,
+        source: str = "notification",
+        event_type: str = "notification",
+        severity: str = "info",
+        title: str | None = None,
+        summary: str | None = None,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
+        """按渠道顺序发送，成功即停止，失败自动降级到下一渠道。"""
+        from notifications.sms import get_sms_config
+
+        email_recipients = [r for r in (email_recipients or []) if r]
+        sms_recipients = [p for p in (sms_recipients or []) if p]
+        sms_config = await get_sms_config(self.db)
+        if not sms_recipients and email_recipients:
+            sms_recipients = await self._phones_for_emails(email_recipients)
+
+        planned = list(channels or ["email"])
+        if "sms" in planned and (
+            not sms_config.get("enabled") or not sms_text or not sms_recipients
+        ):
+            planned = [channel for channel in planned if channel != "sms"]
+        if not planned:
+            return {"success": False, "error": "没有可用的通知渠道"}
+
+        event = await self._get_or_create_event(
+            source=source,
+            event_type=event_type,
+            severity=severity,
+            title=title or email_subject or (sms_text or "")[:80],
+            summary=summary,
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+        delivery_ids: list[int] = []
+        results: list[dict[str, Any]] = []
+        used_channel: str | None = None
+        any_success = False
+
+        for channel in planned:
+            if channel == "email":
+                if not (email_subject and email_html and email_recipients):
+                    continue
+                result, ids = await self._send_email_channel(
+                    event=event,
+                    subject=email_subject,
+                    html_content=email_html,
+                    recipients=email_recipients,
+                    cc_recipients=cc_recipients or [],
+                    images=images,
+                    config=config,
+                )
+            elif channel == "sms":
+                result, ids = await self._send_sms_channel(
+                    event=event,
+                    recipients=sms_recipients,
+                    text=sms_text or "",
+                    config=sms_config,
+                )
+            else:
+                continue
+            result = {**result, "channel": channel}
+            results.append(result)
+            delivery_ids.extend(ids)
+            if result.get("success"):
+                any_success = True
+                used_channel = channel
+                break
+
+        event.status = "sent" if any_success else "failed"
         await self.db.flush()
+        last_error = next(
+            (item.get("error") for item in reversed(results) if item.get("error")), None
+        )
         return {
-            **result,
+            "success": any_success,
+            "channel": used_channel,
+            "error": None if any_success else (last_error or "所有渠道发送失败"),
             "event_id": event.id,
-            "delivery_ids": [delivery.id for delivery in deliveries],
+            "delivery_ids": delivery_ids,
+            "results": results,
         }
+
+    async def _phones_for_emails(self, emails: list[str]) -> list[str]:
+        if not emails:
+            return []
+        rows = (
+            await self.db.execute(
+                select(NotificationContact.phone).where(
+                    NotificationContact.enabled.is_(True),
+                    NotificationContact.phone.is_not(None),
+                    NotificationContact.email.in_(emails),
+                )
+            )
+        ).scalars().all()
+        return [phone for phone in rows if phone]
 
     async def _get_or_create_event(
         self,
@@ -164,6 +286,81 @@ class NotificationDispatcher:
         self.db.add(delivery)
         await self.db.flush()
         return delivery
+
+    async def _send_email_channel(
+        self,
+        *,
+        event: NotificationEvent,
+        subject: str,
+        html_content: str,
+        recipients: list[str],
+        cc_recipients: list[str],
+        images: dict[str, bytes] | None,
+        config: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], list[int]]:
+        smtp_config = config if config is not None else await self.get_email_config()
+        deliveries = [
+            await self._create_delivery(event, "email", recipient, "smtp")
+            for recipient in recipients + cc_recipients
+        ]
+        result = await send_email(
+            subject=subject,
+            html_content=html_content,
+            recipients=recipients,
+            cc_recipients=cc_recipients,
+            smtp_host=smtp_config.get("smtp_host", ""),
+            smtp_port=int(smtp_config.get("smtp_port", 587)),
+            smtp_username=smtp_config.get("smtp_username", ""),
+            smtp_password=smtp_config.get("smtp_password", ""),
+            smtp_use_tls=bool(smtp_config.get("smtp_use_tls", True)),
+            from_email=smtp_config.get("from_email", ""),
+            images=images,
+        )
+        success = bool(result.get("success"))
+        now = datetime.now(UTC)
+        for delivery in deliveries:
+            delivery.status = "sent" if success else "failed"
+            delivery.sent_at = now
+            delivery.delivered_at = now if success else None
+            delivery.error = None if success else result.get("error")
+        return result, [delivery.id for delivery in deliveries]
+
+    async def _send_sms_channel(
+        self,
+        *,
+        event: NotificationEvent,
+        recipients: list[str],
+        text: str,
+        config: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[int]]:
+        from notifications.sms import send_sms
+
+        now = datetime.now(UTC)
+        deliveries = [
+            await self._create_delivery(event, "sms", phone, config.get("provider"))
+            for phone in recipients
+        ]
+        results = []
+        for delivery, phone in zip(deliveries, recipients):
+            result = await send_sms(config, phone, text)
+            results.append(result)
+            success = bool(result.get("success"))
+            delivery.status = "sent" if success else "failed"
+            delivery.provider = result.get("provider") or delivery.provider
+            delivery.provider_message_id = result.get("provider_message_id")
+            delivery.error = None if success else result.get("error")
+            delivery.sent_at = now if success else None
+            delivery.delivered_at = now if success else None
+        success = any(item.get("success") for item in results)
+        error = next((item.get("error") for item in results if item.get("error")), None)
+        return (
+            {
+                "success": success,
+                "error": None if success else error,
+                "provider": results[0].get("provider") if results else None,
+            },
+            [delivery.id for delivery in deliveries],
+        )
 
     async def retry_delivery(self, delivery_id: int) -> dict[str, Any] | None:
         delivery = await self.db.get(NotificationDelivery, delivery_id)

@@ -1280,15 +1280,22 @@ class ImageBuildMonitorService:
 </div>
 </body></html>"""
 
+        severity = "critical" if any(a.severity == "critical" for a in alerts) else "warning"
+        sms_text = (
+            f"【镜像构建告警】{wf.workflow_name} 共 {len(alerts)} 条："
+            + "；".join(a.title for a in alerts[:2])
+        )[:180]
         try:
-            result = await dispatcher.send_email(
-                subject=subject,
-                html_content=html,
-                recipients=recipients,
+            result = await dispatcher.dispatch(
+                email_subject=subject,
+                email_html=html,
+                email_recipients=recipients,
                 config=smtp_config,
+                sms_text=sms_text,
+                channels=await dispatcher.resolve_channels(severity),
                 source="image_build_monitor",
                 event_type="/".join(sorted({a.alert_type for a in alerts})),
-                severity="critical" if any(a.severity == "critical" for a in alerts) else "warning",
+                severity=severity,
                 title=f"{wf.repo_name}/{wf.workflow_name} 镜像构建告警",
                 summary="；".join(a.title for a in alerts),
                 payload={
@@ -1297,7 +1304,7 @@ class ImageBuildMonitorService:
                     "run_ids": [a.github_run_id for a in alerts if a.github_run_id],
                 },
                 dedupe_key=(
-                    f"image_build_monitor:email:{wf.id}:"
+                    f"image_build_monitor:{wf.id}:"
                     + ",".join(str(a.id) for a in sorted(alerts, key=lambda item: item.id or 0))
                 ),
             )

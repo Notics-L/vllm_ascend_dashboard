@@ -118,3 +118,46 @@ export const retryDelivery = async (id: number): Promise<{ success: boolean }> =
   const { data } = await api.post<{ success: boolean }>(`/notifications/deliveries/${id}/retry`)
   return data
 }
+
+export interface SmsConfig {
+  enabled: boolean
+  provider: string
+  access_key_id: string
+  access_key_secret_set: boolean
+  sign_name: string
+  template_code: string
+  template_param_key: string
+  region_id: string
+  fallback_enabled: boolean
+  apply_to: 'critical' | 'all'
+  test_phones: string[]
+}
+
+export interface SmsConfigUpdate {
+  enabled?: boolean
+  provider?: string
+  access_key_id?: string
+  access_key_secret?: string
+  sign_name?: string
+  template_code?: string
+  template_param_key?: string
+  region_id?: string
+  fallback_enabled?: boolean
+  apply_to?: 'critical' | 'all'
+  test_phones?: string[]
+}
+
+export const getSmsConfig = async (): Promise<SmsConfig> => {
+  const { data } = await api.get<SmsConfig>('/notifications/channels/sms')
+  return data
+}
+
+export const updateSmsConfig = async (payload: SmsConfigUpdate): Promise<SmsConfig> => {
+  const { data } = await api.put<SmsConfig>('/notifications/channels/sms', payload)
+  return data
+}
+
+export const testSms = async (phones: string[], text?: string): Promise<{ success: boolean; error?: string; results?: Array<Record<string, unknown>> }> => {
+  const { data } = await api.post('/notifications/channels/sms/test', { phones, text })
+  return data
+}

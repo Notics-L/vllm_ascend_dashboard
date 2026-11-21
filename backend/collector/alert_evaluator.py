@@ -207,27 +207,30 @@ class AlertEvaluator:
 </table>
 <p style="color:#888;font-size:12px;">vLLM Ascend Dashboard 自动发送</p></body></html>"""
 
+        summary = (
+            f"实际值 {history.actual_value}，{cluster_info}，"
+            f"触发时间 {history.triggered_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
         try:
-            result = await dispatcher.send_email(
-                subject=subject,
-                html_content=html,
-                recipients=[recipient_email],
+            result = await dispatcher.dispatch(
+                email_subject=subject,
+                email_html=html,
+                email_recipients=[recipient_email],
                 config=smtp_config,
+                sms_text=f"【vLLM Ascend 告警】{rule.name}：{summary}"[:180],
+                channels=await dispatcher.resolve_channels("critical"),
                 source="alert_rules",
                 event_type="resource_alert",
                 severity="critical",
                 title=rule.name,
-                summary=(
-                    f"实际值 {history.actual_value}，{cluster_info}，"
-                    f"触发时间 {history.triggered_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                ),
+                summary=summary,
                 payload={
                     "rule_id": rule.id,
                     "history_id": history.id,
                     "cluster_id": history.cluster_id,
                     "node_name": history.node_name,
                 },
-                dedupe_key=f"alert_rules:email:{history.id}",
+                dedupe_key=f"alert_rules:{history.id}",
             )
             if result.get("success"):
                 return True, None
