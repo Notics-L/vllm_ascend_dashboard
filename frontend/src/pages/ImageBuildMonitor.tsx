@@ -1336,8 +1336,8 @@ export default function ImageBuildMonitor() {
           description={
             <span>
               若发送失败提示「SMTP 未配置」，请先完成 SMTP 参数配置。
-              <Typography.Link onClick={() => navigate('/admin/smtp-config')}>
-                前往邮件服务配置
+              <Typography.Link onClick={() => navigate('/admin/notifications')}>
+                前往通知服务配置
               </Typography.Link>
             </span>
           }

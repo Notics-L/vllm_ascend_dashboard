@@ -18,7 +18,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.config import settings
-from infrastructure.core.email import get_smtp_config, send_email
 from infrastructure.persistence.models import (
     CIResult,
     DailyReportHistory,
@@ -28,6 +27,7 @@ from infrastructure.persistence.models import (
 )
 from infrastructure.persistence.models.test_board import TestCase, TestRun
 from infrastructure.storage.daily_data_file_store import DailyDataFileStore
+from notifications.service import NotificationDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -637,7 +637,8 @@ class DailyReportService:
             raise ValueError("Report draft has no generated content")
 
         report_config = await self._get_report_config()
-        smtp_config = await get_smtp_config(self.db)
+        dispatcher = NotificationDispatcher(self.db)
+        smtp_config = await dispatcher.get_email_config()
         recipients = [item.strip() for item in report_config.get("report_recipients", "").split(",") if item.strip()]
         cc_recipients = [item.strip() for item in report_config.get("report_cc_recipients", "").split(",") if item.strip()]
         if not recipients:
@@ -649,18 +650,13 @@ class DailyReportService:
         await self.db.commit()
         try:
             html_content, chart_images = self.build_draft_email(history)
-            result = await send_email(
+            result = await dispatcher.send_email(
                 subject=history.subject,
                 html_content=html_content,
                 recipients=recipients,
                 cc_recipients=cc_recipients,
-                smtp_host=smtp_config.get("smtp_host", ""),
-                smtp_port=int(smtp_config.get("smtp_port", 587)),
-                smtp_username=smtp_config.get("smtp_username", ""),
-                smtp_password=smtp_config.get("smtp_password", ""),
-                smtp_use_tls=bool(smtp_config.get("smtp_use_tls", True)),
-                from_email=smtp_config.get("from_email", ""),
                 images=chart_images or None,
+                config=smtp_config,
             )
         except Exception as exc:
             history.status = "failed"
@@ -742,14 +738,10 @@ class DailyReportService:
             DailyReportHistory 记录
         """
         report_config = await self._get_report_config()
-        smtp_config = await get_smtp_config(self.db)
+        dispatcher = NotificationDispatcher(self.db)
+        smtp_config = await dispatcher.get_email_config()
 
         smtp_host = smtp_config.get("smtp_host", "")
-        smtp_port = int(smtp_config.get("smtp_port", 587))
-        smtp_username = smtp_config.get("smtp_username", "")
-        smtp_password = smtp_config.get("smtp_password", "")
-        smtp_use_tls = bool(smtp_config.get("smtp_use_tls", True))
-        from_email = smtp_config.get("from_email", "")
         recipients_str = report_config.get("report_recipients", "")
         cc_str = report_config.get("report_cc_recipients", "")
 
@@ -814,18 +806,13 @@ class DailyReportService:
                 await self.db.commit()
                 return history
 
-            result = await send_email(
+            result = await dispatcher.send_email(
                 subject=subject,
                 html_content=html_content,
                 recipients=recipients,
                 cc_recipients=cc_recipients,
-                smtp_host=smtp_host,
-                smtp_port=smtp_port,
-                smtp_username=smtp_username,
-                smtp_password=smtp_password,
-                smtp_use_tls=smtp_use_tls,
-                from_email=from_email,
                 images=chart_images if chart_images else None,
+                config=smtp_config,
             )
 
             if result["success"]:

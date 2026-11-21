@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
   Card, Form, Input, InputNumber, Switch, Button, Space, Tag, Alert,
-  Typography, Divider, Modal, Spin,
+  Typography, Divider, Modal, Spin, Tabs,
 } from 'antd'
 import {
-  MailOutlined, KeyOutlined, InfoCircleOutlined, SendOutlined, ExperimentOutlined,
+  MailOutlined, KeyOutlined, InfoCircleOutlined, SendOutlined, ExperimentOutlined, NotificationOutlined,
 } from '@ant-design/icons'
 import { useSmtpConfig, useUpdateSmtpConfig } from '../hooks/useSmtpConfig'
 import type { SmtpConfigUpdate } from '../services/smtpConfig'
@@ -26,6 +26,7 @@ function SmtpConfigPage() {
 
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
+  const [activeTab, setActiveTab] = useState('email')
 
   useEffect(() => {
     if (config) {
@@ -77,15 +78,35 @@ function SmtpConfigPage() {
 
   return (
     <div>
+      <Card style={{ marginBottom: 16 }}>
+        <Title level={4} style={{ marginBottom: 4 }}>
+          <NotificationOutlined style={{ marginRight: 8 }} />
+          通知服务
+        </Title>
+        <Text type="secondary">
+          统一管理邮件、短信与语音电话通知。当前阶段启用邮件通道，短信与语音将在后续阶段接入。
+        </Text>
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          style={{ marginTop: 16, marginBottom: -16 }}
+          items={[
+            { key: 'email', label: '邮件' },
+            { key: 'sms', label: '短信' },
+            { key: 'voice', label: '语音电话' },
+          ]}
+        />
+      </Card>
+      {activeTab === 'email' ? (
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
           <div>
             <Title level={4}>
               <MailOutlined style={{ marginRight: 8 }} />
-              邮件外发服务器配置
+              邮件通道（SMTP）
             </Title>
             <Text type="secondary">
-              SMTP 配置供每日运行报告和告警规则共用。修改后立即生效。
+              邮件通道供每日运行报告和告警通知共用。修改后立即生效。
             </Text>
           </div>
           {isSuperAdmin && (
@@ -218,6 +239,20 @@ function SmtpConfigPage() {
           </>
         )}
       </Card>
+      ) : (
+        <Card>
+          <Alert
+            type="info"
+            showIcon
+            message={activeTab === 'sms' ? '短信通道规划中' : '语音电话通道规划中'}
+            description={
+              activeTab === 'sms'
+                ? '后续阶段将支持短信服务商配置、模板管理、测试发送与失败降级。'
+                : '后续阶段将支持语音播报、按键确认与未接听降级短信。'
+            }
+          />
+        </Card>
+      )}
     </div>
   )
 }
