@@ -58,6 +58,25 @@ export interface NotificationDelivery {
   created_at: string | null
 }
 
+export interface InboxItem {
+  id: number
+  event_id: number
+  channel: 'sms' | 'voice'
+  recipient: string
+  content: string
+  title: string
+  severity: string
+  status: string
+  provider: string | null
+  provider_message_id: string | null
+  error: string | null
+  created_at: string | null
+  sent_at: string | null
+  segments?: number
+  answered?: boolean
+  duration_seconds?: number | null
+}
+
 export interface PagedResult<T> {
   total: number
   page: number
@@ -116,6 +135,15 @@ export const listDeliveries = async (params?: {
 
 export const retryDelivery = async (id: number): Promise<{ success: boolean }> => {
   const { data } = await api.post<{ success: boolean }>(`/notifications/deliveries/${id}/retry`)
+  return data
+}
+
+export const listInbox = async (params?: {
+  channel?: 'sms' | 'voice'
+  page?: number
+  page_size?: number
+}): Promise<PagedResult<InboxItem>> => {
+  const { data } = await api.get<PagedResult<InboxItem>>('/notifications/inbox', { params })
   return data
 }
 

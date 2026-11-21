@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Form, Input, InputNumber, Modal, Space, Spin, Switch, Tabs, Tag,
 } from 'antd'
 import {
-  BarChartOutlined, ExperimentOutlined, HistoryOutlined, InfoCircleOutlined, MailOutlined,
+  BarChartOutlined, ExperimentOutlined, HistoryOutlined, InboxOutlined, InfoCircleOutlined, MailOutlined,
   MessageOutlined, NotificationOutlined, PhoneOutlined, SendOutlined, SettingOutlined, TeamOutlined,
 } from '@ant-design/icons'
 import { useSmtpConfig, useUpdateSmtpConfig } from '../hooks/useSmtpConfig'
@@ -17,6 +17,7 @@ import SmsPanel from '../components/notifications/SmsPanel'
 import VoicePanel from '../components/notifications/VoicePanel'
 import PolicyPanel from '../components/notifications/PolicyPanel'
 import MetricsPanel from '../components/notifications/MetricsPanel'
+import InboxPanel from '../components/notifications/InboxPanel'
 import { SectionCard } from '../components/notifications/ui'
 import './NotificationCenter.css'
 
@@ -120,6 +121,7 @@ function SmtpConfigPage() {
             { key: 'metrics', label: <Space><BarChartOutlined />运营指标</Space> },
             { key: 'sms', label: <Space><MessageOutlined />短信</Space> },
             { key: 'voice', label: <Space><PhoneOutlined />语音电话</Space> },
+            { key: 'mock-inbox', label: <Space><InboxOutlined />收件箱</Space> },
           ]}
         />
       </div>
@@ -273,6 +275,7 @@ function SmtpConfigPage() {
         {activeTab === 'metrics' && <MetricsPanel />}
         {activeTab === 'sms' && <SmsPanel />}
         {activeTab === 'voice' && <VoicePanel />}
+        {activeTab === 'mock-inbox' && <InboxPanel />}
       </div>
     </div>
   )

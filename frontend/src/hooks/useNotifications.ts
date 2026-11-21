@@ -72,9 +72,13 @@ export const useUpdateSmsConfig = () => {
   })
 }
 
-export const useTestSms = () => useMutation({
-  mutationFn: (payload: { phones: string[]; text?: string }) => api.testSms(payload.phones, payload.text),
-})
+export const useTestSms = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: { phones: string[]; text?: string }) => api.testSms(payload.phones, payload.text),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-inbox'] }),
+  })
+}
 
 export const useVoiceConfig = () =>
   useQuery({ queryKey: ['notification-voice-config'], queryFn: api.getVoiceConfig })
@@ -87,13 +91,23 @@ export const useUpdateVoiceConfig = () => {
   })
 }
 
-export const useTestVoice = () => useMutation({
-  mutationFn: (payload: { phones: string[]; text?: string }) => api.testVoice(payload.phones, payload.text),
-})
+export const useTestVoice = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: { phones: string[]; text?: string }) => api.testVoice(payload.phones, payload.text),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-inbox'] }),
+  })
+}
 
 
 export const useIvrActions = () =>
   useQuery({ queryKey: ['notification-ivr-actions'], queryFn: api.listIvrActions })
+
+export const useInbox = (params: { channel?: 'sms' | 'voice'; page: number; page_size: number }) =>
+  useQuery({
+    queryKey: ['notification-inbox', params.channel ?? 'all', params.page, params.page_size],
+    queryFn: () => api.listInbox(params),
+  })
 
 export const usePolicy = () =>
   useQuery({ queryKey: ['notification-policy'], queryFn: api.getPolicy })

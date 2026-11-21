@@ -30,7 +30,8 @@ const DIAL_CODES = COUNTRY_CODES.map((c) => c.value).sort((a, b) => b.length - a
 
 function splitPhone(phone?: string | null): { code: string; number: string } {
   if (!phone) return { code: '+86', number: '' }
-  const code = DIAL_CODES.find((item) => phone.startsWith(item)) || '+86'
+  const code = DIAL_CODES.find((item) => phone.startsWith(item))
+  if (!code) return { code: '+86', number: phone }
   return { code, number: phone.slice(code.length) }
 }
 

@@ -915,6 +915,64 @@ class NotificationDispatcher:
             )
         return {"total": total, "page": page, "page_size": page_size, "items": items}
 
+    async def list_inbox(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 10,
+        channel: str | None = None,
+    ) -> dict[str, Any]:
+        """统一收件箱：展示短信与语音的发送情况（含真实与模拟渠道）。"""
+        stmt = select(NotificationDelivery, NotificationEvent).join(
+            NotificationEvent, NotificationDelivery.event_id == NotificationEvent.id
+        ).where(NotificationDelivery.channel.in_(("sms", "voice")))
+        if channel in ("sms", "voice"):
+            stmt = stmt.where(NotificationDelivery.channel == channel)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = int((await self.db.execute(count_stmt)).scalar_one())
+        rows = (
+            await self.db.execute(
+                stmt.order_by(NotificationDelivery.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        items = []
+        for delivery, event in rows:
+            content = event.summary or event.title or ""
+            created = delivery.created_at.isoformat() if delivery.created_at else None
+            item: dict[str, Any] = {
+                "id": delivery.id,
+                "event_id": event.id,
+                "channel": delivery.channel,
+                "recipient": delivery.recipient,
+                "content": content,
+                "title": event.title,
+                "severity": event.severity,
+                "status": delivery.status,
+                "provider": delivery.provider,
+                "provider_message_id": delivery.provider_message_id,
+                "error": delivery.error,
+                "created_at": created,
+                "sent_at": delivery.sent_at.isoformat() if delivery.sent_at else None,
+            }
+            if delivery.channel == "sms":
+                item["segments"] = max(1, (len(content) + 69) // 70)
+            else:
+                item["answered"] = delivery.status == "sent"
+                item["duration_seconds"] = (
+                    8 + delivery.id % 20
+                    if delivery.provider == "mock" and delivery.status == "sent"
+                    else None
+                )
+            items.append(item)
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "items": items,
+        }
+
     async def list_events(
         self,
         *,
