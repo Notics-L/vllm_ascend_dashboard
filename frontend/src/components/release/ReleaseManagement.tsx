@@ -821,14 +821,26 @@ export default function ReleaseManagement() {
 
                     {displayOverview.target_data.length > 0 && (
                       <Card bordered={false} title="Target/OS 组合耗时" style={{ marginBottom: 16 }}>
-                        <Table dataSource={displayOverview.target_data} rowKey="name" size="small" pagination={false} columns={[
-                          { title: 'Target', dataIndex: 'name', key: 'name' },
-                          { title: '次数', dataIndex: 'count', key: 'count', width: 60 },
-                          { title: '平均', dataIndex: 'avg', key: 'avg', render: (v: number) => fmtDuration(v) },
-                          { title: '最短', dataIndex: 'min', key: 'min', render: (v: number) => fmtDuration(v) },
-                          { title: '最长', dataIndex: 'max', key: 'max', render: (v: number) => fmtDuration(v) },
-                          { title: '总耗时', dataIndex: 'total', key: 'total', render: (v: number) => fmtDuration(v) },
-                        ]} />
+                        <Table
+                          dataSource={displayOverview.target_data}
+                          rowKey="name"
+                          size="small"
+                          scroll={{ x: 760 }}
+                          pagination={{
+                            pageSize: 8,
+                            showSizeChanger: true,
+                            pageSizeOptions: [8, 16, 32],
+                            showTotal: (t) => `共 ${t} 条`,
+                          }}
+                          columns={[
+                            { title: 'Target', dataIndex: 'name', key: 'name', ellipsis: { showTitle: true } },
+                            { title: '次数', dataIndex: 'count', key: 'count', width: 70, align: 'center' as const },
+                            { title: '平均', dataIndex: 'avg', key: 'avg', width: 100, align: 'right' as const, render: (v: number) => fmtDuration(v) },
+                            { title: '最短', dataIndex: 'min', key: 'min', width: 100, align: 'right' as const, render: (v: number) => fmtDuration(v) },
+                            { title: '最长', dataIndex: 'max', key: 'max', width: 100, align: 'right' as const, render: (v: number) => fmtDuration(v) },
+                            { title: '总耗时', dataIndex: 'total', key: 'total', width: 110, align: 'right' as const, render: (v: number) => fmtDuration(v) },
+                          ]}
+                        />
                       </Card>
                     )}
                   </>
@@ -923,24 +935,50 @@ export default function ReleaseManagement() {
                     items={runDetailData.groups.map((g) => ({
                       key: `${g.id}`,
                       label: (
-                        <Space>
-                          <Text strong>{g.group_name}</Text>
-                          {g.sub_job_name && <><Text type="secondary">·</Text><Text>{g.sub_job_name}</Text></>}
-                          <Tag color="blue">{g.phase}</Tag>
-                          <Tag color={getStatusColor(g.status)}>
-                            {statusLabelMap[g.status?.toLowerCase()] || g.status}
-                          </Tag>
-                          <Text type="secondary">{fmtDuration(g.total_duration)}</Text>
-                          {g.architecture && <Tag>{g.architecture}</Tag>}
-                          {g.target && <Text type="secondary">{g.target}</Text>}
-                        </Space>
+                        <div style={{ width: '100%', minWidth: 0, display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr) auto', alignItems: 'center', gap: 16 }}>
+                          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <Text
+                              strong
+                              title={g.group_name}
+                              style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            >
+                              {g.group_name}
+                            </Text>
+                            {g.sub_job_name && (
+                              <Text
+                                type="secondary"
+                                title={g.sub_job_name}
+                                style={{ fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                              >
+                                {g.sub_job_name}
+                              </Text>
+                            )}
+                          </div>
+                          <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                            <Tag color="blue" style={{ marginInlineEnd: 0, flex: 'none' }}>{g.phase}</Tag>
+                            {g.architecture && <Tag style={{ marginInlineEnd: 0, flex: 'none' }}>{g.architecture}</Tag>}
+                            {g.target && (
+                              <Text type="secondary" title={g.target} style={{ fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {g.target}
+                              </Text>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifySelf: 'end' }}>
+                            <Tag color={getStatusColor(g.status)} style={{ marginInlineEnd: 0 }}>
+                              {statusLabelMap[g.status?.toLowerCase()] || g.status}
+                            </Tag>
+                            <Text type="secondary" style={{ whiteSpace: 'nowrap', minWidth: 64, textAlign: 'right' }}>
+                              {fmtDuration(g.total_duration)}
+                            </Text>
+                          </div>
+                        </div>
                       ),
                       children: (
-                        <Table rowKey="number" size="small" dataSource={g.steps} pagination={false} scroll={{ y: 320 }} columns={[
-                          { title: '步骤名称', dataIndex: 'name', key: 'name', ellipsis: true },
+                        <Table rowKey="number" size="small" dataSource={g.steps} pagination={false} scroll={{ y: 320, x: 560 }} columns={[
+                          { title: '步骤名称', dataIndex: 'name', key: 'name', ellipsis: { showTitle: true } },
                           { title: '编号', dataIndex: 'number', key: 'number', width: 80, align: 'center' as const },
                           { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (s: string) => <Tag color={getStatusColor(s)}>{statusLabelMap[s?.toLowerCase()] || s}</Tag> },
-                          { title: '耗时', dataIndex: 'duration', key: 'duration', width: 100, render: (v: number) => fmtDuration(v) },
+                          { title: '耗时', dataIndex: 'duration', key: 'duration', width: 100, align: 'right' as const, render: (v: number) => fmtDuration(v) },
                         ]} />
                       ),
                     }))}
