@@ -77,18 +77,28 @@ class NotificationDispatcher:
         )
 
     async def resolve_channels(self, severity: str) -> list[str]:
-        """根据短信配置返回渠道顺序；未启用短信时仅邮件。"""
+        """返回渠道顺序：语音电话 → 短信 → 邮件，未启用的渠道自动跳过。"""
         from notifications.sms import get_sms_config
+        from notifications.voice import get_voice_config
 
         sms_config = await get_sms_config(self.db)
-        apply_to = sms_config.get("apply_to") or "critical"
+        voice_config = await get_voice_config(self.db)
+        channels = ["email"]
+        sms_apply = sms_config.get("apply_to") or "critical"
+        voice_apply = voice_config.get("apply_to") or "critical"
         if (
             sms_config.get("enabled")
             and sms_config.get("fallback_enabled", True)
-            and (apply_to == "all" or severity == "critical")
+            and (sms_apply == "all" or severity == "critical")
         ):
-            return ["sms", "email"]
-        return ["email"]
+            channels.insert(0, "sms")
+        if (
+            voice_config.get("enabled")
+            and voice_config.get("fallback_enabled", True)
+            and (voice_apply == "all" or severity == "critical")
+        ):
+            channels.insert(0, "voice")
+        return channels
 
     async def send_sms(
         self,
@@ -117,6 +127,33 @@ class NotificationDispatcher:
             dedupe_key=dedupe_key,
         )
 
+    async def send_voice(
+        self,
+        *,
+        recipients: list[str],
+        text: str,
+        source: str = "notification",
+        event_type: str = "voice",
+        severity: str = "info",
+        title: str | None = None,
+        summary: str | None = None,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
+        """仅通过语音电话通道发起播报。"""
+        return await self.dispatch(
+            voice_text=text,
+            voice_recipients=recipients,
+            channels=["voice"],
+            source=source,
+            event_type=event_type,
+            severity=severity,
+            title=title or text[:80],
+            summary=summary or text,
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+
     async def dispatch(
         self,
         *,
@@ -128,6 +165,8 @@ class NotificationDispatcher:
         config: dict[str, Any] | None = None,
         sms_text: str | None = None,
         sms_recipients: list[str] | None = None,
+        voice_text: str | None = None,
+        voice_recipients: list[str] | None = None,
         channels: list[str] | None = None,
         source: str = "notification",
         event_type: str = "notification",
@@ -139,18 +178,26 @@ class NotificationDispatcher:
     ) -> dict[str, Any]:
         """按渠道顺序发送，成功即停止，失败自动降级到下一渠道。"""
         from notifications.sms import get_sms_config
+        from notifications.voice import get_voice_config
 
         email_recipients = [r for r in (email_recipients or []) if r]
         sms_recipients = [p for p in (sms_recipients or []) if p]
         sms_config = await get_sms_config(self.db)
+        voice_config = await get_voice_config(self.db)
         if not sms_recipients and email_recipients:
             sms_recipients = await self._phones_for_emails(email_recipients)
+        voice_text = voice_text or sms_text
+        voice_recipients = voice_recipients or sms_recipients
 
         planned = list(channels or ["email"])
         if "sms" in planned and (
             not sms_config.get("enabled") or not sms_text or not sms_recipients
         ):
             planned = [channel for channel in planned if channel != "sms"]
+        if "voice" in planned and (
+            not voice_config.get("enabled") or not voice_text or not voice_recipients
+        ):
+            planned = [channel for channel in planned if channel != "voice"]
         if not planned:
             return {"success": False, "error": "没有可用的通知渠道"}
 
@@ -187,6 +234,13 @@ class NotificationDispatcher:
                     recipients=sms_recipients,
                     text=sms_text or "",
                     config=sms_config,
+                )
+            elif channel == "voice":
+                result, ids = await self._send_voice_channel(
+                    event=event,
+                    recipients=voice_recipients,
+                    text=voice_text or "",
+                    config=voice_config,
                 )
             else:
                 continue
@@ -351,6 +405,42 @@ class NotificationDispatcher:
             delivery.error = None if success else result.get("error")
             delivery.sent_at = now if success else None
             delivery.delivered_at = now if success else None
+        success = any(item.get("success") for item in results)
+        error = next((item.get("error") for item in results if item.get("error")), None)
+        return (
+            {
+                "success": success,
+                "error": None if success else error,
+                "provider": results[0].get("provider") if results else None,
+            },
+            [delivery.id for delivery in deliveries],
+        )
+
+    async def _send_voice_channel(
+        self,
+        *,
+        event: NotificationEvent,
+        recipients: list[str],
+        text: str,
+        config: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[int]]:
+        from notifications.voice import send_voice
+
+        now = datetime.now(UTC)
+        deliveries = [
+            await self._create_delivery(event, "voice", phone, config.get("provider"))
+            for phone in recipients
+        ]
+        results = []
+        for delivery, phone in zip(deliveries, recipients):
+            result = await send_voice(config, phone, text)
+            results.append(result)
+            success = bool(result.get("success"))
+            delivery.status = "sent" if success else "failed"
+            delivery.provider = result.get("provider") or delivery.provider
+            delivery.provider_message_id = result.get("provider_message_id")
+            delivery.error = None if success else result.get("error")
+            delivery.sent_at = now if success else None
         success = any(item.get("success") for item in results)
         error = next((item.get("error") for item in results if item.get("error")), None)
         return (

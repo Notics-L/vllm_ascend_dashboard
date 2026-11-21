@@ -14,9 +14,12 @@ from contracts.schemas.notifications import (
     GroupUpdate,
     SmsConfigUpdate,
     SmsTestRequest,
+    VoiceConfigUpdate,
+    VoiceTestRequest,
 )
 from notifications.service import NotificationDispatcher
 from notifications.sms import get_public_sms_config, save_sms_config
+from notifications.voice import get_public_voice_config, save_voice_config
 
 router = APIRouter()
 
@@ -56,6 +59,44 @@ async def test_sms_channel(
         severity="info",
         title="短信通道测试",
         dedupe_key=None,
+    )
+    await db.commit()
+    return result
+
+
+# ----------------------------------------------------------------------
+# Voice channel
+# ----------------------------------------------------------------------
+
+@router.get("/channels/voice")
+async def get_voice_channel(db: DbSession, _: CurrentAdminUser) -> dict[str, Any]:
+    return await get_public_voice_config(db)
+
+
+@router.put("/channels/voice")
+async def update_voice_channel(
+    payload: VoiceConfigUpdate,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    result = await save_voice_config(db, payload.model_dump(exclude_unset=True))
+    await db.commit()
+    return result
+
+
+@router.post("/channels/voice/test")
+async def test_voice_channel(
+    payload: VoiceTestRequest,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    result = await NotificationDispatcher(db).send_voice(
+        recipients=payload.phones,
+        text=payload.text,
+        source="notification_test",
+        event_type="voice_test",
+        severity="info",
+        title="语音通道测试",
     )
     await db.commit()
     return result

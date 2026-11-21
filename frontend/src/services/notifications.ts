@@ -161,3 +161,48 @@ export const testSms = async (phones: string[], text?: string): Promise<{ succes
   const { data } = await api.post('/notifications/channels/sms/test', { phones, text })
   return data
 }
+
+export interface VoiceConfig {
+  enabled: boolean
+  provider: string
+  access_key_id: string
+  access_key_secret_set: boolean
+  called_show_number: string
+  tts_code: string
+  tts_param_key: string
+  region_id: string
+  play_times: number
+  fallback_enabled: boolean
+  apply_to: 'critical' | 'all'
+  test_phones: string[]
+}
+
+export interface VoiceConfigUpdate {
+  enabled?: boolean
+  provider?: string
+  access_key_id?: string
+  access_key_secret?: string
+  called_show_number?: string
+  tts_code?: string
+  tts_param_key?: string
+  region_id?: string
+  play_times?: number
+  fallback_enabled?: boolean
+  apply_to?: 'critical' | 'all'
+  test_phones?: string[]
+}
+
+export const getVoiceConfig = async (): Promise<VoiceConfig> => {
+  const { data } = await api.get<VoiceConfig>('/notifications/channels/voice')
+  return data
+}
+
+export const updateVoiceConfig = async (payload: VoiceConfigUpdate): Promise<VoiceConfig> => {
+  const { data } = await api.put<VoiceConfig>('/notifications/channels/voice', payload)
+  return data
+}
+
+export const testVoice = async (phones: string[], text?: string): Promise<{ success: boolean; error?: string; results?: Array<Record<string, unknown>> }> => {
+  const { data } = await api.post('/notifications/channels/voice/test', { phones, text })
+  return data
+}

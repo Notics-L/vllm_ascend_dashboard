@@ -14,6 +14,7 @@ import { useCurrentUser } from '../hooks/useCurrentUser'
 import ContactsPanel from '../components/notifications/ContactsPanel'
 import DeliveriesPanel from '../components/notifications/DeliveriesPanel'
 import SmsPanel from '../components/notifications/SmsPanel'
+import VoicePanel from '../components/notifications/VoicePanel'
 
 const { Text, Title } = Typography
 
@@ -251,14 +252,7 @@ function SmtpConfigPage() {
       ) : activeTab === 'sms' ? (
         <SmsPanel />
       ) : (
-        <Card>
-          <Alert
-            type="info"
-            showIcon
-            message="语音电话通道规划中"
-            description="后续阶段将支持语音播报、按键确认与未接听降级短信。"
-          />
-        </Card>
+        <VoicePanel />
       )}
     </div>
   )

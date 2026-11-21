@@ -122,3 +122,23 @@ class SmsConfigUpdate(BaseModel):
 class SmsTestRequest(BaseModel):
     phones: list[str] = Field(min_length=1)
     text: str = "vLLM Ascend 通知服务短信测试"
+
+
+class VoiceConfigUpdate(BaseModel):
+    enabled: bool | None = None
+    provider: str | None = None
+    access_key_id: str | None = None
+    access_key_secret: str | None = None
+    called_show_number: str | None = None
+    tts_code: str | None = None
+    tts_param_key: str | None = None
+    region_id: str | None = None
+    play_times: int | None = None
+    fallback_enabled: bool | None = None
+    apply_to: str | None = None
+    test_phones: list[str] | None = None
+
+
+class VoiceTestRequest(BaseModel):
+    phones: list[str] = Field(min_length=1)
+    text: str = "vLLM Ascend 通知服务语音测试"

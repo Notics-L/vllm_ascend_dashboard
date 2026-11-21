@@ -75,3 +75,18 @@ export const useUpdateSmsConfig = () => {
 export const useTestSms = () => useMutation({
   mutationFn: (payload: { phones: string[]; text?: string }) => api.testSms(payload.phones, payload.text),
 })
+
+export const useVoiceConfig = () =>
+  useQuery({ queryKey: ['notification-voice-config'], queryFn: api.getVoiceConfig })
+
+export const useUpdateVoiceConfig = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.updateVoiceConfig,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-voice-config'] }),
+  })
+}
+
+export const useTestVoice = () => useMutation({
+  mutationFn: (payload: { phones: string[]; text?: string }) => api.testVoice(payload.phones, payload.text),
+})
