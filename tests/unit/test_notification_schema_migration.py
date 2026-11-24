@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from database import bootstrap
 from database.migrations import daily_pipeline_process_nodes, notifications
 
