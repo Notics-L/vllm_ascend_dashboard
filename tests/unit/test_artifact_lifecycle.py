@@ -52,6 +52,20 @@ def test_concurrent_analysis_keeps_artifacts_until_last_reader_exits(tmp_path, m
         await task
         assert not (run / "extracted").exists()
 
+        (run / "extracted").mkdir()
+
+        @lifecycle.release_artifacts_after_analysis
+        async def failed():
+            lifecycle.track_artifact_run(run)
+            raise RuntimeError("analysis stopped")
+
+        try:
+            await failed()
+        except RuntimeError:
+            assert not (run / "extracted").exists()
+        else:
+            raise AssertionError("the analysis failure should propagate")
+
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
         runner.run(scenario())
 

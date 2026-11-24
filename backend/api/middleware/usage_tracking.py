@@ -4,6 +4,7 @@ import logging
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from infrastructure.core.github_audit import github_actor, github_feature
 from infrastructure.core.security import decode_token
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.models import FeatureUsageLog
@@ -163,7 +164,13 @@ def _enqueue_usage_record(record: dict[str, object]) -> None:
 
 class UsageTrackingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        response: Response = await call_next(request)
+        actor_context = github_actor.set(None)
+        feature_context = github_feature.set(None)
+        try:
+            response: Response = await call_next(request)
+        finally:
+            github_actor.reset(actor_context)
+            github_feature.reset(feature_context)
         path = request.url.path
         if any(path.startswith(e) for e in EXCLUDED_PATHS) or request.method == "OPTIONS":
             return response

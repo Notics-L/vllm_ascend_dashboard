@@ -17,7 +17,12 @@ from workflow_actions.schedules import (
     update_schedule,
 )
 from workflow_actions.schemas import WorkflowActionRequest
-from workflow_actions.service import _github_request, _result, execute_workflow_action
+from workflow_actions.service import (
+    GitHubAsyncClient,
+    _github_request,
+    _result,
+    execute_workflow_action,
+)
 
 
 class FakeResult:
@@ -279,15 +284,13 @@ async def test_dispatch_retries_only_when_safe(
             raise result
         return result if isinstance(result, httpx.Response) else httpx.Response(result)
 
-    client_class = httpx.AsyncClient
-
     def client(**kwargs):
-        return client_class(transport=httpx.MockTransport(respond), **kwargs)
+        return GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs)
 
     async def sleep(delay):
         return None
 
-    monkeypatch.setattr("workflow_actions.service.httpx.AsyncClient", client)
+    monkeypatch.setattr("workflow_actions.service.GitHubAsyncClient", client)
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
 
     status, _, _ = await _github_request(
@@ -318,15 +321,13 @@ async def test_dispatch_honors_rate_limit_wait(
         calls.append(request)
         return response if len(calls) == 1 else httpx.Response(204)
 
-    client_class = httpx.AsyncClient
-
     def client(**kwargs):
-        return client_class(transport=httpx.MockTransport(respond), **kwargs)
+        return GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs)
 
     async def sleep(delay):
         delays.append(delay)
 
-    monkeypatch.setattr("workflow_actions.service.httpx.AsyncClient", client)
+    monkeypatch.setattr("workflow_actions.service.GitHubAsyncClient", client)
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
     await _github_request("token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10))
 
@@ -344,10 +345,9 @@ async def test_uncertain_dispatch_error_is_reported(monkeypatch):
     def respond(request):
         raise httpx.ReadTimeout("")
 
-    client_class = httpx.AsyncClient
     monkeypatch.setattr(
-        "workflow_actions.service.httpx.AsyncClient",
-        lambda **kwargs: client_class(transport=httpx.MockTransport(respond), **kwargs),
+        "workflow_actions.service.GitHubAsyncClient",
+        lambda **kwargs: GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs),
     )
     status, body, error = await _github_request(
         "token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
@@ -393,10 +393,9 @@ async def test_connection_retry_respects_total_wait_limit(monkeypatch):
     async def sleep(delay):
         delays.append(delay)
 
-    client_class = httpx.AsyncClient
     monkeypatch.setattr(
-        "workflow_actions.service.httpx.AsyncClient",
-        lambda **kwargs: client_class(transport=httpx.MockTransport(respond), **kwargs),
+        "workflow_actions.service.GitHubAsyncClient",
+        lambda **kwargs: GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs),
     )
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
     status, _, error = await _github_request(

@@ -24,6 +24,7 @@ import DailyPipelineCases from './pages/daily-pipeline/cases'
 import DailyCaseConfig from './pages/daily-pipeline/cases/DailyCaseConfig'
 import DailyCaseEdit from './pages/daily-pipeline/cases/DailyCaseEdit'
 import Admin from './pages/Admin'
+import GitHubOperations from './pages/GitHubOperations'
 import Models from './pages/Models'
 import ModelDetail from './pages/ModelDetail'
 import ModelDailyReport from './pages/ModelDailyReport'
@@ -291,6 +292,7 @@ function App() {
                   </AdminRoute>
                 }
               />
+              <Route path="admin/github-operations" element={<AdminRoute><GitHubOperations /></AdminRoute>} />
               {/* CI 看板配置（管理员） */}
               <Route
                 path="admin/ci-board-config"

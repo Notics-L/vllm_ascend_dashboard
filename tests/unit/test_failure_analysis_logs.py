@@ -1,4 +1,6 @@
+import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zipfile import ZipFile
@@ -8,6 +10,89 @@ import pytest
 from failure_analysis.failure_analysis import FailureAnalysisService
 from infrastructure.clients import github_cache
 from infrastructure.clients.claude_code_cli import ClaudeCodeCLI
+from infrastructure.core.config import settings
+
+
+def test_claude_cli_never_inherits_dashboard_github_credentials(monkeypatch):
+    names = (
+        "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+        "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_ACCESS_TOKEN", "GITHUB_API_TOKEN",
+    )
+    for name in names:
+        monkeypatch.setenv(name, "test-github-credential")
+    monkeypatch.setattr(settings, "GITHUB_TOKEN", "test-configured-github-credential")
+
+    env = ClaudeCodeCLI()._build_env_direct("test-provider-key", "http://localhost:8080", "model")
+
+    assert not set(names).intersection(env)
+    assert "test-configured-github-credential" not in env.values()
+    assert env["ANTHROPIC_API_KEY"] == "test-provider-key"
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8080"
+
+
+@pytest.mark.asyncio
+async def test_analysis_downloads_missing_logs_via_audited_backend_and_cleans_on_cancel(
+    tmp_path, monkeypatch,
+):
+    service = FailureAnalysisService()
+    monkeypatch.setattr(service, "_data_root", lambda: tmp_path)
+    monkeypatch.setattr(settings, "GITHUB_TOKEN", "test-configured-github-credential")
+    shared = tmp_path / "failure-analysis" / "Nightly"
+    shared.mkdir(parents=True)
+    archive = shared / "run_456_logs.zip"
+    archive.write_bytes(b"existing archive")
+    requests = []
+
+    class Session:
+        status = 200
+
+        def __init__(self, *, timeout, trace_configs):
+            assert trace_configs[0].on_request_end and trace_configs[0].on_request_exception
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, *, headers):
+            assert headers["Authorization"] == "Bearer test-configured-github-credential"
+            requests.append(url)
+            return self
+
+        async def read(self):
+            return b"temporary log evidence"
+
+        async def json(self):
+            return {"jobs": []}
+
+    monkeypatch.setattr("aiohttp.ClientSession", Session)
+    downloaded = asyncio.Event()
+    paths = {}
+
+    async def analyze():
+        with service._temporary_analysis_logs() as workspace:
+            result = await service._download_all_logs(SimpleNamespace(
+                job_id=123, run_id=456, workflow_name="Nightly", job_name="example",
+            ))
+            paths.update(workspace=workspace, job=Path(result["job_log"]), jobs=Path(result["jobs_list"]))
+            assert Path(result["run_log_zip"]) == archive
+            downloaded.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(analyze())
+    await asyncio.wait_for(downloaded.wait(), timeout=5)
+    assert paths["job"].read_bytes() == b"temporary log evidence"
+    assert paths["jobs"].exists()
+    assert len(requests) == 2
+    assert requests[0].endswith("/actions/jobs/123/logs")
+    assert requests[1].endswith("/actions/runs/456/jobs?per_page=100")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not paths["workspace"].exists()
+    assert archive.read_bytes() == b"existing archive"
 
 
 def test_extract_report_summary_unwraps_nested_json_envelope():

@@ -4,11 +4,12 @@ API 依赖注入
 import logging
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infrastructure.core.github_audit import github_actor, github_feature
 from infrastructure.core.security import decode_token
 from infrastructure.db.base import get_db
 from infrastructure.persistence.models import TokenBlacklist, User
@@ -16,6 +17,12 @@ from infrastructure.persistence.models import TokenBlacklist, User
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
+
+
+async def identify_github_feature(request: Request) -> None:
+    module = getattr(request.scope.get("endpoint"), "__module__", None)
+    if module:
+        github_feature.set(module.rsplit(".", 1)[-1][:40])
 
 
 async def get_current_user(
@@ -71,6 +78,7 @@ async def get_current_user(
             detail="用户不存在或已被禁用",
         )
 
+    github_actor.set(username)
     return user
 
 

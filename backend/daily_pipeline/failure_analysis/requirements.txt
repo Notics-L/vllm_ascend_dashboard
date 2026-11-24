@@ -1,0 +1,4 @@
+deepseek-harness-sdk==0.2.2rc2
+httpx>=0.28,<1
+mcp==1.30.0
+pydantic>=2,<3

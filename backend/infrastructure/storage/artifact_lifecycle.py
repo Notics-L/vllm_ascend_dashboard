@@ -53,15 +53,13 @@ def release_artifacts_after_analysis(method):
             runs: set[Path] = set()
             token = _used_runs.set(runs)
             try:
-                result = await method(*args, **kwargs)
-                if getattr(result, "analysis_status", None) == "completed":
-                    for run in runs:
-                        try:
-                            (run / ".consumed").touch()
-                        except OSError:
-                            logger.exception("Unable to mark artifacts consumed: %s", run)
-                return result
+                return await method(*args, **kwargs)
             finally:
+                for run in runs:
+                    try:
+                        (run / ".consumed").touch()
+                    except OSError:
+                        logger.exception("Unable to mark artifacts consumed: %s", run)
                 _used_runs.reset(token)
                 fcntl.flock(lock, fcntl.LOCK_UN)
                 try:

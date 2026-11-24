@@ -6,10 +6,12 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import nullcontext
 
 import httpx
 
 from infrastructure.clients.daily_pipeline_collection import DailyCollectionClient
+from infrastructure.clients.github_http import audit_github_git
 
 
 class RevertError(Exception):
@@ -21,6 +23,8 @@ class RetryableRevertError(RevertError):
 
 
 class DailyRevertClient(DailyCollectionClient):
+    audit_source = "daily_revert"
+
     def __init__(self, repository: str, token: str):
         super().__init__(repository, token)
         self._token = token
@@ -163,28 +167,35 @@ class DailyRevertClient(DailyCollectionClient):
         with tempfile.TemporaryDirectory(prefix="daily-revert-") as repo:
 
             def git(*args, stdin=None):
-                return subprocess.run(
-                    [
-                        "git",
-                        "-c",
-                        "credential.helper=",
-                        "-c",
-                        "http.followRedirects=false",
-                        "-c",
-                        f"user.name={name}",
-                        "-c",
-                        f"user.email={email}",
-                        *args,
-                    ],
-                    cwd=repo,
-                    env=env,
-                    input=stdin,
-                    encoding="utf-8",
-                    errors="replace",
-                    capture_output=True,
-                    check=True,
-                    timeout=120,
-                ).stdout
+                audit = (
+                    audit_github_git(
+                        self.audit_source, self.repository, self._token, args[0], credential_source="daily",
+                    )
+                    if args[0] in {"fetch", "ls-remote", "push"} else nullcontext()
+                )
+                with audit:
+                    return subprocess.run(
+                        [
+                            "git",
+                            "-c",
+                            "credential.helper=",
+                            "-c",
+                            "http.followRedirects=false",
+                            "-c",
+                            f"user.name={name}",
+                            "-c",
+                            f"user.email={email}",
+                            *args,
+                        ],
+                        cwd=repo,
+                        env=env,
+                        input=stdin,
+                        encoding="utf-8",
+                        errors="replace",
+                        capture_output=True,
+                        check=True,
+                        timeout=120,
+                    ).stdout
 
             try:
                 git("init", "--template=")

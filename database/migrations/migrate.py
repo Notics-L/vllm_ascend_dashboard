@@ -43,6 +43,7 @@ from database.migrations.daily_pipeline_merged_pr import run as migrate_daily_me
 from database.migrations.daily_pipeline_notifications import run as migrate_daily_notifications
 from database.migrations.daily_pipeline_issue_reopen import run as migrate_daily_issue_reopen
 from database.migrations.daily_pipeline_trigger_history import run as migrate_daily_trigger_history
+from database.migrations.github_operations import run as migrate_github_operations
 from database.migrations.github_workflow_run_metadata import (
     run as migrate_github_workflow_run_metadata,
 )
@@ -97,6 +98,8 @@ async def migrate() -> None:
     if engine.dialect.name != "mysql":
         raise RuntimeError(f"Production migration requires MySQL, got {engine.dialect.name}")
 
+    # Rename existing GitHub audit history before metadata can create a new table.
+    await migrate_github_operations()
     await create_tables_with_latest_schema()
     users_before = await _user_count()
     # phase_a creates migration_history first, so it must run before other migrations

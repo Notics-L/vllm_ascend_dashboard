@@ -105,6 +105,7 @@ const adminNavigation: NavigationItem = {
   children: [
     { key: '/user-stats', icon: <BarChartOutlined />, label: '用户统计' },
     { key: '/admin', icon: <SettingOutlined />, label: '系统配置' },
+    { key: '/admin/github-operations', icon: <GithubOutlined />, label: 'GitHub 操作记录' },
     { key: '/admin/notifications', icon: <NotificationOutlined />, label: '通知服务' },
     { key: '/admin/daily-report', icon: <SendOutlined />, label: '每日运行报告' },
   ],
@@ -133,6 +134,7 @@ const routeMeta = [
   { prefix: '/release-management', title: '发布件管理', section: '研发交付' },
   { prefix: '/logs', title: '日志中心', section: '资源与响应' },
   { prefix: '/user-stats', title: '用户统计', section: '管理中心' },
+  { prefix: '/admin/github-operations', title: 'GitHub 操作记录', section: '管理中心' },
   { prefix: '/admin/notifications', title: '通知服务', section: '管理中心' },
   { prefix: '/admin/daily-report', title: '每日运行报告', section: '管理中心' },
   { prefix: '/admin/ci-board-config', title: 'CI 看板配置', section: '管理中心' },
@@ -340,7 +342,7 @@ function Layout() {
 
         <Content
           id="main-content"
-          className={['/daily-pipeline/overview', '/daily-pipeline/cases', '/daily-pipeline/configuration', '/daily-pipeline/collection', '/daily-pipeline/issue-tracking', '/daily-pipeline/processing-progress']
+          className={['/daily-pipeline/overview', '/daily-pipeline/cases', '/daily-pipeline/configuration', '/daily-pipeline/collection', '/daily-pipeline/issue-tracking', '/daily-pipeline/processing-progress', '/admin/github-operations']
             .includes(location.pathname.replace(/\/+$/, '')) || location.pathname.startsWith('/daily-pipeline/cases/') || location.pathname.startsWith('/daily-pipeline/collection/runs/') || location.pathname.startsWith('/daily-pipeline/issue-tracking/')
             ? 'app-content app-content-wide'
             : 'app-content'}

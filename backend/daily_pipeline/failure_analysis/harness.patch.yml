@@ -1,0 +1,47 @@
+- id: session-log-deepseek
+  disabled: true
+
+- id: session-telemetry-otel
+  disabled: true
+
+- id: tool-plugin-manager
+  disabled: true
+
+- id: tool-schedule
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: tool-ask-user
+  disabled: true
+
+- insert:
+    - id: daily-ci-evidence
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: daily
+        transport: stdio
+        command: !!js process.env.DAILY_FAILURE_TOOL_PYTHON
+        args: [-m, daily_pipeline.failure_analysis.daily_tools]
+        env:
+          PYTHONPATH: !!js process.env.DAILY_FAILURE_TOOL_IMPORT_ROOT
+          DAILY_FAILURE_ANALYSIS_REQUEST: !!js process.env.DAILY_FAILURE_ANALYSIS_REQUEST
+          DAILY_FAILURE_ANALYSIS_WORKSPACE: !!js process.env.DAILY_FAILURE_ANALYSIS_WORKSPACE
+          GITHUB_PERSONAL_ACCESS_TOKEN: !!js process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+        failOnStartupError: true
+
+    - id: daily-github-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: !!js Boolean(process.env.DAILY_FAILURE_GITHUB_MCP) === false
+      config:
+        serverName: github
+        transport: stdio
+        command: !!js process.env.DAILY_FAILURE_GITHUB_MCP
+        args: [stdio, --read-only, --toolsets, 'actions,repos,pull_requests']
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: !!js process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+        failOnStartupError: true

@@ -184,8 +184,9 @@ backend/threshold
 nul
 summary_response.json
 
-# Codex logs
+# Codex local logs and output
 .codex-logs/
+/.codex-output/
 
 # Temp monitoring / one-off scripts
 tmp_*.py
