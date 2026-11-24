@@ -49,7 +49,7 @@ async def test_manual_classification_advances_to_locating_and_records_actor():
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.parametrize("mode", [None, "auto", "manual"])
+@pytest.mark.parametrize("mode", [None, "auto", "manual", "optimize"])
 @pytest.mark.asyncio
 async def test_locating_selects_only_the_saved_business_path(mode):
     failure, node, db, added = objects("locating", category="code")
@@ -60,13 +60,21 @@ async def test_locating_selects_only_the_saved_business_path(mode):
     with patch.object(service, "_queue_processing", new_callable=AsyncMock) as queue:
         queue.return_value = True
         response = await service.manual_complete(10, True, inputs, "", "alice")
-    locating, revert, notice, merge = added
+    locating, *steps = added
+    assert failure.processing_status == "running"
+    assert locating.result_data["revert_mode"] == (mode or "auto")
+    assert steps[0].previous_node_id == node.id
+    if mode == "optimize":
+        notice, merge = steps
+        assert [notice.stage_code, merge.stage_code] == ["problem_pr_notification", "pr_merge"]
+        assert merge.previous_node_id == notice.id
+        assert response["automaticQueued"] is True
+        queue.assert_awaited_once_with(notice.id)
+        return
+    revert, notice, merge = steps
     assert [revert.stage_code, notice.stage_code, merge.stage_code] == [
         "revert_pr", "problem_pr_notification", "pr_merge",
     ]
-    assert revert.previous_node_id == node.id
-    assert failure.processing_status == "running"
-    assert locating.result_data["revert_mode"] == (mode or "auto")
     if mode == "manual":
         assert revert.status == "waiting" and response["automaticQueued"] is None
         queue.assert_not_awaited()
@@ -114,14 +122,17 @@ async def test_manual_revert_is_never_created_by_the_worker():
     db.commit.assert_not_awaited()
 
 
+@pytest.mark.parametrize("note", ["", "  节点连接中断，已恢复  "])
 @pytest.mark.asyncio
-async def test_environment_classification_is_resolved_and_records_automatic_success():
+async def test_environment_classification_is_resolved_and_records_automatic_success(note):
     failure, node, db, added = objects()
     result = await DailyTrackingService(db).manual_complete(
-        10, True, {"category": "environment"}, "", "alice"
+        10, True, {"category": "environment"}, note, "alice"
     )
     manual, mark, automatic = added
     assert manual.status == node.status == "completed"
+    assert manual.message == "环境问题"
+    assert manual.result_data.get("note", "") == note.strip()
     assert mark.stage_code == "mark_success" and mark.previous_node_id == node.id
     assert automatic.source == "auto" and automatic.node_id == mark.id
     assert mark.status == automatic.status == "completed"
@@ -303,12 +314,12 @@ async def test_api_accepts_category_only_and_uses_authenticated_actor():
 
 
 @pytest.mark.asyncio
-async def test_later_stages_still_require_the_actual_result():
-    _, _, db, added = objects("locating", category="environment")
-    with pytest.raises(ManualInputError, match="处理说明"):
-        await DailyTrackingService(db).manual_complete(10, True, {}, "  ", "alice")
-    assert not added
-    db.commit.assert_not_awaited()
+async def test_manual_failure_accepts_an_empty_reason():
+    _, node, db, added = objects("problem_pr_notification", category="code")
+    await DailyTrackingService(db).manual_complete(10, False, {}, "  ", "alice")
+    assert node.status == added[0].status == "failed"
+    assert added[0].message == ""
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.parametrize("mode", [None, "manual"])

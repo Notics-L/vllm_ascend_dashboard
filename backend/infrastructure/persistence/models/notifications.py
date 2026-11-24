@@ -2,6 +2,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     Column,
@@ -9,7 +10,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -24,6 +24,8 @@ class NotificationContact(Base):
     __tablename__ = "notification_contacts"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # Single-schema bootstrap uses this FK. Split-schema migrations create the
+    # table first with the physical users target, not the compatibility view.
     user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),

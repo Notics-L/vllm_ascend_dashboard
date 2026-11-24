@@ -158,6 +158,20 @@ export async function manuallyCompleteDailyNode({ nodeId, values }: { nodeId: st
 }
 
 
+export type DailyProcessingRollback =
+  | { nodeId: string }
+  | { failureId: string; stage: import('../types/dailyPipeline').DailyVersionStage }
+
+export async function rollbackDailyProcessing(input: DailyProcessingRollback) {
+  if ('nodeId' in input) {
+    await api.post(`/daily-pipeline/processing/nodes/${encodeURIComponent(input.nodeId)}/rollback`, {})
+  } else {
+    await api.post(`/daily-pipeline/failed-cases/${encodeURIComponent(input.failureId)}/version-flow/rollback`, {
+      stage: input.stage,
+    })
+  }
+}
+
 export async function retryDailyProcessing({ nodeId }: { nodeId: string }) {
   return (await api.post<{ queued: boolean }>(`/daily-pipeline/processing/nodes/${encodeURIComponent(nodeId)}/retry`, {})).data
 }

@@ -20,7 +20,9 @@ from infrastructure.persistence.daily_pipeline_settings import (
 )
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
+    OPTIMIZATION_MODE,
     add_failure_notification,
+    completed_node_result,
     now,
     pr_recipients,
 )
@@ -42,18 +44,26 @@ def notification_content(source, run, issue, original_url, revert_url, name, min
     case_label = source.name
     if qualifiers := ", ".join(filter(None, (source.hardware, getattr(source, "vllm_version", None)))):
         case_label = f"{case_label} ({qualifiers})"
+    action = "修复" if revert_url else "优化修复"
+    timing = f"请在下一轮 Daily 执行前 {minutes} 分钟完成{action}并合入。"
     lines = [
         f"{name}，Daily 测试发现 PR 引入的问题。",
-        f"已创建回退 PR，请在下一轮 Daily 执行前 {minutes} 分钟完成修复并合入。",
+        f"已创建回退 PR，{timing}" if revert_url else timing,
         f"请在关联 Issue 评论中填写「{case_label} solved by PR #编号」。",
-        "到截止点修复 PR 仍未合入时，将通知原问题 PR 合入人处理回退 PR。",
+    ]
+    if revert_url:
+        lines.append("到截止点修复 PR 仍未合入时，将通知原问题 PR 合入人处理回退 PR。")
+    lines.extend([
         f"用例：{source.name}",
         f"硬件：{source.hardware or '—'}",
         f"原问题 PR：{original_url}",
-        f"回退 PR：{revert_url}",
+    ])
+    if revert_url:
+        lines.append(f"回退 PR：{revert_url}")
+    lines.extend([
         f"失败 Job 流水线：{job_url}",
         f"Daily 主流水线：https://github.com/{run.repository}/actions/runs/{run.run_id}",
-    ]
+    ])
     if issue:
         lines.append(f"Issue：https://github.com/{issue.repository}/issues/{issue.number}")
     return "\n".join(lines)
@@ -161,38 +171,21 @@ async def execute_notification(db, node_id):
             db, node, execution, "上次通知送达情况未知，请人工确认，系统未重复发送"
         )
     config = await read_settings(db, "github_token", "repository", REVERT_DEADLINE_KEY)
-    previous = await db.scalar(
-        select(Execution)
-        .where(Execution.node_id == node.previous_node_id, Execution.status == "completed")
-        .order_by(Execution.attempt_no.desc())
-        .limit(1)
-    )
-    result = (previous.result_data or {}) if previous else {}
-    original_url = result.get("original_pr_url")
-    if not original_url:
+    result = await completed_node_result(db, node.previous_node_id)
+    optimize = result.get("revert_mode") == OPTIMIZATION_MODE
+    repository = config.get("repository")
+    original_data = result if optimize else {"pr_url": result.get("original_pr_url")}
+    if not (original_data.get("pr_url") or original_data.get("pr_number")):
         locating = next((n for n in nodes if n.stage_code == "locating"), None)
-        record = (
-            await db.scalar(
-                select(Execution)
-                .where(Execution.node_id == locating.id, Execution.status == "completed")
-                .order_by(Execution.attempt_no.desc())
-                .limit(1)
-            )
-            if locating
-            else None
-        )
-        number = (record.result_data or {}).get("pr_number") if record else None
-        if number:
-            original_url = f"https://github.com/{config.get('repository')}/pull/{number}"
-    revert_url = result.get("pr_url") or (
-        f"https://github.com/{config.get('repository')}/pull/{result['pr_number']}"
-        if result.get("pr_number")
-        else None
-    )
-    if not original_url or not revert_url:
-        return await _waiting(db, node, execution, "缺少原问题 PR 或回退 PR 信息")
+        original_data = await completed_node_result(db, locating.id if locating else None)
+    if not (original_data.get("pr_url") or original_data.get("pr_number")):
+        return await _waiting(db, node, execution, "缺少原问题 PR 信息")
+    if not optimize and not (result.get("pr_url") or result.get("pr_number")):
+        return await _waiting(db, node, execution, "缺少回退 PR 信息")
     try:
-        target = located_pull_request({"pr_url": original_url}, config.get("repository"))
+        target = located_pull_request(original_data, repository)
+        original_url = target["pr_url"]
+        revert_url = None if optimize else located_pull_request(result, repository)["pr_url"]
         token = decrypt_api_key(config.get("github_token") or "")
         if not token:
             return await _waiting(db, node, execution, "请先配置 GitHub Token")

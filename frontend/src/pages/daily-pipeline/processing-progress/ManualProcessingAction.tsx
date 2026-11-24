@@ -15,6 +15,12 @@ export default function ManualProcessingAction({ stage }: { stage: DailyProcessi
   const [manualEnabled, setManualEnabled] = useState(false)
   if (!stage.canManuallyComplete || (user?.role !== 'admin' && user?.role !== 'super_admin')) return null
   const code = stage.stageCode
+  const reset = stage.status === 'reset'
+  const canResumeAutomatically =
+    ((code === 'revert_pr' && stage.revertMode !== 'manual') || code === 'problem_pr_notification')
+      && (stage.status === 'failed' || stage.status === 'pending' || reset)
+    || code === 'failure_notification' && (stage.status === 'failed' || reset)
+    || code === 'pr_merge' && reset
   const submit = async (values: ManualProcessingFormValues) => {
     if (!manualEnabled) return
     const result: DailyManualNodeInput['result'] = {}
@@ -33,19 +39,17 @@ export default function ManualProcessingAction({ stage }: { stage: DailyProcessi
     }
   }
   return <div className="daily-processing-manual-action">
-    {(((code === 'revert_pr' && stage.revertMode !== 'manual') || code === 'problem_pr_notification')
-      && (stage.status === 'failed' || stage.status === 'pending')
-      || code === 'failure_notification' && stage.status === 'failed') && <>
+    {canResumeAutomatically && <>
       <Button type="primary" size="small" icon={<ReloadOutlined />} loading={retry.isPending} disabled={mutation.isPending}
       style={{ marginBottom: 16 }} onClick={async () => {
         try {
           await retry.mutateAsync({ nodeId: stage.id })
-          void message.success('已安排自动处理')
+          void message.success(code === 'pr_merge' ? '已恢复 PR 合入跟踪' : '已安排自动处理')
         } catch (error) {
           const detail = isAxiosError(error) ? error.response?.data?.detail : null
           void message.error(typeof detail === 'string' ? detail : '自动处理任务未送达，请稍后重试')
         }
-      }}>{stage.status === 'failed' ? '重试' : '执行'}</Button></>}
+      }}>{code === 'pr_merge' ? '继续跟踪' : stage.status === 'failed' ? '重试' : '执行'}</Button></>}
     <div className={'daily-processing-manual-toggle' + (manualEnabled ? ' is-open' : '')}>
       <label htmlFor={`daily-manual-${stage.id}`}>人工处理：</label>
       <Switch id={`daily-manual-${stage.id}`} aria-label="人工处理" size="small" checked={manualEnabled}

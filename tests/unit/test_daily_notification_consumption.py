@@ -237,6 +237,16 @@ def test_notification_links_the_actual_failed_job_in_its_source_workflow():
     assert "将通知原问题 PR 合入人处理回退 PR" in content
 
 
+def test_optimization_notification_asks_for_a_repair_without_revert_details():
+    source = SimpleNamespace(name="failed-case", hardware="A3", source_run_id=222, source_id=333)
+    run = SimpleNamespace(repository="example/source", run_id=111)
+    issue = SimpleNamespace(repository="example/source", number=444)
+    content = notification_content(source, run, issue, "https://github.com/example/source/pull/1", None, "author")
+    assert "下一轮 Daily 执行前 30 分钟完成优化修复并合入" in content
+    assert "failed-case (A3) solved by PR #编号" in content
+    assert "回退 PR" not in content
+
+
 def test_notification_missing_job_id_keeps_a_valid_workflow_link():
     source = SimpleNamespace(name="failed-case", hardware="CPU", source_run_id=None, source_id=None)
     run = SimpleNamespace(repository="example/source", run_id=111)

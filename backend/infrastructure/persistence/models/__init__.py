@@ -75,6 +75,14 @@ from infrastructure.persistence.models.image_build_monitor import (
     ImageBuildAlert,
     ImageBuildMonitorTarget,
 )
+from infrastructure.persistence.models.notifications import (
+    NotificationAction,
+    NotificationContact,
+    NotificationDelivery,
+    NotificationEvent,
+    NotificationGroup,
+    NotificationGroupMember,
+)
 from infrastructure.persistence.models.release_management import (
     ReleaseAIEvaluation,
     ReleaseAnalysisTask,
@@ -90,14 +98,6 @@ from infrastructure.persistence.models.workflow_actions import (
     WorkflowActionPermission,
     WorkflowActionSchedule,
     WorkflowSchedulePermission,
-)
-from infrastructure.persistence.models.notifications import (
-    NotificationAction,
-    NotificationContact,
-    NotificationDelivery,
-    NotificationEvent,
-    NotificationGroup,
-    NotificationGroupMember,
 )
 
 

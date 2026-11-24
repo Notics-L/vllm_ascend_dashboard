@@ -1,10 +1,11 @@
-"""Track code fixes and notify maintainers when a manual revert is needed."""
+"""Track code fixes and notify maintainers about pending PRs."""
 
 import logging
 import re
 from datetime import UTC, timedelta
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, select, update
+from sqlalchemy.orm import aliased
 
 from daily_pipeline.collection_source import utc_datetime
 from daily_pipeline.cron import schedule_trigger
@@ -19,7 +20,10 @@ from infrastructure.persistence.daily_pipeline_settings import (
 )
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
+    FAILURE_NOTIFICATION_STAGE,
+    OPTIMIZATION_MODE,
     add_failure_notification,
+    completed_node_result,
     failure_notification_recipients,
     now,
     pr_recipients,
@@ -98,11 +102,11 @@ def fix_references(comments, labels, repository):
 
 
 async def latest_repair(client, references, parties, original, revert):
-    branch = (revert.get("base") or {}).get("ref")
+    branch = ((revert or original).get("base") or {}).get("ref")
     original_merged = utc_datetime(original.get("merged_at"))
     for comment, ref in references:
         number = ref["pr_number"]
-        if number in (original["number"], revert["number"]):
+        if number == original["number"] or (revert and number == revert["number"]):
             continue
         repair = await client.pull_request(number, missing_ok=True)
         if not repair or (repair.get("base") or {}).get("ref") != branch:
@@ -122,6 +126,21 @@ async def latest_repair(client, references, parties, original, revert):
             continue
         return {**ref, "comment_id": comment.get("id"), "merged": repair["merged"]}
     return None
+
+
+def ready_code_merge():
+    revert = aliased(Node)
+    blocked = select(revert.id).where(
+        revert.failure_id == Failure.id,
+        revert.stage_code == "revert_pr",
+        revert.status != "completed",
+    ).correlate(Failure).exists()
+    reset = select(revert.id).where(
+        revert.failure_id == Failure.id,
+        revert.stage_code != FAILURE_NOTIFICATION_STAGE,
+        revert.status == "reset",
+    ).correlate(Failure).exists()
+    return and_(Node.stage_code == "pr_merge", Node.status.in_(("pending", "waiting", "failed")), ~blocked, ~reset)
 
 
 async def process_code_issue(tracking, issue_id, *, deadline_only=False):
@@ -148,8 +167,7 @@ async def process_code_issue(tracking, issue_id, *, deadline_only=False):
                 Failure.issue_id == issue_id,
                 Failure.problem_category == "code",
                 Failure.processing_status.in_(ACTIVE),
-                Node.stage_code == "revert_pr",
-                Node.status == "completed",
+                ready_code_merge(),
             )
         )
     )
@@ -222,35 +240,33 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
             .execution_options(populate_existing=True)
         )
     }
+    if any(row.status == "reset" and row.stage_code != FAILURE_NOTIFICATION_STAGE for row in nodes.values()):
+        await db.rollback()
+        return
     node = nodes.get("pr_merge")
     if node is None or node.status not in ("pending", "waiting", "failed"):
         await db.rollback()  # Respect an in-flight manually registered wait.
         return
-    revert_record = await db.scalar(
-        select(Execution)
-        .where(Execution.node_id == nodes["revert_pr"].id, Execution.status == "completed")
-        .order_by(Execution.attempt_no.desc())
-        .limit(1)
-    )
-    if revert_record is None:
-        await db.rollback()
-        return
-    revert_data = revert_record.result_data or {}
-    original_url = revert_data.get("original_pr_url")
-    if original_url:
-        original_ref = located_pull_request({"pr_url": original_url}, issue.repository)
-    else:
-        locating = await db.scalar(
-            select(Execution)
-            .where(Execution.node_id == nodes["locating"].id, Execution.status == "completed")
-            .order_by(Execution.attempt_no.desc())
-            .limit(1)
-        )
-        original_ref = located_pull_request(
-            locating.result_data if locating else {}, issue.repository
-        )
-    revert_ref = located_pull_request(revert_data, issue.repository)
-    if revert_ref["pr_number"] == original_ref["pr_number"]:
+    revert_node = nodes.get("revert_pr")
+    revert_data = {}
+    if revert_node:
+        if revert_node.status != "completed":
+            await db.rollback()
+            return
+        revert_data = await completed_node_result(db, revert_node.id)
+        if not revert_data:
+            await db.rollback()
+            return
+    original_data = {"pr_url": revert_data.get("original_pr_url")}
+    if not original_data["pr_url"]:
+        locating = nodes.get("locating")
+        original_data = await completed_node_result(db, locating.id if locating else None)
+        if not revert_node and original_data.get("revert_mode") != OPTIMIZATION_MODE:
+            await db.rollback()
+            return
+    original_ref = located_pull_request(original_data, issue.repository)
+    revert_ref = located_pull_request(revert_data, issue.repository) if revert_data else None
+    if revert_ref and revert_ref["pr_number"] == original_ref["pr_number"]:
         raise ValueError("回退 PR 和原问题 PR 不能是同一个")
     executions = list(
         await db.scalars(
@@ -267,19 +283,19 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
         await db.rollback()
         return
     prior_result = (managed.result_data if managed else None) or {}
-    revert = await client.pull_request(revert_ref["pr_number"])
+    revert = await client.pull_request(revert_ref["pr_number"]) if revert_ref else None
     original = await client.pull_request(original_ref["pr_number"])
-    branch = (revert.get("base") or {}).get("ref")
+    branch = ((revert or original).get("base") or {}).get("ref")
     run = await db.get(Run, issue.run_id)
     if not branch or run is None or (run.source_branch and run.source_branch != branch):
-        raise ValueError("回退 PR 的目标分支与 Daily 执行分支不一致")
+        raise ValueError("PR 的目标分支与 Daily 执行分支不一致")
     parties = pr_recipients(original)
     repair = await latest_repair(client, references, parties, original, revert)
     point = now()
     due = deadline is not None and point >= deadline
     previous = nodes.get("problem_pr_notification")
     if (
-        not (due or revert["merged"] or (repair and repair["merged"]))
+        not (due or (revert and revert["merged"]) or (repair and repair["merged"]))
         and previous
         and previous.status != "completed"
     ):
@@ -289,7 +305,7 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
         "repair": repair,
         "deadline_at": deadline.isoformat() + "Z" if deadline else None,
         "original_pr_url": original_ref["pr_url"],
-        "revert_pr_url": revert_ref["pr_url"],
+        "revert_pr_url": revert_ref["pr_url"] if revert_ref else None,
         "original_pr_author": parties.get("author"),
         "original_pr_merger": parties.get("merger"),
         "deadline_notified": bool(
@@ -298,7 +314,7 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
     }
     resolved = None
     alert = False
-    if revert["merged"]:
+    if revert and revert["merged"]:
         resolved, message = True, "回退 PR 已合入"
     elif repair and repair["merged"]:
         resolved, message = True, "修复 PR 已合入"
@@ -319,14 +335,15 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
         if repair and repair["merged"]:
             resolved, message = True, "修复 PR 已合入"
         else:
-            revert = await client.pull_request(revert_ref["pr_number"])
-            if revert["merged"]:
+            if revert_ref:
+                revert = await client.pull_request(revert_ref["pr_number"])
+            if revert and revert["merged"]:
                 resolved, message = True, "回退 PR 已合入"
             else:
                 alert = result["deadline_notified"] = True
-                message = pending_revert_message(revert)
+                message = deadline_message(revert, repair)
     elif result["deadline_notified"]:
-        message = pending_revert_message(revert)
+        message = deadline_message(revert, repair)
     else:
         message = "等待修复 PR 合入" if repair else "等待 Issue 评论登记修复 PR"
     if (
@@ -386,7 +403,9 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
     )
 
 
-def pending_revert_message(revert):
+def deadline_message(revert, repair):
+    if revert is None:
+        return "等待优化修复 PR 合入" if repair else "等待 Issue 评论登记优化修复 PR"
     if revert.get("state") == "closed":
         return "回退 PR 已关闭且未合入，请人工处理"
     return "等待人工合入回退 PR"
@@ -396,12 +415,21 @@ def enqueue_deadline_notices(
     db, node_id, attempt, source, issue, recipients, parties, result, message, point
 ):
     roles = {}
+    revert_url = result.get("revert_pr_url")
+    action = "回退" if revert_url else "优化修复"
     for name in recipients:
-        roles.setdefault(name.lower(), []).append("请跟踪回退 PR 合入进展。")
+        roles.setdefault(name.lower(), []).append(f"请跟踪{action} PR 合入进展。")
     if merger := parties.get("merger"):
-        roles.setdefault(merger, []).append("请处理回退 PR 合入。")
+        roles.setdefault(merger, []).append(f"请处理{action} PR 合入。")
     if author := parties.get("author"):
-        roles.setdefault(author, []).append("请知悉，本次失败已进入回退处理。")
+        roles.setdefault(author, []).append(
+            "请知悉，本次失败已进入回退处理。" if revert_url else "请更新优化修复进展。"
+        )
+    links = []
+    if revert_url:
+        links.append(f"回退 PR：{revert_url}")
+    elif repair := result.get("repair"):
+        links.append(f"优化修复 PR：{repair['pr_url']}")
     for offset, (name, actions) in enumerate(roles.items()):
         content = "\n".join(
             (
@@ -409,7 +437,7 @@ def enqueue_deadline_notices(
                 message,
                 *actions,
                 f"原问题 PR：{result['original_pr_url']}",
-                f"回退 PR：{result['revert_pr_url']}",
+                *links,
                 f"Issue：https://github.com/{issue.repository}/issues/{issue.number}",
             )
         )

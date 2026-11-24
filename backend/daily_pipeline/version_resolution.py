@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 
 from daily_pipeline.collection_source import utc_datetime
+from daily_pipeline.processing_rollback import VERSION_STAGE_NAMES, version_can_rollback
 from daily_pipeline.pull_requests import REPOSITORY_PATTERN, located_pull_request
 from daily_pipeline.trigger_config import DEFAULT_TIMEZONE
 from infrastructure.persistence.daily_pipeline_settings import (
@@ -95,6 +96,26 @@ async def flow_view(db, failure, run, issue):
     except ValueError:
         target = {}
     status = flow.status if flow else "waiting_resolution"
+    issue_open = issue is None or issue.state == "open" and issue.deleted_at is None
+    rollback_records = {}
+    if flow:
+        stage = Execution.request_data["stage_code"].as_string()
+        for record in await db.scalars(
+            select(Execution)
+            .join(Node, Node.id == Execution.node_id)
+            .join(Failure, Failure.id == Node.failure_id)
+            .where(
+                Failure.version_flow_id == flow.id,
+                Execution.request_data["purpose"].as_string() == "process_rollback",
+                stage.in_(tuple(VERSION_STAGE_NAMES)),
+            )
+            .order_by(Execution.id.desc())
+        ):
+            rollback_records.setdefault(record.request_data["stage_code"], []).append({
+                "id": str(record.id), "author": record.operator,
+                "createdAt": record.started_at.isoformat() + "Z",
+                "source": "manual", "status": "completed", "content": record.message,
+            })
     return {
         "failureId": str(failure.id),
         "status": status,
@@ -105,8 +126,12 @@ async def flow_view(db, failure, run, issue):
         "build": (flow.build or {}) if flow else {},
         "memberCount": count,
         "updatedAt": flow.updated_at.isoformat() + "Z" if flow else None,
-        "canEdit": failure.processing_status in ACTIVE
-        and (issue is None or issue.state == "open" and issue.deleted_at is None),
+        "canEdit": failure.processing_status in ACTIVE and issue_open,
+        "rollbackStages": [
+            stage for stage in VERSION_STAGE_NAMES if flow and issue_open
+            and failure.processing_status in (*ACTIVE, "resolved") and version_can_rollback(status, stage)
+        ],
+        "rollbackRecords": rollback_records,
     }
 
 
@@ -225,8 +250,6 @@ async def submit_version_action(tracking, failure_id, action, actor, data):
     point = now()
     if action == "external_recovered" and flow.status == "waiting_resolution":
         note = (data.get("message") or "").strip()
-        if not note:
-            raise ValueError("请填写外部配套恢复说明")
         flow.resolution = {
             "kind": action,
             "confirmed_by": actor,
