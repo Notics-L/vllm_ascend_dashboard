@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,8 +26,21 @@ from tooling.parsers.format_proxy import FormatProxy
 
 # Claude Code CLI 日志持久化目录
 _CLI_LOG_DIR = Path(__file__).parent.parent.parent / "data" / "claude_logs"
+_GITHUB_CREDENTIAL_ENV = frozenset({
+    "GH_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GITHUB_ACCESS_TOKEN",
+    "GITHUB_API_TOKEN",
+})
 
 logger = logging.getLogger(__name__)
+
+
+def _cli_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key.upper() not in _GITHUB_CREDENTIAL_ENV}
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +301,12 @@ class ClaudeCodeCLI:
                 raise ClaudeCLITimeout(
                     f"Claude Code CLI timed out after {self._timeout}s"
                 )
+            except asyncio.CancelledError:
+                if proc.returncode is None:
+                    with suppress(ProcessLookupError):
+                        proc.kill()
+                    await proc.wait()
+                raise
 
             duration = time.monotonic() - start
             stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -378,6 +398,7 @@ class ClaudeCodeCLI:
                 cli_path, "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=_cli_environment(),
             )
             await asyncio.wait_for(proc.communicate(), timeout=10)
             return proc.returncode == 0
@@ -462,7 +483,7 @@ class ClaudeCodeCLI:
         当 api_base 指向 FormatProxy 时，即为代理模式（非 Anthropic provider）；
         当 api_base 指向官方 API 时，即为直连模式。
         """
-        env = os.environ.copy()
+        env = _cli_environment()
 
         # ── 清除宿主机泄漏的用户凭据，防止 CLI 使用个人账号 ──
         for key in (
@@ -499,11 +520,6 @@ class ClaudeCodeCLI:
         env["CLAUDE_CODE_HEADLESS"] = "1"
 
         # 不隔离 HOME/USERPROFILE —— 改用 --setting-sources 排除用户配置
-
-        # 传递 GITHUB_TOKEN，CLI 可以用 curl 拉 CI 日志
-        from infrastructure.core.config import settings
-        if settings.GITHUB_TOKEN:
-            env["GITHUB_TOKEN"] = settings.GITHUB_TOKEN
 
         return env
 

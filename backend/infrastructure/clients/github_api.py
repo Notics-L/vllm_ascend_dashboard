@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ class GitHubAPIService:
         """发送 GitHub API 请求"""
         url = f"{GITHUB_API_BASE}{endpoint}"
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=30.0) as client:
+            async with GitHubAsyncClient(
+                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+            ) as client:
                 response = await client.request(method, url, **kwargs)
                 response.raise_for_status()
                 # Some endpoints return empty response (e.g., rerun workflow)
@@ -125,7 +128,9 @@ class GitHubAPIService:
         endpoint = f"/repos/{self.owner}/{self.repo}/actions/runs/{run_id}/rerun"
         logger.info(f"Attempting to rerun workflow {run_id} for {self.owner}/{self.repo}")
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=30.0) as client:
+            async with GitHubAsyncClient(
+                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+            ) as client:
                 response = await client.post(f"{GITHUB_API_BASE}{endpoint}")
                 logger.info(f"GitHub API response: {response.status_code} - {response.text[:200] if response.text else 'empty'}")
                 # GitHub returns 201 Created on success
@@ -144,7 +149,9 @@ class GitHubAPIService:
         endpoint = f"/repos/{self.owner}/{self.repo}/check-suites/{check_suite_id}/rerun"
         logger.info(f"Attempting to rerun check suite {check_suite_id}")
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=30.0) as client:
+            async with GitHubAsyncClient(
+                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+            ) as client:
                 response = await client.post(f"{GITHUB_API_BASE}{endpoint}")
                 # GitHub returns 201 Created on success
                 if response.status_code == 201:

@@ -8,6 +8,8 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from infrastructure.clients.github_http import GitHubAsyncClient
+
 API_VERSION = "2026-03-10"
 PAGE_SIZE = 100
 MAX_PAGES = 100
@@ -20,13 +22,17 @@ class CollectionSourceError(Exception):
 
 
 class DailyCollectionClient:
+    audit_source = "daily_collection"
+
     def __init__(self, repository: str, token: str):
         parts = repository.split("/")
         if len(parts) != 2 or not all(parts):
             raise CollectionSourceError("Daily 目标仓库配置无效")
         self.repository = repository
         self.prefix = "/repos/" + "/".join(quote(part, safe="") for part in parts)
-        self.client = httpx.AsyncClient(
+        self.client = GitHubAsyncClient(
+            audit_source=self.audit_source,
+            credential_source="daily",
             base_url="https://api.github.com",
             timeout=httpx.Timeout(60, connect=15),
             headers={

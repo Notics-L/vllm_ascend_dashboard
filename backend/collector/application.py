@@ -12,6 +12,8 @@ import logging
 import os
 import sys
 
+from infrastructure.core.github_audit import github_audit_writer
+
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
@@ -23,6 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("collector")
 
 
+@github_audit_writer("collector")
 async def main():
     node_id = os.environ.get("NODE_ID", f"collector-{os.uname().nodename}")
     capabilities_str = os.environ.get("CAPABILITIES", "python")

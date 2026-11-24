@@ -25,6 +25,7 @@ import httpx
 from smolagents import tool
 
 from agent.memory_manager import MemoryManager
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -287,7 +288,7 @@ def fetch_github_api(url: str) -> str:
         import asyncio
 
         async def _fetch():
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with GitHubAsyncClient(audit_source="agent", credential_source="global", timeout=30) as client:
                 resp = await client.get(url, headers=headers)
                 return resp
 

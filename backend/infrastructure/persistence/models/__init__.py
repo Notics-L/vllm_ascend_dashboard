@@ -33,7 +33,7 @@ __all__ = [
     "Base", "User", "ModelConfig", "ModelReport", "CIResult", "CIJob",
     "DailyFailureRecord", "DailyPipelineTestCase", "DailyPipelineScheduledTask", "DailyPipelineConfig",
     "DailyPipelineTriggerHistory", "DailyPipelineCollectionRun",
-    "DailyPipelineCollectionNode", "DailyPipelineMergedPR",
+    "DailyPipelineCollectionNode", "DailyPipelineMergedPR", "GitHubOperation",
     "WorkflowConfig", "PerformanceData", "JobOwner", "NightlyTestCase", "ModelFoMapping", "ModelFoMaster",
     "ModelSyncConfig", "ProjectDashboardConfig", "KubernetesClusterConfig",
     "DailyPR", "DailyIssue", "DailyCommit", "DailySummary", "LLMProviderConfig",
@@ -69,6 +69,7 @@ from infrastructure.persistence.models.daily_pipeline_collection import (
     DailyPipelineCollectionRun,
     DailyPipelineMergedPR,
 )
+from infrastructure.persistence.models.github_operation import GitHubOperation
 
 # 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
 from infrastructure.persistence.models.image_build_monitor import (

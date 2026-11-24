@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,9 @@ class GitHubClient:
         logger.info(f"GitHubClient initialized for {self.owner}/{self.repo}")
 
     def _create_http_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
+        return GitHubAsyncClient(
+            audit_source="github_client",
+            credential_source="global",
             base_url=self.BASE_URL,
             headers=self._get_headers(),
             timeout=httpx.Timeout(30.0, connect=10.0, read=60.0, write=30.0),
@@ -524,7 +527,9 @@ class GitHubClient:
 
         # 下载 ZIP 文件（使用临时客户端，允许重定向）
         # 注意：下载 URL 不是 GitHub API，所以不能使用 self.client
-        async with httpx.AsyncClient(
+        async with GitHubAsyncClient(
+            audit_source="github_client",
+            credential_source="global",
             follow_redirects=True,
             timeout=httpx.Timeout(60.0),
             headers={"Authorization": f"Bearer {self.token}"} if self.token else {}

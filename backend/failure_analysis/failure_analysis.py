@@ -2,9 +2,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +27,7 @@ from infrastructure.storage.failure_analysis_file_store import FailureAnalysisFi
 
 logger = logging.getLogger(__name__)
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+_analysis_log_workspace: ContextVar[Path | None] = ContextVar("analysis_log_workspace", default=None)
 
 VALID_CATEGORIES = {"基础设施", "测试用例", "开发代码", "其他"}
 
@@ -142,6 +147,28 @@ class FailureAnalysisService:
         if not root.is_absolute():
             root = Path.cwd() / root
         return root.resolve()
+
+    @contextmanager
+    def _temporary_analysis_logs(self):
+        root = self._data_root() / "failure-analysis"
+        root.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=root, prefix="analysis-logs-") as directory:
+            workspace = Path(directory)
+            # The CLI runs as appuser when the backend itself runs as root.
+            if getattr(os, "geteuid", lambda: -1)() == 0:
+                import pwd
+
+                try:
+                    cli_user = pwd.getpwnam("appuser")
+                except KeyError:
+                    pass
+                else:
+                    os.chown(workspace, cli_user.pw_uid, cli_user.pw_gid)
+            scope = _analysis_log_workspace.set(workspace)
+            try:
+                yield workspace
+            finally:
+                _analysis_log_workspace.reset(scope)
 
     @staticmethod
     def _blocking_investigation_findings(program_validation: dict) -> list[dict]:
@@ -405,6 +432,7 @@ class FailureAnalysisService:
         await db.flush()
         await db.refresh(analysis)
 
+        evidence_scope = ExitStack()
         try:
             # Read runtime configuration and prepare the evidence inside the
             # same failure boundary as the LLM call.  Previously
@@ -419,6 +447,7 @@ class FailureAnalysisService:
             max_turns_val = max(3, min(int(agent_config.get("max_turns", 80)), 1000))
             timeout_val = max(60, min(int(agent_config.get("timeout_seconds", 1800)), 7200))
             system_prompt = await self._get_system_prompt(db)
+            evidence_scope.enter_context(self._temporary_analysis_logs())
             user_prompt = await self._build_job_context(
                 job,
                 db,
@@ -654,6 +683,8 @@ class FailureAnalysisService:
             await db.commit()
             await db.refresh(analysis)
             logger.error(f"LLM analysis failed for job {job_id}: {e}")
+        finally:
+            evidence_scope.close()
 
         return analysis
 
@@ -1432,7 +1463,8 @@ class FailureAnalysisService:
                 except Exception:
                     lines.append(f"- Job 日志文件：{logs['job_log']}（读取失败）")
         else:
-            lines.append("\n### 本地已缓存的数据（请用工具直接读取，避免重复 curl）\n")
+            lines.append("\n### 后台已准备的本地证据\n")
+            lines.append("请用本地工具读取以下文件。若证据缺失，请在报告中注明，由看板后台负责从 GitHub 下载。")
             if logs["job_log"]:
                 lines.append(f"- Job 日志：`{logs['job_log']}`")
             if logs["run_log_zip"]:
@@ -1589,11 +1621,7 @@ class FailureAnalysisService:
                 f"Job #{candidate_job.job_id} / 被测分支 `{candidate_branch or 'unknown'}` / "
                 f"good_commit `{good_commit or 'unknown'}`"
             )
-            lines.append(f"- 失败 Job 日志：`{self._data_root() / 'failure-analysis' / job.workflow_name / f'{job.job_id}.log'}`")
             lines.append(f"- 成功 Job 日志：`{candidate_logs.get('job_log') or 'unavailable'}`")
-            lines.append(
-                f"- 失败 Run Artifact：`{self._data_root() / 'ci-evidence' / 'runs' / str(job.run_id) / 'extracted'}`"
-            )
             lines.append(
                 f"- 成功 Run Artifact：`{candidate_logs.get('artifacts_dir') or 'unavailable'}`"
             )
@@ -2708,10 +2736,23 @@ class FailureAnalysisService:
 
         import aiohttp
 
-        request_timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
+        from infrastructure.clients.github_http import github_aiohttp_trace
 
-        log_dir = self._data_root() / "failure-analysis" / job.workflow_name
+        request_timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
+        trace_configs = [github_aiohttp_trace("failure_analysis", "global")]
+
+        cache_dir = self._data_root() / "failure-analysis" / job.workflow_name
+        workspace = _analysis_log_workspace.get()
+        log_dir = workspace / str(job.run_id) if workspace is not None else cache_dir
         log_dir.mkdir(parents=True, exist_ok=True)
+
+        def evidence_path(filename: str) -> Path:
+            local = log_dir / filename
+            cached = cache_dir / filename
+            if not local.exists() and cached.is_file() and cached.stat().st_size > 0:
+                return cached
+            return local
+
         headers = {
             "Authorization": f"Bearer {settings.GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json",
@@ -2721,7 +2762,7 @@ class FailureAnalysisService:
 
         # 1. Job log.  GitHub may remove the individual blob while retaining the
         # run archive, so a 404 is recorded and handled by the fallback below.
-        job_log_path = log_dir / f"{job.job_id}.log"
+        job_log_path = evidence_path(f"{job.job_id}.log")
         if job_log_path.exists() and job_log_path.stat().st_size == 0:
             job_log_path.unlink()
         job_log_errors: list[str] = []
@@ -2729,7 +2770,7 @@ class FailureAnalysisService:
             job_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/jobs/{job.job_id}/logs"
             for attempt in range(1, 4):
                 try:
-                    async with aiohttp.ClientSession(timeout=request_timeout) as session:
+                    async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
                         async with session.get(job_url, headers=headers) as resp:
                             if resp.status == 200:
                                 payload = await resp.read()
@@ -2754,12 +2795,12 @@ class FailureAnalysisService:
         # 2. Run-level log ZIP fallback.  This is especially useful for expired
         # or missing per-job blobs and for startup failures that never produced
         # a standalone job log.
-        run_zip_path = log_dir / f"run_{job.run_id}_logs.zip"
+        run_zip_path = evidence_path(f"run_{job.run_id}_logs.zip")
         run_log_errors: list[str] = []
         if not run_zip_path.exists():
             run_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{job.run_id}/logs"
             try:
-                async with aiohttp.ClientSession(timeout=request_timeout) as session:
+                async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
                     async with session.get(run_url, headers=headers) as resp:
                         if resp.status == 200:
                             payload = await resp.read()
@@ -2776,13 +2817,21 @@ class FailureAnalysisService:
         if run_zip_path.exists():
             result["run_log_zip"] = str(run_zip_path)
             if not result["job_log"]:
-                recovered = await asyncio.to_thread(
-                    self._extract_job_log_from_run_zip,
-                    run_zip_path,
-                    job_id=job.job_id,
-                    job_name=job.job_name,
-                    destination=job_log_path,
+                extraction = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._extract_job_log_from_run_zip,
+                        run_zip_path,
+                        job_id=job.job_id,
+                        job_name=job.job_name,
+                        destination=job_log_path,
+                    )
                 )
+                try:
+                    recovered = await asyncio.shield(extraction)
+                except asyncio.CancelledError:
+                    # The extraction thread must close its files before cleanup.
+                    await extraction
+                    raise
                 if recovered:
                     result["job_log"] = str(job_log_path)
 
@@ -2844,11 +2893,11 @@ class FailureAnalysisService:
 
         # 4. Run jobs 鍒楄〃锛堝鑺傜偣鍦烘櫙闇€瑕侊級
         import json
-        jobs_path = log_dir / f"run_{job.run_id}_jobs.json"
+        jobs_path = evidence_path(f"run_{job.run_id}_jobs.json")
         if not jobs_path.exists():
             jobs_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{job.run_id}/jobs?per_page=100"
             try:
-                async with aiohttp.ClientSession(timeout=request_timeout) as session:
+                async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
                     async with session.get(jobs_url, headers=headers) as resp:
                         if resp.status == 200:
                             jobs_path.write_text(json.dumps(await resp.json(), ensure_ascii=False, indent=2))

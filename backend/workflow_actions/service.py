@@ -18,6 +18,7 @@ import yaml  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
 from infrastructure.persistence.models import User, WorkflowActionLog, WorkflowActionPermission
 from workflow_actions.credentials import get_github_token
@@ -167,7 +168,9 @@ async def _github_request(
         "User-Agent": "vllm-ascend-dashboard/workflow-actions",
     }
     total_wait = 0.0
-    async with httpx.AsyncClient(
+    async with GitHubAsyncClient(
+        audit_source="workflow_actions",
+        credential_source="actions",
         base_url="https://api.github.com",
         headers=headers,
         timeout=30.0,

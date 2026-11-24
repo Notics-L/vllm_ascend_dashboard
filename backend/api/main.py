@@ -16,9 +16,10 @@ if sys.platform == 'win32':
         except Exception:
             pass
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.deps import identify_github_feature
 from api.middleware.usage_tracking import (
     UsageTrackingMiddleware,
     start_usage_tracking_worker,
@@ -35,6 +36,7 @@ from api.v1 import (
     daily_pipeline,
     daily_report,
     daily_summary,
+    github_operations,
     image_build_monitor,
     issue_diagnosis,
     job_owners,
@@ -59,6 +61,7 @@ from api.v1 import (
 )
 from daily_pipeline.logging import setup_daily_file_logging
 from infrastructure.core.config import settings
+from infrastructure.core.github_audit import github_audit_writer
 from infrastructure.core.logging import setup_db_logging
 from infrastructure.db.base import engine
 from infrastructure.persistence.models import Base
@@ -436,7 +439,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Stale task recovery failed (non-fatal): %s", e)
 
-    yield
+    async with github_audit_writer("api"):
+        yield
 
     logger.info("Shutting down application...")
 
@@ -458,6 +462,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
+        dependencies=[Depends(identify_github_feature)],
     )
 
     # 配置 CORS
@@ -488,6 +493,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(commit_analysis.router, prefix="/api/v1/commit-analysis", tags=["Commit 分析"])
     app.include_router(daily_pipeline.router, prefix="/api/v1")
+    app.include_router(github_operations.router, prefix="/api/v1")
     app.include_router(daily_summary.router, prefix="/api/v1", tags=["每日总结"])
     app.include_router(models.router, prefix="/api/v1/models", tags=["模型管理"])
     app.include_router(model_sync_configs.router, prefix="/api/v1/model-sync-configs", tags=["模型同步配置"])

@@ -3,6 +3,8 @@ import json
 
 import httpx
 
+from infrastructure.clients.github_http import GitHubAsyncClient
+
 
 async def read_nightly_config(repository: str, branch: str, path: str) -> str:
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
@@ -13,7 +15,10 @@ async def read_nightly_config(repository: str, branch: str, path: str) -> str:
 
 async def check_trigger_permission(repository: str, token: str) -> tuple[bool, str]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-    async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers, timeout=10) as client:
+    async with GitHubAsyncClient(
+        audit_source="daily_config", credential_source="daily",
+        base_url="https://api.github.com", headers=headers, timeout=10,
+    ) as client:
         repo = await client.get(f"/repos/{repository}")
         repo.raise_for_status()
         workflow = await client.get(f"/repos/{repository}/actions/workflows/schedule_daily_test.yaml")
@@ -40,7 +45,10 @@ async def dispatch_daily_workflow(repository: str, branch: str, token: str, case
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2026-03-10",
     }
-    async with httpx.AsyncClient(base_url="https://api.github.com", headers=headers, timeout=30) as client:
+    async with GitHubAsyncClient(
+        audit_source="daily_config", credential_source="daily",
+        base_url="https://api.github.com", headers=headers, timeout=30,
+    ) as client:
         response = await client.post(
             f"/repos/{repository}/actions/workflows/schedule_daily_test.yaml/dispatches",
             json={

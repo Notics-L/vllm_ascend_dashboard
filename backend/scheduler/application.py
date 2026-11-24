@@ -10,6 +10,8 @@ import os
 import signal
 import sys
 
+from infrastructure.core.github_audit import github_audit_writer
+
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
@@ -29,6 +31,7 @@ def _handle_shutdown(signum, frame):
     SHUTDOWN = True
 
 
+@github_audit_writer("scheduler")
 async def main():
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

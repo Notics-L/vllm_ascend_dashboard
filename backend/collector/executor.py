@@ -16,6 +16,7 @@ from collector.ci import CICollector
 from collector.pr_pipeline import PRPipelineCollector
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_audit import github_feature
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.models import (
     CIJob,
@@ -117,6 +118,7 @@ class CollectorRunner:
             self._renew_loop(ctx.task_id, ctx.lease_token, renew_fn, executing_task)
         )
 
+        feature = github_feature.set(task_type)
         try:
             if task_type == "ci_sync":
                 await self._run_ci_sync(ctx, task_params)
@@ -157,6 +159,7 @@ class CollectorRunner:
             else:
                 raise ValueError(f"Unsupported collection task type: {task_type}")
         finally:
+            github_feature.reset(feature)
             renew_task.cancel()
             try:
                 await renew_task
