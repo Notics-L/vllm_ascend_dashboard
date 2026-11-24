@@ -8,6 +8,7 @@ import { useDailyIssues, useDailyIssueMutations } from '../../../hooks/useDailyP
 import type { DailyIssueItem } from '../../../types/dailyPipeline'
 import CollectionIssueLink from '../collection/CollectionIssueLink'
 import CollectionRunLink from '../collection/CollectionRunLink'
+import { collectionGithubLink } from '../collection/collectionDisplay'
 import IssueProgressLink from './IssueProgressLink'
 import { dailyTableRefresh } from '../shared/dailyTableRefresh'
 import { useDailyQueryError } from '../shared/useDailyQueryError'
@@ -34,6 +35,8 @@ const columns: ProColumns<DailyIssueItem>[] = [
   { title: 'Run ID', dataIndex: 'runId', width: 125, valueType: 'text',
     fieldProps: { placeholder: '请输入 Run ID', allowClear: true },
     render: (_, row) => row.runId ? <CollectionRunLink runId={row.runId} /> : '—' },
+  { title: '链接', dataIndex: 'githubUrl', width: 76, search: false,
+    render: (_, row) => collectionGithubLink(row.githubUrl) },
   { title: '处理进展', key: 'processingProgress', width: 130, search: false, render: (_, row) => <IssueProgressLink issueNumber={row.number} /> },
 ]
 
@@ -111,7 +114,7 @@ function IssueTable({ active }: { active: boolean }) {
         onChange: (keys) => setSelectedNumbers(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }}
       columns={columns} dataSource={filteredIssues}
       {...dailyTableRefresh(refetch, loading || busy, { current: currentPage, onChange: setCurrentPage, defaultPageSize: 10, pageSizeOptions: ['10', '20', '50'], showSizeChanger: true })}
-      scroll={{ x: 900 }}
+      scroll={{ x: 976 }}
     />
   </>
 }

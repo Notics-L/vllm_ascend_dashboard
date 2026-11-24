@@ -11,7 +11,7 @@ import DailyCasePage from '../cases/DailyCasePage'
 import CollectionDuration from './CollectionDuration'
 import CollectionIssueLink from './CollectionIssueLink'
 import DailyTriggerHistory from '../trigger/DailyTriggerHistory'
-import { executionResult, formatCollectionTime } from './collectionDisplay'
+import { collectionGithubLink, executionResult, formatCollectionTime } from './collectionDisplay'
 import { dailyTableRefresh } from '../shared/dailyTableRefresh'
 import { useDailyQueryError } from '../shared/useDailyQueryError'
 import { useDailyTabOpening } from '../shared/useDailyTabOpening'
@@ -59,6 +59,7 @@ function DailyPipelineCollection() {
     { title: 'Issue', dataIndex: 'issue', width: 150, search: false, render: (_, row) => <CollectionIssueLink issue={row.issue} /> },
     { title: '关联', key: 'triggerHistory', width: 120, search: false, render: (_, row) =>
       <Button type="link" className="daily-collection-link daily-collection-history-link" onClick={() => setHistoryId(row.triggerHistoryId)}>触发日志</Button> },
+    { title: '链接', dataIndex: 'githubUrl', width: 76, search: false, render: (_, row) => collectionGithubLink(row.githubUrl) },
     { title: '操作', key: 'actions', width: 85, search: false, render: (_, row) =>
       <Link className="daily-collection-link" to={'/daily-pipeline/collection/runs/' + row.runId} state={{ returnTo: '/daily-pipeline/collection' }}>详情</Link> },
   ]
@@ -78,7 +79,7 @@ function DailyPipelineCollection() {
             onChange: (keys) => setSelectedRunIds(keys.map(Number)),
             getCheckboxProps: () => ({ disabled: deleteRuns.isPending }),
           }}
-          search={false} scroll={{ x: 1123 }}
+          search={false} scroll={{ x: 1199 }}
            />
     </div>
     <DailyTriggerHistory open={Boolean(historyId)} focusId={historyId} onClose={() => setHistoryId(null)} />

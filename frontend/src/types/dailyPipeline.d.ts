@@ -71,6 +71,7 @@ export type DailyExecutionResult = '排队中' | '执行中' | '成功' | '失�
 export interface DailyCollectionRun {
   id: string
   runId: number
+  githubUrl?: string | null
   startedAt: string | null
   endedAt: string | null
   triggerHistoryId: string | null
@@ -86,6 +87,7 @@ export interface DailyCollectionNode {
   parentId: string | null
   nodeType: 'workflow_run' | 'matrix' | 'workflow_call' | 'job' | 'test_job'
   sourceId: string | null
+  githubUrl?: string | null
   name: string
   result: DailyExecutionResult
   group?: DailyCollectionCaseGroup | null
@@ -97,6 +99,7 @@ export interface DailyCollectionDetail extends DailyCollectionRun {
   nodes?: DailyCollectionNode[]
   jobs: {
     id: string
+    githubUrl?: string | null
     name: string
     result: DailyExecutionResult
     group: 'run-all-tests' | 'other'
@@ -106,6 +109,7 @@ export interface DailyCollectionDetail extends DailyCollectionRun {
   cases: {
     id: string
     jobId: string
+    githubUrl?: string | null
     name: string
     group: DailyCollectionCaseGroup
     hardware: string
@@ -144,6 +148,7 @@ export interface DailyIssueDetail {
 }
 
 export type DailyIssueItem = Pick<DailyIssueDetail, 'number' | 'title' | 'state'> & {
+  githubUrl?: string | null
   runId: number | null
   processingProgress: DailyFailedCase['processingProgress'] | null
 }

@@ -145,14 +145,18 @@ class DailyCollectionRepository:
     async def get_root(self, run_id: int) -> Run | None:
         return await self.db.scalar(select(Run).where(Run.run_id == run_id, Run.deleted_at.is_(None)))
 
-    async def history_ids(self, run_ids: set[int]) -> dict[int, int]:
+    async def history_links(self, run_ids: set[int]) -> dict[int, tuple[int, str]]:
         if not run_ids:
             return {}
-        rows = await self.db.execute(
-            select(History.run_id, func.max(History.id))
-            .where(History.run_id.in_(run_ids)).group_by(History.run_id),
+        latest_ids = (
+            select(func.max(History.id))
+            .where(History.run_id.in_(run_ids))
+            .group_by(History.run_id)
         )
-        return dict(rows.tuples().all())
+        rows = await self.db.execute(
+            select(History.run_id, History.id, History.repository).where(History.id.in_(latest_ids)),
+        )
+        return {run_id: (history_id, repository) for run_id, history_id, repository in rows}
 
     async def get_tree(self, run_id: int) -> dict | None:
         root = await self.get_root(run_id)
