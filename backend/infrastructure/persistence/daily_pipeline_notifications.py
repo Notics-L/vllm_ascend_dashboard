@@ -148,8 +148,9 @@ class DailyNotificationOutboxRepository:
             (Execution.request_data["delivery_started"].as_boolean().is_(True), "processing"),
             else_="pending",
         )
+        stage_code = func.coalesce(Execution.request_data["archived_stage_code"].as_string(), Node.stage_code)
         filters = [
-            or_(Node.stage_code.in_((*NOTIFICATION_STAGES, VERSION_BUILD_NOTICE)),
+            or_(stage_code.in_((*NOTIFICATION_STAGES, VERSION_BUILD_NOTICE)),
                 Execution.request_data["purpose"].as_string() == "revert_deadline"),
             Execution.source == "auto",
             Execution.request_data["delivery_mode"].as_string() == "pull",
@@ -159,7 +160,7 @@ class DailyNotificationOutboxRepository:
             filters.append(delivery_result == outcome)
         if status:
             filters.append(consumption_status == status)
-        query = select(Execution, Node.stage_code).join(Node, Node.id == Execution.node_id).where(*filters)
+        query = select(Execution, stage_code).join(Node, Node.id == Execution.node_id).where(*filters)
         total = await self.db.scalar(select(func.count()).select_from(query.subquery()))
         rows = (await self.db.execute(
             query.order_by(Execution.id.desc()).offset((page - 1) * page_size).limit(page_size)

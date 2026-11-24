@@ -90,7 +90,7 @@ async def test_unrelated_comment_cannot_mark_the_case_fixed():
     assert repair is None
 
 
-def make_flow(repair, *, revert_merged=False, existing=None):
+def make_flow(repair, *, revert_merged=False, existing=None, optimize=False):
     source = make_source()
     issue = SimpleNamespace(
         id=2, run_id=5, repository="repo/test", number=42, state="open", deleted_at=None
@@ -109,17 +109,20 @@ def make_flow(repair, *, revert_merged=False, existing=None):
     merge = SimpleNamespace(
         id=12, stage_code="pr_merge", status="waiting" if existing else "pending", started_at=None
     )
-    revert_history = SimpleNamespace(
-        result_data={
+    if optimize:
+        precedent = SimpleNamespace(id=9, stage_code="locating", status="completed")
+        previous_result = {"pr_number": 1, "revert_mode": "optimize"}
+    else:
+        precedent = revert
+        previous_result = {
             "pr_number": 2,
             "pr_url": "https://github.com/repo/test/pull/2",
             "original_pr_url": "https://github.com/repo/test/pull/1",
         }
-    )
     rows = []
     db = SimpleNamespace(
-        scalar=AsyncMock(side_effect=[failure, revert_history]),
-        scalars=AsyncMock(side_effect=[[revert, notification, merge], [existing] if existing else []]),
+        scalar=AsyncMock(side_effect=[failure, previous_result]),
+        scalars=AsyncMock(side_effect=[[precedent, notification, merge], [existing] if existing else []]),
         get=AsyncMock(
             side_effect=[issue, SimpleNamespace(source_branch="main"), source]
         ),
@@ -205,3 +208,43 @@ async def test_code_path_before_and_after_deadline(monkeypatch, scenario):
         expected = "回退 PR 已合入" if scenario == "manual_revert" else "修复 PR 已合入"
         assert tracking._complete_node.await_args.args[5] == expected
         assert not notices
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["waiting", "merged", "deadline"])
+async def test_optimization_tracks_only_the_repair_pr(monkeypatch, scenario):
+    point = datetime(2026, 11, 19, 3, 30)
+    monkeypatch.setattr(module, "now", lambda: point)
+    monkeypatch.setattr(
+        module, "failure_notification_recipients", AsyncMock(return_value=["watcher"])
+    )
+    repair = make_pr(23, merged=scenario == "merged", merged_at="2026-11-19T03:22:00Z")
+    tracking, client, refs, labels, rows, failure = make_flow(repair, optimize=True)
+    deadline = point if scenario == "deadline" else datetime(2026, 11, 19, 3, 40)
+
+    await module.advance_failure(tracking, client, 2, 1, refs, labels, deadline)
+
+    assert {call.args[0] for call in client.pull_request.await_args_list} == {1, 23}
+    if scenario == "merged":
+        tracking._complete_node.assert_awaited_once()
+        assert tracking._complete_node.await_args.args[5] == "修复 PR 已合入"
+        tracking._commit_node_completion.assert_awaited_once()
+    else:
+        tracking._complete_node.assert_not_awaited()
+        execution = rows[0]
+        assert execution.result_data["revert_pr_url"] is None
+        assert execution.result_data["repair"]["pr_number"] == 23
+        if scenario == "deadline":
+            assert failure.processing_status == "unresolved"
+            assert execution.result_data["deadline_notified"] is True
+            notices = [row.request_data for row in rows if row.request_data.get("purpose")]
+            assert {notice["github_name"] for notice in notices} == {"developer", "reviewer", "watcher"}
+            assert all(
+                "优化修复 PR" in notice["content"] and "回退 PR" not in notice["content"]
+                for notice in notices
+            )
+            tracking, client, refs, labels, rows, _ = make_flow(
+                repair, existing=execution, optimize=True
+            )
+            await module.advance_failure(tracking, client, 2, 1, refs, labels, deadline)
+            assert not rows

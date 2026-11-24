@@ -70,8 +70,9 @@ def setup(monkeypatch, subject, members):
     return tracking, client
 
 
+@pytest.mark.parametrize("data", [{}, {"message": "  依赖恢复  "}])
 @pytest.mark.asyncio
-async def test_external_confirmation_generates_manual_build_notice(monkeypatch):
+async def test_external_confirmation_generates_manual_build_notice(monkeypatch, data):
     subject = flow("waiting_resolution")
     first = member(1)
     tracking, _ = setup(monkeypatch, subject, [first])
@@ -83,11 +84,12 @@ async def test_external_confirmation_generates_manual_build_notice(monkeypatch):
     notice = AsyncMock()
     monkeypatch.setattr(module, "enqueue_build_notice", notice)
     await module.submit_version_action(
-        tracking, 1, "external_recovered", "maintainer", {"message": "依赖恢复"}
+        tracking, 1, "external_recovered", "maintainer", data
     )
     assert subject.status == "waiting_build"
     assert subject.resolution["build_target"] == TARGET
     assert subject.resolution["confirmed_by"] == "maintainer"
+    assert subject.resolution["note"] == data.get("message", "").strip()
     assert first.processing_status == "running"
     notice.assert_awaited_once_with(tracking.db, subject)
     tracking._client.assert_not_awaited()

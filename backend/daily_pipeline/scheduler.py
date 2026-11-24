@@ -13,7 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
 from daily_pipeline.cases import DailyCaseService
-from daily_pipeline.code_resolution import process_code_issue
+from daily_pipeline.code_resolution import process_code_issue, ready_code_merge
 from daily_pipeline.collection_scheduler import DailyRunCollector
 from daily_pipeline.cron import schedule_trigger
 from daily_pipeline.dispatch import trigger_daily_pipeline
@@ -186,7 +186,7 @@ async def advance_daily_processing():
                 .join(Node, Node.failure_id == Failure.id)
                 .where(DailyPipelineIssue.state == "open", DailyPipelineIssue.deleted_at.is_(None),
                        Failure.problem_category == "code", Failure.processing_status.in_(ACTIVE),
-                       Node.stage_code == "revert_pr", Node.status == "completed")
+                       ready_code_merge())
                 .distinct()
             ))
         for identity in issue_ids:

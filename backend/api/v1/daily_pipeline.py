@@ -20,6 +20,7 @@ from daily_pipeline.notification_config import (
 from daily_pipeline.notification_consumption import DailyNotificationConsumptionService
 from daily_pipeline.notification_recipients import DailyNotificationRecipientService
 from daily_pipeline.overview import daily_overview
+from daily_pipeline.processing_rollback import rollback_processing_node, rollback_version_stage
 from daily_pipeline.shared_processing import share_processing_flow
 from daily_pipeline.tracking import DailyTrackingService, ManualInputError
 from daily_pipeline.trigger_config import (
@@ -337,6 +338,22 @@ async def update_failed_case_version_flow(
         raise HTTPException(502, str(exc)) from exc
 
 
+class VersionFlowRollbackInput(BaseModel):
+    stage: Literal["version_resolution", "version_build"]
+
+
+@router.post("/failed-cases/{failure_id}/version-flow/rollback")
+async def rollback_failed_case_version_flow(
+    failure_id: Annotated[int, ApiPath(gt=0)], body: VersionFlowRollbackInput, user: CurrentAdminUser, db: DbSession,
+):
+    try:
+        return await rollback_version_stage(db, failure_id, body.stage, user.username)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.get("/failed-cases/{failure_id}")
 async def failed_case_detail(failure_id: int, user: CurrentUser, db: DbSession):
     try:
@@ -379,7 +396,7 @@ class NodeStart(BaseModel):
 class NodeFinish(BaseModel):
     success: bool
     result: dict = Field(default_factory=dict)
-    message: str = Field(max_length=10000)
+    message: str = Field(default="", max_length=10000)
 
 
 @router.post("/processing/nodes/{node_id}/start")
@@ -420,7 +437,7 @@ async def wait_processing_node(execution_id: int, body: NodeWait, user: CurrentA
 class ManualNodeResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: Literal["code", "version", "environment"] | None = None
-    revert_mode: Literal["auto", "manual"] | None = None
+    revert_mode: Literal["auto", "manual", "optimize"] | None = None
     pr_number: Annotated[int, Field(strict=True, gt=0)] | None = None
     pr_repository: Annotated[str, StringConstraints(max_length=255)] | None = None
     pr_url: Annotated[str, StringConstraints(max_length=1000)] | None = None
@@ -446,6 +463,16 @@ async def manual_complete_processing_node(
         raise HTTPException(404, str(exc)) from exc
     except ManualInputError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/processing/nodes/{node_id}/rollback")
+async def rollback_daily_node(node_id: Annotated[int, ApiPath(gt=0)], user: CurrentAdminUser, db: DbSession):
+    try:
+        return await rollback_processing_node(db, node_id, user.username)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 

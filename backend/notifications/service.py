@@ -517,7 +517,7 @@ class NotificationDispatcher:
             for phone in recipients
         ]
         results = []
-        for delivery, phone in zip(deliveries, recipients):
+        for delivery, phone in zip(deliveries, recipients, strict=False):
             result = await send_sms(config, phone, text)
             results.append(result)
             success = bool(result.get("success"))
@@ -554,7 +554,7 @@ class NotificationDispatcher:
             for phone in recipients
         ]
         results = []
-        for delivery, phone in zip(deliveries, recipients):
+        for delivery, phone in zip(deliveries, recipients, strict=False):
             result = await send_voice(config, phone, text)
             results.append(result)
             success = bool(result.get("success"))

@@ -36,21 +36,34 @@ it('keeps the saved classification readonly during locating', () => {
   expect(html).not.toContain('<textarea')
   expect(html).not.toContain('问题分类')
   expect(html).toContain('问题 PR 编号')
-  expect(html).toContain('回退 PR 创建方式')
-  expect(html).toContain('系统创建')
-  expect(html).toContain('用户创建')
+  expect(html).toContain('代码处理方式')
+  expect(html).toContain('系统创建回退 PR')
+  expect(html).toContain('用户创建回退 PR')
+  expect(html).toContain('优化修复（无需回退）')
 })
 
 it('shows the relevant external result reference for later stages', () => {
-  expect(renderForm({ stageCode: 'revert_pr' })).toContain('回退 PR 编号')
-  expect(renderForm({ stageCode: 'pr_merge' })).toContain('合入 PR 编号')
-  expect(renderForm({ stageCode: 'image_rebuild' })).toContain('构建 Run ID')
+  const revert = renderForm({ stageCode: 'revert_pr' })
+  const merge = renderForm({ stageCode: 'pr_merge' })
+  const build = renderForm({ stageCode: 'image_rebuild' })
+  expect(revert).toContain('回退 PR 编号')
+  expect(merge).toContain('合入 PR 编号')
+  expect(build).toContain('构建 Run ID')
+  expect(revert + merge + build).not.toContain('<textarea')
   expect(renderForm({ stageCode: 'mark_success' })).not.toContain('PR 编号')
 })
 
 
-it('does not ask for a PR for environment locating', () => {
-  expect(renderForm({ stageCode: 'locating', problemCategory: 'environment' })).not.toContain('问题 PR 编号')
+it('offers an optional remark for environment locating', () => {
+  const html = renderForm({ stageCode: 'locating', problemCategory: 'environment' })
+  expect(html).toContain('备注说明（选填）')
+  expect(html).not.toContain('问题 PR 编号')
+})
+
+it('lets the user confirm the failure notification directly', () => {
+  const html = renderForm({ stageCode: 'failure_notification' })
+  expect(html).toContain('确认已通知')
+  expect(html).not.toContain('<textarea')
 })
 
 it('offers an automatic retry only for pending or failed reverts', () => {
