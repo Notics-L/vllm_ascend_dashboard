@@ -49,6 +49,9 @@ class DailyPipelineFailure(Base):
     version_flow_id = Column(BigInteger, ForeignKey(
         "daily_pipeline_version_flows.id", name="fk_daily_failure_version_flow"
     ), index=True)
+    shared_flow_owner_id = Column(BigInteger, ForeignKey(
+        "daily_pipeline_failures.id", name="fk_daily_failure_shared_flow", ondelete="SET NULL"
+    ), index=True)
     problem_category = Column(String(16))
     processing_status = Column(String(16), nullable=False, default="pending")
     end_reason = Column(String(32))

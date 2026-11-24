@@ -14,6 +14,7 @@ from infrastructure.persistence.models import DailyPipelineProcessNode as Node
 from infrastructure.persistence.models import DailyPipelineProcessNodeExecution as Execution
 from infrastructure.persistence.models import DailyPipelineTestCase as Case
 from infrastructure.persistence.models import DailyPipelineTriggerHistory as History
+from infrastructure.persistence.models import DailyPipelineVersionFlow as VersionFlow
 
 ACTIVE = ("pending", "running", "unresolved")
 AUTOMATIC_STAGES = ("revert_pr", "problem_pr_notification")
@@ -68,7 +69,92 @@ def checkpoint_datetime(value):
     return datetime.fromisoformat(value) if value else None
 
 
+async def sync_shared_processing(db, owner):
+    """Apply the common processing result to the still-active participants."""
+    shared_id = getattr(owner, "shared_flow_owner_id", None)
+    if shared_id is None or shared_id != owner.id:
+        return
+    await db.flush()
+    members = list(await db.scalars(select(Failure).where(
+        Failure.shared_flow_owner_id == owner.id, Failure.id != owner.id,
+        Failure.processing_status.in_(ACTIVE),
+    ).order_by(Failure.id).with_for_update().execution_options(populate_existing=True)))
+    if members and owner.problem_category == "version" and owner.version_flow_id is None:
+        flow = VersionFlow(status="waiting_resolution", updated_at=now())
+        db.add(flow)
+        await db.flush()
+        owner.version_flow_id = flow.id
+    for member in members:
+        member.problem_category = owner.problem_category
+        member.processing_status = owner.processing_status
+        member.ended_at = owner.ended_at
+        if owner.problem_category == "version":
+            member.version_flow_id = owner.version_flow_id
+
+
+async def transfer_shared_processing(db, owner):
+    """Keep the same node and execution IDs when the owner is superseded."""
+    shared_id = getattr(owner, "shared_flow_owner_id", None)
+    if shared_id is None or shared_id != owner.id:
+        return
+    members = list(await db.scalars(select(Failure).where(
+        Failure.shared_flow_owner_id == owner.id, Failure.id != owner.id,
+    ).order_by(Failure.id).with_for_update().execution_options(populate_existing=True)))
+    successor = next((member for member in members if member.processing_status in ACTIVE), None)
+    if successor is None:
+        successor = next((member for member in members if member.end_reason == "issue_closed"), None)
+    if successor is None:
+        return
+
+    nodes = list(await db.scalars(select(Node).where(
+        Node.failure_id.in_((owner.id, successor.id)),
+    ).order_by(Node.id).with_for_update().execution_options(populate_existing=True)))
+    notices = {node.failure_id: node for node in nodes if node.stage_code == FAILURE_NOTIFICATION_STAGE}
+    old_notice, new_notice = notices.get(owner.id), notices.get(successor.id)
+    common = [node for node in nodes if node.failure_id == owner.id and
+              node.stage_code not in (FAILURE_NOTIFICATION_STAGE, VERSION_BUILD_NOTICE)]
+    archived = [(node, node.stage_code) for node in nodes if node.failure_id == successor.id and
+                node.stage_code not in (FAILURE_NOTIFICATION_STAGE, VERSION_BUILD_NOTICE)]
+
+    # Vacate the successor's stage names before moving the live timeline.
+    # Everything stays in one transaction and execution IDs are unaffected.
+    for node, _ in archived:
+        node.stage_code = f"move_{node.id}"
+    if archived:
+        await db.flush()
+    for node in common:
+        node.failure_id = successor.id
+        if old_notice and node.previous_node_id == old_notice.id:
+            node.previous_node_id = new_notice.id if new_notice and old_notice.status != "completed" else None
+    if common:
+        await db.flush()
+    for node, stage in archived:
+        node.failure_id, node.stage_code = owner.id, stage
+        if new_notice and node.previous_node_id == new_notice.id:
+            node.previous_node_id = old_notice.id if old_notice else None
+
+    if successor.end_reason == "issue_closed" and owner.resume_state:
+        owner_state, successor_state = owner.resume_state, successor.resume_state or {}
+        moving_ids = {node.id for node in common}
+        successor.resume_state = {
+            "status": owner_state.get("status"),
+            "nodes": [*successor_state.get("nodes", ()), *(
+                item for item in owner_state.get("nodes", ()) if item["id"] in moving_ids
+            )],
+            "executions": [*successor_state.get("executions", ()), *owner_state.get("executions", ())],
+        }
+    for member in (owner, *members):
+        member.shared_flow_owner_id = successor.id
+    await db.flush()
+
+
 async def end_failure(db, failure, reason, replacement=None):
+    if reason == "superseded" and getattr(failure, "shared_flow_owner_id", None) and (
+        failure.processing_status in ACTIVE or failure.end_reason == "issue_closed"
+    ):
+        await transfer_shared_processing(db, failure)
+        if failure.end_reason == "issue_closed":
+            failure.end_reason, failure.replaced_by_id, failure.resume_state = reason, replacement, None
     if failure.processing_status not in ACTIVE:
         return
     point = now()
@@ -207,12 +293,20 @@ async def resume_issue_failures(db, issue):
     failures = list(await db.scalars(select(Failure).where(
         Failure.issue_id == issue.id, Failure.processing_status == "ended", Failure.end_reason == "issue_closed",
     ).with_for_update().execution_options(populate_existing=True)))
+    superseded = []
     for failure in failures:
         latest = await latest_failure_for_case(db, failure)
         if failure.replaced_by_id or latest.id != failure.id:
             failure.end_reason = "superseded"
             failure.replaced_by_id = failure.replaced_by_id or latest.id
-            failure.resume_state = None
+            superseded.append(failure)
+    if any(getattr(failure, "shared_flow_owner_id", None) for failure in superseded):
+        await db.flush()
+    for failure in superseded:
+        await transfer_shared_processing(db, failure)
+        failure.resume_state = None
+    for failure in failures:
+        if failure.end_reason == "superseded":
             continue
         saved = failure.resume_state or {}
         nodes = list(await db.scalars(select(Node).where(Node.failure_id == failure.id).order_by(Node.id).with_for_update().execution_options(populate_existing=True)))

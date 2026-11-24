@@ -20,6 +20,7 @@ from daily_pipeline.notification_config import (
 from daily_pipeline.notification_consumption import DailyNotificationConsumptionService
 from daily_pipeline.notification_recipients import DailyNotificationRecipientService
 from daily_pipeline.overview import daily_overview
+from daily_pipeline.shared_processing import share_processing_flow
 from daily_pipeline.tracking import DailyTrackingService, ManualInputError
 from daily_pipeline.trigger_config import (
     DEFAULT_TIMEZONE,
@@ -286,13 +287,23 @@ async def failed_cases(user: CurrentUser, db: DbSession):
     return await DailyTrackingService(db).failures()
 
 
-class VersionFlowShareInput(BaseModel):
+class ProcessingFlowShareInput(BaseModel):
     failureIds: set[Annotated[int, Field(gt=0)]]
     targetFailureId: Annotated[int, Field(gt=0)]
 
 
+@router.post("/failed-cases/processing-flow/share")
+async def share_failed_case_processing_flow(body: ProcessingFlowShareInput, user: CurrentAdminUser, db: DbSession):
+    try:
+        return await share_processing_flow(db, body.failureIds, body.targetFailureId)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/failed-cases/version-flow/share")
-async def share_failed_case_version_flow(body: VersionFlowShareInput, user: CurrentAdminUser, db: DbSession):
+async def share_failed_case_version_flow(body: ProcessingFlowShareInput, user: CurrentAdminUser, db: DbSession):
     try:
         return await share_version_flow(db, body.failureIds, body.targetFailureId)
     except LookupError as exc:

@@ -71,7 +71,9 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
     return () => { observer?.disconnect(); window.removeEventListener('resize', update) }
   }, [stages])
   return <section className="daily-processing-flow" aria-label="自动处理进展">
-    <Typography.Text className="daily-failure-section-title">处理进展</Typography.Text>
+    <Typography.Text className="daily-failure-section-title">
+      处理进展{(flow.sharedMemberCount ?? 0) > 1 && <Typography.Text type="secondary">（{flow.sharedMemberCount} 条用例共用）</Typography.Text>}
+    </Typography.Text>
     <div className="daily-processing-timeline-layout" ref={timelineRef}>
     <svg className="daily-processing-timeline-connections" aria-hidden="true">
       {connections.map((path, index) => <path key={index} d={path} />)}

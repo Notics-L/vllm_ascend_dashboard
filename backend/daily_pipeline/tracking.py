@@ -27,6 +27,7 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     reconcile_case_availability,
     retry_failure_notifications,
     save_issue,
+    sync_shared_processing,
 )
 from infrastructure.persistence.models import DailyPipelineCollectionNode as SourceNode
 from infrastructure.persistence.models import DailyPipelineCollectionRun as SourceRun
@@ -54,15 +55,13 @@ class ManualInputError(ValueError):
 
 def current_node(nodes):
     completed = {node.id for node in nodes if node.status == "completed"}
-    return next(
-        (
-            node
-            for node in nodes
-            if node.status in ("pending", "running", "waiting", "failed")
-            and (node.previous_node_id is None or node.previous_node_id in completed)
-        ),
-        None,
+    ready = (
+        node for node in nodes
+        if node.status in ("pending", "running", "waiting", "failed")
+        and (node.previous_node_id is None or node.previous_node_id in completed)
     )
+    # A promoted shared flow may run alongside the new owner's own failure notice.
+    return min(ready, key=lambda node: node.stage_code == FAILURE_NOTIFICATION_STAGE, default=None)
 
 
 def stamp(value):
@@ -86,18 +85,24 @@ class DailyTrackingService:
             select(Failure.version_flow_id.label("flow_id"), func.count().label("member_count"))
             .where(Failure.version_flow_id.is_not(None)).group_by(Failure.version_flow_id).subquery()
         )
+        shared_size = (
+            select(Failure.shared_flow_owner_id.label("owner_id"), func.count().label("member_count"))
+            .where(Failure.shared_flow_owner_id.is_not(None))
+            .group_by(Failure.shared_flow_owner_id).subquery()
+        )
         rows = (
             await self.db.execute(
-                select(Failure, Issue, SourceNode, flow_size.c.member_count)
+                select(Failure, Issue, SourceNode, flow_size.c.member_count, shared_size.c.member_count)
                 .join(SourceNode, SourceNode.id == Failure.node_id)
                 .outerjoin(Issue, Issue.id == Failure.issue_id)
                 .outerjoin(flow_size, flow_size.c.flow_id == Failure.version_flow_id)
+                .outerjoin(shared_size, shared_size.c.owner_id == Failure.shared_flow_owner_id)
                 .order_by(Failure.discovered_at.desc(), Failure.id.desc())
             )
         ).all()
-        return [self.failure_view(f, i, n, members) for f, i, n, members in rows]
+        return [self.failure_view(f, i, n, versions, shared) for f, i, n, versions, shared in rows]
 
-    def failure_view(self, f, issue, source, members=None):
+    def failure_view(self, f, issue, source, members=None, shared_members=None):
         return {
             "id": str(f.id),
             "caseId": str(f.id),
@@ -112,6 +117,7 @@ class DailyTrackingService:
             "problemCategory": CATEGORIES.get(f.problem_category),
             "versionFlowId": str(f.version_flow_id) if getattr(f, "version_flow_id", None) else None,
             "versionFlowSize": members,
+            "processFlowSize": members or shared_members,
             "endReason": f.end_reason,
             "replacedById": str(f.replaced_by_id) if f.replaced_by_id else None,
             "issue": {"number": issue.number, "state": issue.state} if issue else None,
@@ -125,9 +131,24 @@ class DailyTrackingService:
         run = await self.db.get(SourceRun, source.run_id)
         issue = await self.db.get(Issue, f.issue_id) if f.issue_id else None
         version_flow = await flow_view(self.db, f, run, issue)
-        nodes = list(
-            await self.db.scalars(select(Node).where(Node.failure_id == f.id).order_by(Node.id))
+        shared_id = getattr(f, "shared_flow_owner_id", None)
+        owner_id = shared_id or f.id
+        shared_members = (
+            await self.db.scalar(select(func.count()).select_from(Failure).where(
+                Failure.shared_flow_owner_id == shared_id
+            )) if shared_id and not version_flow else None
         )
+        owner_nodes = list(
+            await self.db.scalars(select(Node).where(Node.failure_id == owner_id).order_by(Node.id))
+        )
+        notice = next((node for node in owner_nodes if node.stage_code == FAILURE_NOTIFICATION_STAGE), None)
+        if owner_id != f.id:
+            notice = await self.db.scalar(select(Node).where(
+                Node.failure_id == f.id, Node.stage_code == FAILURE_NOTIFICATION_STAGE
+            ))
+        nodes = ([notice] if notice else []) + [
+            node for node in owner_nodes if node.stage_code != FAILURE_NOTIFICATION_STAGE
+        ]
         executions = (
             list(
                 await self.db.scalars(
@@ -139,7 +160,9 @@ class DailyTrackingService:
             if nodes
             else []
         )
-        current = current_node(nodes) if f.processing_status in ACTIVE else None
+        current = current_node(owner_nodes) if f.processing_status in ACTIVE else None
+        if owner_id != f.id and current and current.stage_code == FAILURE_NOTIFICATION_STAGE:
+            current = notice if notice and notice.status in ("pending", "waiting", "failed") else None
         stages = []
         for node in nodes:
             if node.stage_code == VERSION_BUILD_NOTICE:
@@ -165,8 +188,14 @@ class DailyTrackingService:
                     "stageCode": node.stage_code,
                     "name": name,
                     "status": node.status,
-                    "canManuallyComplete": current is not None and current.id == node.id and (
-                        not version_flow or node.stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
+                    "canManuallyComplete": (
+                        (current is not None and current.id == node.id and (
+                            not version_flow or node.stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
+                        ))
+                        or (
+                            f.processing_status in ACTIVE
+                            and node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
+                        )
                     ),
                     "problemCategory": f.problem_category,
                     "result": result_message,
@@ -206,7 +235,9 @@ class DailyTrackingService:
                 }
             )
         return {
-            **self.failure_view(f, issue, source),
+            **self.failure_view(
+                f, issue, source, version_flow.get("memberCount") if version_flow else None, shared_members
+            ),
             "source": {
                 "repository": run.repository,
                 "runId": source.source_run_id,
@@ -219,6 +250,7 @@ class DailyTrackingService:
                     not version_flow or current.stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
                 ) else None,
                 "stages": stages,
+                "sharedMemberCount": shared_members,
                 "versionFlow": version_flow,
             },
         }
@@ -345,6 +377,8 @@ class DailyTrackingService:
             .execution_options(populate_existing=True)
         )
         await self.db.refresh(node)
+        if node.failure_id != failure.id:
+            raise ValueError("处理流程已变化，请刷新后重试")
         if failure.processing_status not in ACTIVE:
             raise ValueError("流程已经结束")
         if failure.problem_category == "version" and node.stage_code not in (FAILURE_NOTIFICATION_STAGE, "classify"):
@@ -375,6 +409,7 @@ class DailyTrackingService:
         node.finished_at = None
         failure.processing_status = "running"
         failure.ended_at = None
+        await sync_shared_processing(self.db, failure)
         await self.db.commit()
         return {"executionId": execution.id, "attempt": attempt}
 
@@ -391,6 +426,8 @@ class DailyTrackingService:
         )
         await self.db.refresh(node)
         await self.db.refresh(execution)
+        if node.failure_id != failure.id:
+            raise ValueError("处理流程已变化，请刷新后重试")
         if failure.problem_category == "version" and node.stage_code not in (FAILURE_NOTIFICATION_STAGE, "classify"):
             raise ValueError("请在版本配套流程登记处理结果")
         if (
@@ -445,6 +482,10 @@ class DailyTrackingService:
         execution.finished_at = node.finished_at = node.updated_at = point
         node.started_at = node.started_at or point
         node.next_run_at = None
+        if node.stage_code == FAILURE_NOTIFICATION_STAGE:
+            if failure.processing_status == "pending":
+                failure.processing_status = "running"
+            return None
         failure.processing_status, failure.ended_at = "running", None
         if not success:
             # An attempt failure is retryable. It does not end the business flow.
@@ -478,6 +519,7 @@ class DailyTrackingService:
                 failure.processing_status, failure.ended_at = "resolved", point
             elif child.stage_code in AUTOMATIC_STAGES and child.status == "pending":
                 automatic_node = child.id
+        await sync_shared_processing(self.db, failure)
         await reconcile_case_availability(self.db)
         return automatic_node
 
@@ -569,7 +611,8 @@ class DailyTrackingService:
             )
         )
         current = current_node(nodes)
-        if failure.processing_status not in ACTIVE or current is None or current.id != node.id:
+        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
+        if failure.processing_status not in ACTIVE or (not retry_notice and (current is None or current.id != node.id)):
             raise ValueError("仅可重试当前未完成的自动处理节点")
         if failure.problem_category == "version" and node.stage_code != FAILURE_NOTIFICATION_STAGE:
             raise ValueError("请在版本配套流程登记处理结果")
@@ -581,6 +624,7 @@ class DailyTrackingService:
             raise ValueError("仅可重试当前未完成的自动处理节点")
         node.status, node.finished_at, node.updated_at = "pending", None, now()
         failure.processing_status, failure.ended_at = "running", None
+        await sync_shared_processing(self.db, failure)
         await self.db.commit()
         return {"queued": await self._queue_processing(node.id)}
 
@@ -603,7 +647,8 @@ class DailyTrackingService:
             )
         )
         current = current_node(nodes)
-        if failure.processing_status not in ACTIVE or current is None or current.id != node.id:
+        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
+        if failure.processing_status not in ACTIVE or (not retry_notice and (current is None or current.id != node.id)):
             raise ValueError("仅可处理当前未完成节点，请刷新后重试")
         if failure.problem_category == "version" and node.stage_code not in (FAILURE_NOTIFICATION_STAGE, "classify"):
             raise ManualInputError("请在版本配套流程登记处理结果")
