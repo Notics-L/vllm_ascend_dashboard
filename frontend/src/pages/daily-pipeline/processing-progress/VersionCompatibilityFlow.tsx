@@ -60,8 +60,8 @@ export default function VersionCompatibilityFlow({ flow, allowManual }: {
             ]} />
           </Form.Item>}
           {mode === 'external_recovered' && flow.status === 'waiting_resolution'
-            ? <Form.Item name="message" label="恢复说明" rules={[{ required: true, whitespace: true, message: '请填写恢复说明' }]}>
-              <Input.TextArea rows={3} />
+            ? <Form.Item name="message" label="恢复说明（选填）" preserve={false}>
+              <Input.TextArea rows={3} maxLength={10000} />
             </Form.Item>
             : <>
               <Form.Item name="repair_url" label="修复 PR 链接" preserve={false}><Input /></Form.Item>

@@ -681,13 +681,9 @@ class DailyTrackingService:
         if node.stage_code == "classify":
             if not success or result.get("category") not in PATHS:
                 raise ManualInputError("请选择问题分类")
+            if result["category"] == "environment" and message:
+                result = {**result, "note": message}
             message = CATEGORIES[result["category"]]
-        elif not message:
-            code_locating = node.stage_code == "locating" and (
-                result.get("category") or failure.problem_category
-            ) == "code"
-            if node.stage_code != "revert_pr" and not code_locating:
-                raise ManualInputError("请填写处理说明")
         if not operator:
             raise ManualInputError("缺少操作人")
         if success:

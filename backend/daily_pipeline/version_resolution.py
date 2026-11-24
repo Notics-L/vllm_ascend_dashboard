@@ -225,8 +225,6 @@ async def submit_version_action(tracking, failure_id, action, actor, data):
     point = now()
     if action == "external_recovered" and flow.status == "waiting_resolution":
         note = (data.get("message") or "").strip()
-        if not note:
-            raise ValueError("请填写外部配套恢复说明")
         flow.resolution = {
             "kind": action,
             "confirmed_by": actor,

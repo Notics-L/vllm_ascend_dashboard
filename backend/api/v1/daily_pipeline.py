@@ -379,7 +379,7 @@ class NodeStart(BaseModel):
 class NodeFinish(BaseModel):
     success: bool
     result: dict = Field(default_factory=dict)
-    message: str = Field(max_length=10000)
+    message: str = Field(default="", max_length=10000)
 
 
 @router.post("/processing/nodes/{node_id}/start")

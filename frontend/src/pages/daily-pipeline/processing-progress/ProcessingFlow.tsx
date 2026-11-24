@@ -108,8 +108,13 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
       {selectedStage && <><Descriptions size="small" column={1} items={[
         { key: 'status', label: '状态', children: <Badge color={stageStatus[selectedStage.status].color} text={stageStatus[selectedStage.status].label} /> },
         { key: 'time', label: '更新时间', children: formatCollectionTime(selectedStage.updatedAt) },
-        { key: 'result', label: selectedStage.stageCode === 'classify' ? '分类结果' : (selectedStage.stageCode ?? selectedStage.id) === 'locating' ? '定位结果' : '处理结果', children: selectedStage.result ?? '—' },
+        ...(selectedStage.result ? [{
+          key: 'result',
+          label: selectedStage.stageCode === 'classify' ? '分类结果' : (selectedStage.stageCode ?? selectedStage.id) === 'locating' ? '定位结果' : '处理结果',
+          children: selectedStage.result,
+        }] : []),
         ...(selectedStage.resultData?.category ? [{ key: 'category', label: '问题分类', children: ({ code: '代码问题', version: '版本配套问题', environment: '环境问题' })[selectedStage.resultData.category] }] : []),
+        ...(selectedStage.resultData?.note ? [{ key: 'note', label: '备注说明', children: selectedStage.resultData.note }] : []),
         ...(selectedStage.resultData?.pr_number ? [{ key: 'pr', label: 'PR 编号', children: selectedStage.resultData.pr_url ? <a href={selectedStage.resultData.pr_url} target="_blank" rel="noopener noreferrer">#{selectedStage.resultData.pr_number}</a> : selectedStage.resultData.pr_number }] : []),
         ...(selectedStage.resultData?.original_pr_url ? [{ key: 'original-pr', label: '原问题 PR', children: <a href={selectedStage.resultData.original_pr_url} target="_blank" rel="noopener noreferrer">{selectedStage.resultData.original_pr_url}</a> }] : []),
         ...(selectedStage.resultData?.run_id ? [{ key: 'run', label: '构建 Run ID', children: selectedStage.resultData.run_id }] : []),
@@ -126,7 +131,8 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
                 {record.status && <Badge color={stageStatus[record.status].color} text={stageStatus[record.status].label} />}
               </div>
               <time>{formatCollectionTime(record.createdAt)}</time>
-              <div className="daily-processing-record-content">{record.content || '—'}</div>
+              {record.content && <div className="daily-processing-record-content">{record.content}</div>}
+              {record.resultData?.note && <div className="daily-processing-record-content">{record.resultData.note}</div>}
               {record.resultData?.pr_number && <div>PR 编号：{record.resultData.pr_number}</div>}
               {record.resultData?.run_id && <div>构建 Run ID：{record.resultData.run_id}</div>}
             </div>

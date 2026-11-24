@@ -155,12 +155,12 @@ export interface DailyProcessingStage {
   problemCategory?: DailyManualNodeInput["result"]["category"] | null
   revertMode?: DailyManualNodeInput["result"]["revert_mode"] | null
   canManuallyComplete?: boolean
-  resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string } | null
+  resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string; note?: string } | null
   startedAt?: string | null
   status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'ended'
   result: string | null
   updatedAt: string | null
-  records: { id: string; author: string; createdAt: string | null; content: string; source?: "auto" | "manual"; status?: DailyProcessingStage["status"]; resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string } | null }[]
+  records: { id: string; author: string; createdAt: string | null; content: string; source?: "auto" | "manual"; status?: DailyProcessingStage["status"]; resultData?: DailyProcessingStage["resultData"] }[]
 }
 
 export interface DailyFailedCaseDetail extends DailyFailedCase {
