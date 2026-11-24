@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import logging
 
+from infrastructure.db.base import SessionLocal
 from sqlalchemy import text
 
-from infrastructure.db.base import SessionLocal
+from database.migrations.mysql_schema import _refresh_forwarding_view, _resolve_table_target
+from database.migrations.view_backed_user_permissions import (
+    qualified_table_name,
+    resolve_view_backed_users_table,
+)
 
 logger = logging.getLogger("notifications_migration")
 MIGRATION_VERSION = "20261121_01_notifications"
@@ -20,9 +25,29 @@ _CHECK_TABLE_SQL = """
 _CHECK_COLUMN_SQL = """
     SELECT COUNT(*)
     FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE()
+    WHERE TABLE_SCHEMA = COALESCE(:schema, DATABASE())
       AND TABLE_NAME = :table
       AND COLUMN_NAME = :column
+"""
+
+_CONTACTS_DDL = """
+    CREATE TABLE IF NOT EXISTS notification_contacts (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT DEFAULT NULL,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(255) DEFAULT NULL,
+        phone VARCHAR(32) DEFAULT NULL,
+        phone_verified_at DATETIME DEFAULT NULL,
+        enabled TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY ix_notification_contacts_user (user_id),
+        KEY ix_notification_contacts_email (email),
+        KEY ix_notification_contacts_phone (phone),
+        KEY ix_notification_contacts_enabled (enabled),
+        CONSTRAINT fk_notification_contacts_user FOREIGN KEY (user_id)
+            REFERENCES {users_table}(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知联系人'
 """
 
 
@@ -31,36 +56,41 @@ async def _table_exists(db, table: str) -> bool:
     return int(result.scalar_one()) > 0
 
 
-async def _column_exists(db, table: str, column: str) -> bool:
-    result = await db.execute(text(_CHECK_COLUMN_SQL), {"table": table, "column": column})
+async def _column_exists(db, table: str, column: str, schema: str | None = None) -> bool:
+    result = await db.execute(text(_CHECK_COLUMN_SQL), {"schema": schema, "table": table, "column": column})
     return int(result.scalar_one()) > 0
+
+
+async def ensure_notification_contacts(db, *, view_only: bool = False) -> bool:
+    if await _table_exists(db, "notification_contacts"):
+        return False
+    target = await resolve_view_backed_users_table(db)
+    if view_only and target is None:
+        return False
+    users_table = qualified_table_name(*(target or (None, "users")))
+    await db.execute(text(_CONTACTS_DDL.format(users_table=users_table)))
+    logger.info("Created notification_contacts")
+    return True
+
+
+async def _ensure_user_phone(db) -> bool:
+    if not await _table_exists(db, "users") or await _column_exists(db, "users", "phone"):
+        return False
+    target = await _resolve_table_target(db, "users")
+    if not target.is_view or not await _column_exists(db, target.physical_table, "phone", target.physical_schema):
+        table = qualified_table_name(target.physical_schema, target.physical_table)
+        await db.execute(text(f"ALTER TABLE {table} ADD COLUMN phone VARCHAR(32) DEFAULT NULL"))
+    if target.is_view:
+        await _refresh_forwarding_view(db, target)
+    logger.info("Ensured users.phone is available")
+    return True
 
 
 async def run() -> dict[str, int]:
     created: dict[str, int] = {}
     async with SessionLocal() as db:
-        if not await _table_exists(db, "notification_contacts"):
-            await db.execute(text("""
-                CREATE TABLE notification_contacts (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    user_id INT DEFAULT NULL,
-                    name VARCHAR(100) NOT NULL,
-                    email VARCHAR(255) DEFAULT NULL,
-                    phone VARCHAR(32) DEFAULT NULL,
-                    phone_verified_at DATETIME DEFAULT NULL,
-                    enabled TINYINT(1) NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    KEY ix_notification_contacts_user (user_id),
-                    KEY ix_notification_contacts_email (email),
-                    KEY ix_notification_contacts_phone (phone),
-                    KEY ix_notification_contacts_enabled (enabled),
-                    CONSTRAINT fk_notification_contacts_user FOREIGN KEY (user_id)
-                        REFERENCES users(id) ON DELETE SET NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知联系人'
-            """))
+        if await ensure_notification_contacts(db):
             created["notification_contacts"] = 1
-            logger.info("Created notification_contacts")
 
         if not await _table_exists(db, "notification_groups"):
             await db.execute(text("""
@@ -175,10 +205,8 @@ async def run() -> dict[str, int]:
             created["notification_actions"] = 1
             logger.info("Created notification_actions")
 
-        if await _table_exists(db, "users") and not await _column_exists(db, "users", "phone"):
-            await db.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(32) DEFAULT NULL"))
+        if await _ensure_user_phone(db):
             created["users.phone"] = 1
-            logger.info("Added users.phone")
 
         if created:
             await db.commit()

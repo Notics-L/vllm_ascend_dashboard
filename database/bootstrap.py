@@ -41,6 +41,12 @@ from database.migrations.daily_pipeline_retryable_nodes import run as migrate_da
 from database.migrations.daily_pipeline_scheduled_tasks import run as migrate_daily_schedules
 from database.migrations.daily_pipeline_tracking import run as migrate_daily_tracking
 from database.migrations.daily_pipeline_trigger_history import run as migrate_daily_trigger_history
+from database.migrations.notifications import (
+    ensure_notification_contacts,
+)
+from database.migrations.notifications import (
+    run as migrate_notifications,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("database_bootstrap")
@@ -84,8 +90,12 @@ async def create_tables_with_latest_schema() -> None:
     from database.migrations.daily_pipeline_process_nodes import run as rename_process_nodes
     await rename_process_nodes()
     async with engine.begin() as connection:
-        from database.migrations.view_backed_user_permissions import ensure_view_backed_user_permissions
+        from database.migrations.view_backed_user_permissions import (
+            ensure_view_backed_user_permissions,
+        )
         await ensure_view_backed_user_permissions(connection)
+        # The ORM target is local users; pre-create the split-DB table against the base table.
+        await ensure_notification_contacts(connection, view_only=True)
         await connection.run_sync(Base.metadata.create_all)
     await _ensure_github_cache()
 
@@ -132,6 +142,7 @@ async def run_upgrades() -> None:
     await migrate_daily_notifications()
     await migrate_daily_issue_reopen()
     await migrate_daily_retryable_nodes()
+    await migrate_notifications()
     await ensure_version_table()
     if await get_current_version() == "0.0.0":
         await mark_version_applied("current", "Current MySQL schema bootstrap")
