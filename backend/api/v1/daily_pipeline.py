@@ -420,6 +420,7 @@ async def wait_processing_node(execution_id: int, body: NodeWait, user: CurrentA
 class ManualNodeResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: Literal["code", "version", "environment"] | None = None
+    revert_mode: Literal["auto", "manual"] | None = None
     pr_number: Annotated[int, Field(strict=True, gt=0)] | None = None
     pr_repository: Annotated[str, StringConstraints(max_length=255)] | None = None
     pr_url: Annotated[str, StringConstraints(max_length=1000)] | None = None

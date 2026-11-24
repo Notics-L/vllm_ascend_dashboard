@@ -153,6 +153,7 @@ export interface DailyProcessingStage {
   name: string
   stageCode?: string
   problemCategory?: DailyManualNodeInput["result"]["category"] | null
+  revertMode?: DailyManualNodeInput["result"]["revert_mode"] | null
   canManuallyComplete?: boolean
   resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string } | null
   startedAt?: string | null
@@ -224,6 +225,7 @@ export interface DailyManualNodeInput {
   message: string
   result: {
     category?: 'code' | 'version' | 'environment'
+    revert_mode?: 'auto' | 'manual'
     pr_repository?: string
     pr_url?: string
     pr_number?: number

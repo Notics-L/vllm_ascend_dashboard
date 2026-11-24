@@ -260,6 +260,17 @@ def pr_recipients(pr):
     }
 
 
+async def completed_node_result(db, node_id):
+    if node_id is None:
+        return {}
+    return await db.scalar(
+        select(Execution.result_data)
+        .where(Execution.node_id == node_id, Execution.status == "completed")
+        .order_by(Execution.attempt_no.desc())
+        .limit(1)
+    ) or {}
+
+
 async def latest_failure_notifications(db, node_id):
     executions = await db.scalars(
         select(Execution).where(Execution.node_id == node_id, Execution.source == "auto")
