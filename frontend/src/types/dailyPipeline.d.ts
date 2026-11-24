@@ -225,7 +225,7 @@ export interface DailyManualNodeInput {
   message: string
   result: {
     category?: 'code' | 'version' | 'environment'
-    revert_mode?: 'auto' | 'manual'
+    revert_mode?: 'auto' | 'manual' | 'optimize'
     pr_repository?: string
     pr_url?: string
     pr_number?: number

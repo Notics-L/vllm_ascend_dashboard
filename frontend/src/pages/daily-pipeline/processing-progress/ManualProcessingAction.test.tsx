@@ -36,9 +36,10 @@ it('keeps the saved classification readonly during locating', () => {
   expect(html).not.toContain('<textarea')
   expect(html).not.toContain('问题分类')
   expect(html).toContain('问题 PR 编号')
-  expect(html).toContain('回退 PR 创建方式')
-  expect(html).toContain('系统创建')
-  expect(html).toContain('用户创建')
+  expect(html).toContain('代码处理方式')
+  expect(html).toContain('系统创建回退 PR')
+  expect(html).toContain('用户创建回退 PR')
+  expect(html).toContain('优化修复（无需回退）')
 })
 
 it('shows the relevant external result reference for later stages', () => {

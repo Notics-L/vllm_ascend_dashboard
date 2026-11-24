@@ -20,6 +20,7 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     AUTOMATIC_STAGES,
     CATEGORIES,
     FAILURE_NOTIFICATION_STAGE,
+    OPTIMIZATION_MODE,
     PATHS,
     STAGES,
     VERSION_BUILD_NOTICE,
@@ -164,6 +165,12 @@ class DailyTrackingService:
         current = current_node(owner_nodes) if f.processing_status in ACTIVE else None
         if owner_id != f.id and current and current.stage_code == FAILURE_NOTIFICATION_STAGE:
             current = notice if notice and notice.status in ("pending", "waiting", "failed") else None
+        locating = next((node for node in nodes if node.stage_code == "locating"), None)
+        location = next((
+            item.result_data for item in reversed(executions)
+            if locating and item.node_id == locating.id and item.status == "completed"
+        ), None) or {}
+        revert_mode = location.get("revert_mode", "auto")
         stages = []
         for node in nodes:
             if node.stage_code == VERSION_BUILD_NOTICE:
@@ -176,15 +183,10 @@ class DailyTrackingService:
                 else STAGES[node.stage_code]
             )
             result_message = latest.message if latest else None
-            revert_mode = None
-            if node.stage_code == "revert_pr":
-                locating_result = next((
-                    item.result_data for item in reversed(executions)
-                    if item.node_id == node.previous_node_id and item.status == "completed"
-                ), None)
-                revert_mode = (locating_result or {}).get("revert_mode", "auto")
-                if revert_mode == "manual" and node.status == "waiting":
-                    result_message = "等待登记用户创建的回退 PR"
+            if node.stage_code == "revert_pr" and revert_mode == "manual" and node.status == "waiting":
+                result_message = "等待登记用户创建的回退 PR"
+            if node.stage_code == "pr_merge" and revert_mode == OPTIMIZATION_MODE:
+                name = "修复 PR 合入"
             if node.stage_code == FAILURE_NOTIFICATION_STAGE:
                 result_message = {
                     "pending": "等待配置失败通知人",
@@ -208,7 +210,7 @@ class DailyTrackingService:
                         )
                     ),
                     "problemCategory": f.problem_category,
-                    "revertMode": revert_mode,
+                    "revertMode": revert_mode if node.stage_code == "revert_pr" else None,
                     "result": result_message,
                     "resultData": latest.result_data if latest else None,
                     "startedAt": stamp(node.started_at),
@@ -483,8 +485,8 @@ class DailyTrackingService:
                 raise ManualInputError("已完成的问题分类不能修改")
         if success and node.stage_code == "locating" and category == "code":
             revert_mode = result.get("revert_mode", "auto")
-            if revert_mode not in ("auto", "manual"):
-                raise ManualInputError("请选择有效的回退 PR 创建方式")
+            if revert_mode not in ("auto", "manual", OPTIMIZATION_MODE):
+                raise ManualInputError("请选择有效的代码处理方式")
             try:
                 config = await read_settings(self.db, "repository")
                 repository = config.get("repository")
@@ -517,6 +519,8 @@ class DailyTrackingService:
             codes = () if category == "version" else (
                 ("locating",) if node.stage_code == "classify" else PATHS[category]
             )
+            if category == "code" and result.get("revert_mode") == OPTIMIZATION_MODE:
+                codes = tuple(code for code in codes if code != "revert_pr")
             previous = node
             for code in codes:
                 manual_revert = code == "revert_pr" and result.get("revert_mode") == "manual"
@@ -529,7 +533,7 @@ class DailyTrackingService:
                 )
                 self.db.add(step)
                 await self.db.flush()
-                if code == "revert_pr" and not manual_revert:
+                if previous is node and code in AUTOMATIC_STAGES and not manual_revert:
                     automatic_node = step.id
                 previous = step
         else:

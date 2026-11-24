@@ -48,8 +48,12 @@ export default function ManualProcessingForm({ stage, pending, onSubmit }: {
           <InputNumber min={1} precision={0} max={Number.MAX_SAFE_INTEGER} style={{ width: '100%' }} />
         </Form.Item>}
         {success && code === 'locating' && category === 'code' && <Form.Item name="revert_mode"
-          label="回退 PR 创建方式" preserve={false} rules={[{ required: true, message: '请选择回退 PR 创建方式' }]}>
-          <Radio.Group options={[{ value: 'auto', label: '系统创建' }, { value: 'manual', label: '用户创建' }]} />
+          label="代码处理方式" preserve={false} rules={[{ required: true, message: '请选择代码处理方式' }]}>
+          <Radio.Group options={[
+            { value: 'auto', label: '系统创建回退 PR' },
+            { value: 'manual', label: '用户创建回退 PR' },
+            { value: 'optimize', label: '优化修复（无需回退）' },
+          ]} />
         </Form.Item>}
         {success && code === 'image_rebuild' && <Form.Item name="run_id" label="构建 Run ID" preserve={false}
           rules={[{ required: true, message: '请填写构建 Run ID' }]}>

@@ -18,6 +18,7 @@ from infrastructure.persistence.models import DailyPipelineVersionFlow as Versio
 
 ACTIVE = ("pending", "running", "unresolved")
 AUTOMATIC_STAGES = ("revert_pr", "problem_pr_notification")
+OPTIMIZATION_MODE = "optimize"
 FAILURE_NOTIFICATION_STAGE = "failure_notification"
 VERSION_BUILD_NOTICE = "version_build_notice"
 STANDALONE_NOTICE_PURPOSES = ("problem_pr", "revert_deadline", VERSION_BUILD_NOTICE)
