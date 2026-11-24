@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select, update
 
 from daily_pipeline.code_resolution import process_code_issue
 from daily_pipeline.collection_source import utc_datetime
+from daily_pipeline.processing_rollback import ROLLBACK_STATUSES
 from daily_pipeline.pull_requests import located_pull_request
 from daily_pipeline.version_resolution import flow_view
 from infrastructure.clients.daily_pipeline_collection import (
@@ -22,10 +23,13 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     FAILURE_NOTIFICATION_STAGE,
     OPTIMIZATION_MODE,
     PATHS,
+    ROLLBACK_STAGE_PREFIX,
     STAGES,
     VERSION_BUILD_NOTICE,
     completed_node_result,
+    failure_notification_recipients,
     now,
+    prepare_failure_notifications,
     reconcile_case_availability,
     retry_failure_notifications,
     save_issue,
@@ -59,7 +63,7 @@ def current_node(nodes):
     completed = {node.id for node in nodes if node.status == "completed"}
     ready = (
         node for node in nodes
-        if node.status in ("pending", "running", "waiting", "failed")
+        if node.status in ("pending", "running", "waiting", "failed", "reset")
         and (node.previous_node_id is None or node.previous_node_id in completed)
     )
     # A promoted shared flow may run alongside the new owner's own failure notice.
@@ -145,9 +149,12 @@ class DailyTrackingService:
         )
         notice = next((node for node in owner_nodes if node.stage_code == FAILURE_NOTIFICATION_STAGE), None)
         if owner_id != f.id:
-            notice = await self.db.scalar(select(Node).where(
-                Node.failure_id == f.id, Node.stage_code == FAILURE_NOTIFICATION_STAGE
-            ))
+            own_notifications = list(await self.db.scalars(select(Node).where(
+                Node.failure_id == f.id,
+                or_(Node.stage_code == FAILURE_NOTIFICATION_STAGE, Node.stage_code.startswith(ROLLBACK_STAGE_PREFIX)),
+            )))
+            notice = next((node for node in own_notifications if node.stage_code == FAILURE_NOTIFICATION_STAGE), None)
+            owner_nodes.extend(node for node in own_notifications if node.stage_code.startswith(ROLLBACK_STAGE_PREFIX))
         nodes = ([notice] if notice else []) + [
             node for node in owner_nodes if node.stage_code != FAILURE_NOTIFICATION_STAGE
         ]
@@ -163,28 +170,43 @@ class DailyTrackingService:
             else []
         )
         current = current_node(owner_nodes) if f.processing_status in ACTIVE else None
-        if owner_id != f.id and current and current.stage_code == FAILURE_NOTIFICATION_STAGE:
-            current = notice if notice and notice.status in ("pending", "waiting", "failed") else None
+        if owner_id != f.id and (current is None or current.stage_code == FAILURE_NOTIFICATION_STAGE):
+            current = notice if notice and notice.status in ("pending", "waiting", "failed", "reset") else None
+        editable = f.processing_status in (*ACTIVE, "resolved") and (
+            issue is None or issue.state == "open" and getattr(issue, "deleted_at", None) is None
+        )
         locating = next((node for node in nodes if node.stage_code == "locating"), None)
         location = next((
             item.result_data for item in reversed(executions)
             if locating and item.node_id == locating.id and item.status == "completed"
         ), None) or {}
         revert_mode = location.get("revert_mode", "auto")
-        stages = []
+        stages, archived_stages = [], []
         for node in nodes:
             if node.stage_code == VERSION_BUILD_NOTICE:
                 continue
             records = [e for e in executions if e.node_id == node.id]
             latest = next((item for item in reversed(records) if not (item.request_data or {}).get("purpose")), None)
-            name = (
-                "回退版本PR"
-                if node.stage_code == "revert_pr" and f.problem_category == "version"
-                else STAGES[node.stage_code]
-            )
+            archived = node.stage_code.startswith(ROLLBACK_STAGE_PREFIX)
+            stage_code = node.stage_code
+            if archived:
+                stage_code = next((
+                    (item.request_data or {}).get("stage_code") for item in reversed(records)
+                    if (item.request_data or {}).get("purpose") == "process_rollback"
+                ), None)
+                if (
+                    stage_code not in STAGES
+                    or stage_code == FAILURE_NOTIFICATION_STAGE and node.failure_id != f.id
+                    or stage_code != FAILURE_NOTIFICATION_STAGE and node.failure_id != owner_id
+                ):
+                    continue
+            name = STAGES[stage_code]
             result_message = latest.message if latest else None
-            if node.stage_code == "revert_pr" and revert_mode == "manual" and node.status == "waiting":
-                result_message = "等待登记用户创建的回退 PR"
+            if node.stage_code == "revert_pr":
+                if f.problem_category == "version":
+                    name = "回退版本PR"
+                if revert_mode == "manual" and node.status == "waiting":
+                    result_message = "等待登记用户创建的回退 PR"
             if node.stage_code == "pr_merge" and revert_mode == OPTIMIZATION_MODE:
                 name = "修复 PR 合入"
             if node.stage_code == FAILURE_NOTIFICATION_STAGE:
@@ -194,20 +216,26 @@ class DailyTrackingService:
                     "failed": "部分通知发送失败，可重试",
                     "completed": "通知已完成",
                 }.get(node.status, result_message)
-            stages.append(
+            (archived_stages if archived else stages).append(
                 {
                     "id": str(node.id),
-                    "stageCode": node.stage_code,
+                    "stageCode": stage_code,
                     "name": name,
                     "status": node.status,
-                    "canManuallyComplete": (
+                    "canManuallyComplete": editable and (
                         (current is not None and current.id == node.id and (
-                            not version_flow or node.stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
+                            not version_flow or stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
                         ))
                         or (
-                            f.processing_status in ACTIVE
-                            and node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
+                            (f.processing_status in ACTIVE or shared_id is not None)
+                            and stage_code == FAILURE_NOTIFICATION_STAGE and node.status in ("failed", "reset")
                         )
+                    ),
+                    "canRollback": editable and not archived and node.status in ROLLBACK_STATUSES
+                    and (not version_flow or stage_code in (FAILURE_NOTIFICATION_STAGE, "classify"))
+                    and (
+                        stage_code != FAILURE_NOTIFICATION_STAGE or f.processing_status in ACTIVE
+                        or shared_id is not None or any(child.previous_node_id == node.id for child in nodes)
                     ),
                     "problemCategory": f.problem_category,
                     "revertMode": revert_mode if node.stage_code == "revert_pr" else None,
@@ -263,6 +291,7 @@ class DailyTrackingService:
                     not version_flow or current.stage_code in (FAILURE_NOTIFICATION_STAGE, "classify")
                 ) else None,
                 "stages": stages,
+                "archivedStages": sorted(archived_stages, key=lambda stage: stage["updatedAt"] or "", reverse=True),
                 "sharedMemberCount": shared_members,
                 "versionFlow": version_flow,
             },
@@ -586,7 +615,7 @@ class DailyTrackingService:
             .execution_options(populate_existing=True)
         ))
         current = current_node(nodes)
-        if current is None or current.id != node_id:
+        if current is None or current.id != node_id or current.status == "reset":
             return True
         point = now()
         await self.db.execute(
@@ -634,16 +663,37 @@ class DailyTrackingService:
             )
         )
         current = current_node(nodes)
-        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
-        if failure.processing_status not in ACTIVE or (not retry_notice and (current is None or current.id != node.id)):
+        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status in ("failed", "reset")
+        resolved_notice = retry_notice and failure.processing_status == "resolved" and getattr(
+            failure, "shared_flow_owner_id", None
+        ) is not None
+        if (
+            failure.processing_status not in ACTIVE and not resolved_notice
+            or not retry_notice and (current is None or current.id != node.id)
+        ):
             raise ValueError("仅可重试当前未完成的自动处理节点")
         if failure.problem_category == "version" and node.stage_code != FAILURE_NOTIFICATION_STAGE:
             raise ValueError("请在版本配套流程登记处理结果")
-        if node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed":
-            await retry_failure_notifications(self.db, node)
+        if retry_notice:
+            if node.status == "reset":
+                recipients = await failure_notification_recipients(self.db, for_update=True)
+                if not recipients:
+                    raise ValueError("请先配置失败通知人")
+                source = await self.db.get(SourceNode, failure.node_id)
+                run = await self.db.get(SourceRun, source.run_id)
+                issue = await self.db.get(Issue, failure.issue_id) if failure.issue_id else None
+                await prepare_failure_notifications(self.db, failure, node, source, run.repository, issue, recipients)
+                if resolved_notice:
+                    failure.processing_status = "resolved"
+            else:
+                await retry_failure_notifications(self.db, node)
             await self.db.commit()
             return {"queued": True}
-        if node.stage_code not in AUTOMATIC_STAGES or node.status not in ("pending", "failed"):
+        if node.stage_code == "pr_merge" and node.status == "reset":
+            node.status, node.updated_at = "pending", now()
+            await self.db.commit()
+            return {"queued": True}
+        if node.stage_code not in AUTOMATIC_STAGES or node.status not in ("pending", "failed", "reset"):
             raise ValueError("仅可重试当前未完成的自动处理节点")
         if node.stage_code == "revert_pr":
             located = await completed_node_result(self.db, node.previous_node_id)
@@ -674,8 +724,14 @@ class DailyTrackingService:
             )
         )
         current = current_node(nodes)
-        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status == "failed"
-        if failure.processing_status not in ACTIVE or (not retry_notice and (current is None or current.id != node.id)):
+        retry_notice = node.stage_code == FAILURE_NOTIFICATION_STAGE and node.status in ("failed", "reset")
+        resolved_notice = retry_notice and failure.processing_status == "resolved" and getattr(
+            failure, "shared_flow_owner_id", None
+        ) is not None
+        if (
+            failure.processing_status not in ACTIVE and not resolved_notice
+            or not retry_notice and (current is None or current.id != node.id)
+        ):
             raise ValueError("仅可处理当前未完成节点，请刷新后重试")
         if failure.problem_category == "version" and node.stage_code not in (FAILURE_NOTIFICATION_STAGE, "classify"):
             raise ManualInputError("请在版本配套流程登记处理结果")

@@ -155,9 +155,10 @@ export interface DailyProcessingStage {
   problemCategory?: DailyManualNodeInput["result"]["category"] | null
   revertMode?: DailyManualNodeInput["result"]["revert_mode"] | null
   canManuallyComplete?: boolean
+  canRollback?: boolean
   resultData?: DailyManualNodeInput["result"] & { original_pr_url?: string; note?: string } | null
   startedAt?: string | null
-  status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'ended'
+  status: 'pending' | 'waiting' | 'running' | 'completed' | 'failed' | 'ended' | 'reset'
   result: string | null
   updatedAt: string | null
   records: { id: string; author: string; createdAt: string | null; content: string; source?: "auto" | "manual"; status?: DailyProcessingStage["status"]; resultData?: DailyProcessingStage["resultData"] }[]
@@ -167,10 +168,13 @@ export interface DailyFailedCaseDetail extends DailyFailedCase {
   processingFlow: {
     currentStageId: DailyProcessingStage['id'] | null
     stages: DailyProcessingStage[]
+    archivedStages?: DailyProcessingStage[]
     sharedMemberCount?: number | null
     versionFlow?: DailyVersionFlow | null
   }
 }
+
+export type DailyVersionStage = 'version_resolution' | 'version_build'
 
 export interface DailyVersionFlow {
   failureId: string
@@ -181,6 +185,8 @@ export interface DailyVersionFlow {
   memberCount: number
   updatedAt: string | null
   canEdit: boolean
+  rollbackStages?: DailyVersionStage[]
+  rollbackRecords?: Partial<Record<DailyVersionStage, DailyProcessingStage['records']>>
   resolution: {
     note?: string
     references?: Partial<Record<'repair' | 'revert', { pr_url: string; pr_number: number }>>

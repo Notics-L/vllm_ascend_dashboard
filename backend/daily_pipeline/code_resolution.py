@@ -20,6 +20,7 @@ from infrastructure.persistence.daily_pipeline_settings import (
 )
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
+    FAILURE_NOTIFICATION_STAGE,
     OPTIMIZATION_MODE,
     add_failure_notification,
     completed_node_result,
@@ -134,7 +135,12 @@ def ready_code_merge():
         revert.stage_code == "revert_pr",
         revert.status != "completed",
     ).correlate(Failure).exists()
-    return and_(Node.stage_code == "pr_merge", Node.status.in_(("pending", "waiting", "failed")), ~blocked)
+    reset = select(revert.id).where(
+        revert.failure_id == Failure.id,
+        revert.stage_code != FAILURE_NOTIFICATION_STAGE,
+        revert.status == "reset",
+    ).correlate(Failure).exists()
+    return and_(Node.stage_code == "pr_merge", Node.status.in_(("pending", "waiting", "failed")), ~blocked, ~reset)
 
 
 async def process_code_issue(tracking, issue_id, *, deadline_only=False):
@@ -234,6 +240,9 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
             .execution_options(populate_existing=True)
         )
     }
+    if any(row.status == "reset" and row.stage_code != FAILURE_NOTIFICATION_STAGE for row in nodes.values()):
+        await db.rollback()
+        return
     node = nodes.get("pr_merge")
     if node is None or node.status not in ("pending", "waiting", "failed"):
         await db.rollback()  # Respect an in-flight manually registered wait.

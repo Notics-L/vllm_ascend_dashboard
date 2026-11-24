@@ -230,3 +230,15 @@
   pointer-events: none;
   user-select: none;
 }
+
+.daily-processing-rollback-action {
+  margin-top: 16px;
+}
+
+.daily-processing-rollback-history {
+  margin: 0 0 16px;
+}
+
+.daily-processing-rollback-history summary {
+  cursor: pointer;
+}

@@ -21,6 +21,7 @@ AUTOMATIC_STAGES = ("revert_pr", "problem_pr_notification")
 OPTIMIZATION_MODE = "optimize"
 FAILURE_NOTIFICATION_STAGE = "failure_notification"
 VERSION_BUILD_NOTICE = "version_build_notice"
+ROLLBACK_STAGE_PREFIX = "rollback_"
 STANDALONE_NOTICE_PURPOSES = ("problem_pr", "revert_deadline", VERSION_BUILD_NOTICE)
 NOTIFICATION_STAGES = (FAILURE_NOTIFICATION_STAGE, "problem_pr_notification")
 FAILURE_NOTIFICATION_RECIPIENTS = "failure_notification_recipients"
@@ -169,7 +170,7 @@ async def end_failure(db, failure, reason, replacement=None):
             "nodes": [{"id": node.id, "status": node.status,
                        "finished_at": checkpoint_time(node.finished_at),
                        "next_run_at": checkpoint_time(node.next_run_at)}
-                      for node in nodes if node.status in ("pending", "running", "waiting", "failed")],
+                      for node in nodes if node.status in ("pending", "running", "waiting", "failed", "reset")],
             "executions": [{"id": execution.id, "status": execution.status,
                             "finished_at": checkpoint_time(execution.finished_at)} for execution in executions],
         }
@@ -180,7 +181,7 @@ async def end_failure(db, failure, reason, replacement=None):
     failure.replaced_by_id = replacement
     failure.ended_at = point
     for node in nodes:
-        if node.status in ("pending", "running", "waiting"):
+        if node.status in ("pending", "running", "waiting", "reset"):
             node.status = "ended"
             node.finished_at = node.updated_at = point
             node.next_run_at = None
@@ -325,6 +326,8 @@ async def resume_issue_failures(db, issue):
         node_states = {item["id"]: item for item in saved.get("nodes", [])}
         execution_states = {item["id"]: item for item in saved.get("executions", [])}
         for node in nodes:
+            if node.stage_code.startswith(ROLLBACK_STAGE_PREFIX):
+                continue
             previous = node_states.get(node.id)
             if previous:
                 node.status = "pending" if previous["status"] == "running" else previous["status"]

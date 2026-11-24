@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Badge, Descriptions, Drawer, List, Spin, Typography } from 'antd'
+import { Badge, Button, Descriptions, Drawer, List, Space, Spin, Typography } from 'antd'
 import type { DailyFailedCaseDetail, DailyProcessingStage, DailyVersionFlow } from '../../../types/dailyPipeline'
 import { formatCollectionTime } from '../collection/collectionDisplay'
 import { processingTimelinePaths } from './processingTimelinePaths'
 import ManualProcessingAction from './ManualProcessingAction'
+import RollbackProcessingAction from './RollbackProcessingAction'
 import VersionCompatibilityFlow from './VersionCompatibilityFlow'
 import './ProcessingProgress.css'
 
 const stageStatus = {
   ended: { label: '已结束', color: '#8c8c8c' },
   pending: { label: '未开始', color: '#8c8c8c' },
+  reset: { label: '待重新处理', color: '#d48806' },
   waiting: { label: '等待执行', color: '#1677ff' },
   running: { label: '进行中', color: '#1677ff' },
   completed: { label: '已完成', color: '#389e0d' },
@@ -26,10 +28,14 @@ function versionStages(flow: DailyVersionFlow): DailyProcessingStage[] {
   return [
     { id: 'version-resolution', stageCode: 'version_resolution', name: '确认配套恢复',
       status: resolving ? flow.canEdit ? 'waiting' : 'ended' : 'completed',
-      result: resolving ? flow.message : '已确认配套恢复', updatedAt: flow.updatedAt, records: [] },
+      canRollback: flow.rollbackStages?.includes('version_resolution'),
+      result: resolving ? flow.message : '已确认配套恢复', updatedAt: flow.updatedAt,
+      records: flow.rollbackRecords?.version_resolution ?? [] },
     { id: 'version-build', stageCode: 'version_build', name: '镜像构建',
       status: !flow.canEdit && flow.status !== 'resolved' && !resolving ? 'ended' : buildStatus[flow.status],
-      result: resolving ? null : flow.message, updatedAt: flow.updatedAt, records: [] },
+      canRollback: flow.rollbackStages?.includes('version_build'),
+      result: resolving ? null : flow.message, updatedAt: flow.updatedAt,
+      records: flow.rollbackRecords?.version_build ?? [] },
   ]
 }
 
@@ -45,6 +51,7 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
     ...flow.stages.filter((stage) => stage.stageCode === 'end'),
   ].filter((stage) => stage.status !== 'pending' || stage.id === currentId), [flow.stages, version, currentId])
   const selectedStage = stages.find((stage) => stage.id === selectedId)
+    ?? flow.archivedStages?.find((stage) => stage.id === selectedId)
   const timelineRef = useRef<HTMLDivElement>(null)
   const [connections, setConnections] = useState<string[]>([])
   useEffect(() => {
@@ -81,7 +88,7 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
     <ol className="daily-processing-timeline" aria-label="处理事件" aria-live="polite">
       {stages.map((stage) => {
         const status = stageStatus[stage.status]
-        const time = stage.startedAt ?? stage.records[0]?.createdAt ?? stage.updatedAt
+        const time = stage.startedAt ?? stage.updatedAt ?? stage.records[0]?.createdAt
         return <li key={stage.id}
           className={'daily-processing-event' + (stage.id === currentId ? ' daily-processing-event-current' : '')}
           style={{ '--daily-stage-color': status.color } as CSSProperties}>
@@ -102,6 +109,15 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
       })}
     </ol>
     </div>
+    {!!flow.archivedStages?.length && <details className="daily-processing-rollback-history">
+      <summary>回退记录（{flow.archivedStages.length}）</summary>
+      <Space wrap>
+        {flow.archivedStages.map((stage) => <Button key={stage.id} type="link" size="small"
+          onClick={() => setSelectedId(stage.id)}>
+          {stage.name} · {formatCollectionTime(stage.updatedAt)}
+        </Button>)}
+      </Space>
+    </details>}
     <Drawer rootClassName="daily-processing-stage-drawer" title={selectedStage?.name} placement="right" width={520}
       styles={{ wrapper: { maxWidth: '100vw' } }} open={Boolean(selectedStage)} onClose={() => setSelectedId(null)} destroyOnHidden>
       <Spin spinning={loading}>
@@ -122,6 +138,10 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
         {(selectedStage.stageCode === 'version_resolution' || selectedStage.stageCode === 'version_build') && version
           ? <VersionCompatibilityFlow flow={version} allowManual={allowManual && selectedStage.id === currentId} />
           : allowManual && <ManualProcessingAction key={selectedStage.id} stage={selectedStage} />}
+        {allowManual && selectedStage.canRollback && <RollbackProcessingAction
+          key={selectedStage.id} stage={selectedStage} failureId={version?.failureId}
+          sharedMemberCount={selectedStage.stageCode === 'failure_notification' ? 0 : version?.memberCount ?? flow.sharedMemberCount ?? 0}
+          onRolledBack={() => setSelectedId(null)} />}
         {selectedStage.records.length > 0 && <div className="daily-processing-execution-records">
           <Typography.Text className="daily-failure-section-title">执行记录</Typography.Text>
           <List size="small" dataSource={selectedStage.records} renderItem={(record) => <List.Item key={record.id}>
