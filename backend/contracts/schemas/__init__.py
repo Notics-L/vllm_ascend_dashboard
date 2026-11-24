@@ -17,6 +17,7 @@ __all__ = [
     "Token", "LoginRequest", "RegisterRequest",
     # CI
     "CIResultBase", "CIResultResponse", "CIJobResponse", "CIJobDetailResponse", "CIStats",
+    "WorkflowCaseStats", "WorkflowStatusRun",
     # Model
     "ModelConfigBase", "ModelConfigCreate", "ModelConfigUpdate", "ModelConfigResponse",
     "ModelReportResponse", "ModelReportCreate", "ModelReportUpdate",
@@ -250,6 +251,32 @@ class CIResultResponse(CIResultBase):
         if not self.run_id or not settings.GITHUB_OWNER or not settings.GITHUB_REPO:
             return None
         return f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{self.run_id}"
+
+
+class WorkflowCaseStats(BaseModel):
+    """Workflow Status 表格中的测试用例统计。"""
+
+    total: int = 0
+    success: int = 0
+    failure: int = 0
+    in_progress: int = 0
+    skipped: int = 0
+
+
+class WorkflowStatusRun(BaseModel):
+    """Workflow Status 统一 Run 行，兼容 CI 运行与镜像构建运行。"""
+
+    run_id: int
+    workflow_name: str
+    display_name: str
+    category: str
+    pr_number: int | None = None
+    pr_url: str | None = None
+    status: str
+    conclusion: str | None = None
+    created_at: datetime | None = None
+    html_url: str | None = None
+    cases: WorkflowCaseStats | None = None
 
 
 class CIJobBase(BaseModel):

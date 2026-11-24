@@ -30,6 +30,39 @@ export const useRuns = (params?: {
 }
 
 /**
+ * 获取 Workflow Status 统一列表
+ */
+export const useWorkflowStatusRuns = (params?: {
+  start_time?: string
+  end_time?: string
+  limit?: number
+}, enabled = true) => {
+  return useQuery({
+    queryKey: ['ci-workflow-status', params],
+    queryFn: () => ciApi.getWorkflowStatusRuns(params),
+    enabled,
+  })
+}
+
+/**
+ * 实时刷新单个 CI Run
+ */
+export const useRefreshWorkflowRun = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ciApi.refreshWorkflowRun,
+    onSuccess: (updatedRun) => {
+      queryClient.setQueriesData<ciApi.WorkflowStatusRun[]>(
+        { queryKey: ['ci-workflow-status'] },
+        (previous) => previous?.map((run) => (
+          run.run_id === updatedRun.run_id ? updatedRun : run
+        )),
+      )
+    },
+  })
+}
+
+/**
  * 获取 CI 统计数据
  */
 export const useCIStats = (params?: {
