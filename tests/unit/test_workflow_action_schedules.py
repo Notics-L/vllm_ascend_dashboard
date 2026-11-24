@@ -17,7 +17,12 @@ from workflow_actions.schedules import (
     update_schedule,
 )
 from workflow_actions.schemas import WorkflowActionRequest
-from workflow_actions.service import GitHubAsyncClient, _github_request, _result, execute_workflow_action
+from workflow_actions.service import (
+    GitHubAsyncClient,
+    _github_request,
+    _result,
+    execute_workflow_action,
+)
 
 
 class FakeResult:

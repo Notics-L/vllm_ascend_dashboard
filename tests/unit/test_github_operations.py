@@ -4,19 +4,19 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from database.migrations import github_operations as migration
+from fastapi import FastAPI
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from tests.mysql_test_db import create_test_engine
+
 from api.deps import get_current_user
 from api.v1.github_operations import router
-from fastapi import FastAPI
 from infrastructure.clients import github_http
 from infrastructure.core.github_audit import github_actor, github_audit_writer, github_feature
 from infrastructure.db import base
 from infrastructure.persistence.models import GitHubOperation, User
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from workflow_actions import service as workflow_actions
-
-from database.migrations import github_operations as migration
-from tests.mysql_test_db import create_test_engine
 
 
 @pytest.mark.asyncio

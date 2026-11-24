@@ -21,7 +21,6 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-import httpx
 from smolagents import tool
 
 from agent.memory_manager import MemoryManager
