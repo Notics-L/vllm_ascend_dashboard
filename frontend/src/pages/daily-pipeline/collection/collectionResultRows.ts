@@ -2,6 +2,7 @@ import type { DailyCollectionDetail, DailyExecutionResult } from '../../../types
 
 export interface RunAllResultRow {
   id: string
+  githubUrl?: string | null
   name: string
   group: 'UT' | 'E2E' | 'UT/E2E'
   hardware: string

@@ -7,4 +7,8 @@ const formatter = new Intl.DateTimeFormat('sv-SE', {
 export const formatCollectionTime = (time: string | null) => time ? formatter.format(new Date(time)) : '—'
 
 const resultColors: Record<string, string> = { 执行中: 'processing', 成功: 'green', 失败: 'red', 已取消: 'default', 未获取: 'default', 已跳过: 'default', 排队中: 'default' }
+export const collectionGithubLink = (url?: string | null) => url
+  ? <a className="daily-collection-history-link" href={url} target="_blank" rel="noopener noreferrer">链接</a>
+  : '—'
+
 export const executionResult = (result: string) => <Tag color={resultColors[result]}>{result}</Tag>

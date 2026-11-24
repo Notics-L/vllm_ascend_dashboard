@@ -4,6 +4,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from daily_pipeline.collection_source import CollectionSourceError, DailyCollectionSource
+from daily_pipeline.github_links import github_run_url
 from daily_pipeline.merged_pr import DailyMergedPRService
 from infrastructure.clients.daily_pipeline_collection import DailyCollectionClient
 from infrastructure.clients.daily_pipeline_scheduler import start_collection
@@ -23,12 +24,30 @@ def timestamp(value):
     return value.replace(tzinfo=UTC).isoformat() if value is not None else None
 
 
-def run_view(row, history_id):
+def node_github_url(row, repository, nodes_by_id):
+    if row.node_type == "workflow_run":
+        return github_run_url(repository, row.source_id)
+
+    source_run_id = row.source_run_id
+    # Older rows can lack the stored source Run ID. Use the nearest workflow ancestor.
+    parent = nodes_by_id.get(row.parent_id) if source_run_id is None else None
+    while parent is not None:
+        if parent.node_type == "workflow_run" and parent.source_id:
+            source_run_id = parent.source_id
+            break
+        parent = nodes_by_id.get(parent.parent_id)
+
+    job_id = row.source_id if row.node_type in ("job", "test_job") else None
+    return github_run_url(repository, source_run_id or row.run_id, job_id)
+
+
+def run_view(row, history_id, history_repository):
     issue = None
     if row.issue_number is not None:
         issue = {"number": row.issue_number, "state": row.issue_state}
     return {
         "id": str(row.run_id), "runId": row.run_id,
+        "githubUrl": github_run_url(row.repository or history_repository, row.run_id),
         "startedAt": timestamp(row.started_at), "endedAt": timestamp(row.finished_at),
         "lastCollectedAt": timestamp(row.last_collected_at),
         "triggerHistoryId": str(history_id) if history_id is not None else None,
@@ -36,10 +55,11 @@ def run_view(row, history_id):
     }
 
 
-def node_view(row):
+def node_view(row, github_url):
     return {
         "id": str(row.id), "parentId": str(row.parent_id) if row.parent_id is not None else None,
         "nodeType": row.node_type, "sourceId": str(row.source_id) if row.source_id else None,
+        "githubUrl": github_url,
         "name": row.name, "result": RESULT_LABELS.get(row.result, "未获取"),
         "group": row.case_type, "hardware": row.hardware, "vllmVersion": row.vllm_version,
     }
@@ -51,8 +71,8 @@ class DailyCollectionService:
 
     async def list_runs(self):
         rows = await self.repository.list_roots()
-        histories = await self.repository.history_ids({row.run_id for row in rows})
-        return [run_view(row, histories.get(row.run_id)) for row in rows]
+        histories = await self.repository.history_links({row.run_id for row in rows})
+        return [run_view(row, *histories.get(row.run_id, (None, None))) for row in rows]
 
     async def detail(self, run_id: int):
         tree = await self.repository.get_tree(run_id)
@@ -60,21 +80,26 @@ class DailyCollectionService:
             raise LookupError("采集记录不存在")
         root = tree["run"]
         history = tree["history"]
+        history_repository = history.repository if history else None
+        repository = root.repository or history_repository
+        nodes = tree["nodes"]
+        nodes_by_id = {row.id: row for row in nodes}
+        github_urls = {row.id: node_github_url(row, repository, nodes_by_id) for row in nodes}
         return {
-            **run_view(root, history.id if history else None),
-            "nodes": [node_view(row) for row in tree["nodes"]],
+            **run_view(root, history.id if history else None, history_repository),
+            "nodes": [node_view(row, github_urls[row.id]) for row in nodes],
             "jobs": [
-                {"id": str(row.id), "name": row.name,
+                {"id": str(row.id), "name": row.name, "githubUrl": github_urls[row.id],
                  "result": RESULT_LABELS.get(row.result, "未获取"),
                  "group": "run-all-tests" if row.name.startswith("run-all-tests") else "other"}
-                for row in tree["nodes"] if row.parent_id is None and row.node_type != "test_job"
+                for row in nodes if row.parent_id is None and row.node_type != "test_job"
             ],
             "cases": [
                 {"id": str(row.id), "jobId": str(row.source_id), "name": row.name,
-                 "group": row.case_type, "hardware": row.hardware or "—",
+                 "githubUrl": github_urls[row.id], "group": row.case_type, "hardware": row.hardware or "—",
                  **({"vllmVersion": row.vllm_version} if row.vllm_version else {}),
                  "result": RESULT_LABELS.get(row.result, "未获取")}
-                for row in tree["nodes"] if row.node_type == "test_job"
+                for row in nodes if row.node_type == "test_job"
             ],
         }
 

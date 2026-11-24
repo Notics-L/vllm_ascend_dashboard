@@ -9,16 +9,24 @@ import type { DailyCollectionDetail } from '../../../types/dailyPipeline'
 import CollectionDuration from './CollectionDuration'
 import CollectionIssueLink from './CollectionIssueLink'
 import TriggerHistoryDetail from '../trigger/TriggerHistoryDetail'
-import { executionResult, formatCollectionTime } from './collectionDisplay'
+import { collectionGithubLink, executionResult, formatCollectionTime } from './collectionDisplay'
 import { runAllResultRows } from './collectionResultRows'
 import type { RunAllResultRow } from './collectionResultRows'
 
 type CollectedCase = DailyCollectionDetail['cases'][number]
+const githubColumn = {
+  title: '链接',
+  dataIndex: 'githubUrl',
+  width: 76,
+  render: (_: unknown, row: { githubUrl?: string | null }) => collectionGithubLink(row.githubUrl),
+}
+
 const caseColumns: ProColumns<CollectedCase>[] = [
   { title: '用例名称', dataIndex: 'name', ellipsis: true },
   { key: 'group', title: '类型', dataIndex: 'group', width: 90, filters: ['E2E', 'UT'].map((value) => ({ text: value, value })), onFilter: (value, row) => row.group === value },
   { title: '硬件类型', dataIndex: 'hardware', width: 110 },
   { title: '执行结果', dataIndex: 'result', width: 100, render: (_, row) => executionResult(row.result) },
+  githubColumn,
 ]
 
 const runAllColumns: ProColumns<RunAllResultRow>[] = [
@@ -31,12 +39,14 @@ const runAllColumns: ProColumns<RunAllResultRow>[] = [
     onFilter: (value, row) => row.group === value },
   { title: '硬件类型', dataIndex: 'hardware', width: 110 },
   { title: '执行结果', dataIndex: 'result', width: 100, render: (_, row) => executionResult(row.result) },
+  githubColumn,
 ]
 
 type CollectedJob = DailyCollectionDetail['jobs'][number]
 const jobColumns: ProColumns<CollectedJob>[] = [
   { title: '名称', dataIndex: 'name', ellipsis: true },
   { title: '执行结果', dataIndex: 'result', width: 120, render: (_, row) => executionResult(row.result) },
+  githubColumn,
 ]
 
 function CollectionDetail({ id }: { id: string | null }) {
@@ -53,6 +63,7 @@ function CollectionDetail({ id }: { id: string | null }) {
         { key: 'ended', label: '结束时间', children: formatCollectionTime(data?.endedAt ?? null) },
         { key: 'duration', label: '耗时', children: data ? <CollectionDuration run={data} /> : '—' },
         { key: 'updated', label: '最近采集', children: formatCollectionTime(data?.lastCollectedAt ?? null) },
+        { key: 'github', label: '链接', children: collectionGithubLink(data?.githubUrl) },
         { key: 'issue', label: '社区 Issue', children: <CollectionIssueLink issue={data?.issue ?? null} /> },
         { key: 'trigger-log', children: <Button type="link" className="daily-collection-link daily-collection-history-link" disabled={!data?.triggerHistoryId} onClick={() => setTriggerLogOpen(true)}>触发日志</Button> },
       ]} />

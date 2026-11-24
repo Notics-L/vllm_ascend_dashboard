@@ -12,7 +12,7 @@ import DailyCasePage from '../cases/DailyCasePage'
 import IssueTable from './IssueTable'
 import CollectionIssueLink from '../collection/CollectionIssueLink'
 import CollectionRunLink from '../collection/CollectionRunLink'
-import { formatCollectionTime } from '../collection/collectionDisplay'
+import { collectionGithubLink, formatCollectionTime } from '../collection/collectionDisplay'
 import { dailyTableRefresh } from '../shared/dailyTableRefresh'
 import { useDailyQueryError } from '../shared/useDailyQueryError'
 import { useDailyTabOpening } from '../shared/useDailyTabOpening'
@@ -59,6 +59,8 @@ function buildColumns(data: DailyFailedCase[]): ProColumns<DailyFailedCase>[] {
         const color = processingResultColors[result]
         return <Badge color={color} text={<span style={{ color }}>{result}</span>} />
       } },
+    { title: '链接', dataIndex: 'githubUrl', width: 76, search: false,
+      render: (_, row) => collectionGithubLink(row.githubUrl) },
     { title: '处理进展', dataIndex: 'processingProgress', key: 'processingProgress', width: 120, valueType: 'select', order: 3,
       fieldProps: selectField(data.map((row) => row.processingProgress), '全部进展'),
       render: (_, row) => <Link className="daily-collection-history-link" to={'/daily-pipeline/issue-tracking/cases/' + encodeURIComponent(row.id) + '/progress'}>
@@ -135,7 +137,7 @@ function DailyPipelineIssueTracking() {
       onReset={() => { setFilters({}); setCurrentPage(1) }}
       columns={buildColumns(data)} dataSource={filteredCases}
       {...dailyTableRefresh(refetch, showFailures && (opening || isFetching), { current: currentPage, onChange: setCurrentPage, defaultPageSize: 10, pageSizeOptions: ['10', '20', '50'], showSizeChanger: true })}
-      scroll={{ x: 1100 }}
+      scroll={{ x: 1176 }}
     />
     <Modal title="共用处理流程" open={shareOpen} okText="确认共用" cancelText="取消"
       okButtonProps={{ disabled: !target || selectedIds.length < 2, size: 'small', icon: <CheckOutlined /> }}

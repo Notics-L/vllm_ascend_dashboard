@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select, update
 
 from daily_pipeline.code_resolution import process_code_issue
 from daily_pipeline.collection_source import utc_datetime
+from daily_pipeline.github_links import github_issue_url, github_run_url
 from daily_pipeline.processing_rollback import ROLLBACK_STATUSES
 from daily_pipeline.pull_requests import located_pull_request
 from daily_pipeline.version_resolution import flow_view
@@ -98,17 +99,25 @@ class DailyTrackingService:
         )
         rows = (
             await self.db.execute(
-                select(Failure, Issue, SourceNode, flow_size.c.member_count, shared_size.c.member_count)
+                select(
+                    Failure, Issue, SourceNode, SourceRun.repository,
+                    flow_size.c.member_count, shared_size.c.member_count,
+                )
                 .join(SourceNode, SourceNode.id == Failure.node_id)
+                .join(SourceRun, SourceRun.run_id == SourceNode.run_id)
                 .outerjoin(Issue, Issue.id == Failure.issue_id)
                 .outerjoin(flow_size, flow_size.c.flow_id == Failure.version_flow_id)
                 .outerjoin(shared_size, shared_size.c.owner_id == Failure.shared_flow_owner_id)
                 .order_by(Failure.discovered_at.desc(), Failure.id.desc())
             )
         ).all()
-        return [self.failure_view(f, i, n, versions, shared) for f, i, n, versions, shared in rows]
+        return [
+            self.failure_view(f, i, n, versions, shared, repository=repository)
+            for f, i, n, repository, versions, shared in rows
+        ]
 
-    def failure_view(self, f, issue, source, members=None, shared_members=None):
+    def failure_view(self, f, issue, source, members=None, shared_members=None, *, repository=None):
+        repository = repository or (issue.repository if issue else None)
         return {
             "id": str(f.id),
             "caseId": str(f.id),
@@ -117,6 +126,7 @@ class DailyTrackingService:
             "group": source.case_type,
             "vllmVersion": source.vllm_version,
             "runId": source.run_id,
+            "githubUrl": github_run_url(repository, source.source_run_id or source.run_id, source.source_id),
             "result": "失败",
             "collectedAt": stamp(f.discovered_at),
             "processingProgress": PROGRESS[f.processing_status],
@@ -277,7 +287,8 @@ class DailyTrackingService:
             )
         return {
             **self.failure_view(
-                f, issue, source, version_flow.get("memberCount") if version_flow else None, shared_members
+                f, issue, source, version_flow.get("memberCount") if version_flow else None, shared_members,
+                repository=run.repository,
             ),
             "source": {
                 "repository": run.repository,
@@ -309,6 +320,7 @@ class DailyTrackingService:
                 "title": i.title,
                 "state": i.state,
                 "runId": i.run_id,
+                "githubUrl": github_issue_url(i.repository, i.number),
                 "processingProgress": None,
             }
             for i in rows
