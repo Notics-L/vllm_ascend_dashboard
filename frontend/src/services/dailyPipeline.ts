@@ -125,8 +125,8 @@ export const getDailyFailedCase = async (id: string): Promise<DailyFailedCaseDet
   return (await api.get<DailyFailedCaseDetail>(`/daily-pipeline/failed-cases/${encodeURIComponent(id)}`)).data
 }
 
-export async function shareDailyVersionFlow(values: { failureIds: string[]; targetFailureId: string }) {
-  return (await api.post<{ flowId: string }>('/daily-pipeline/failed-cases/version-flow/share', values)).data
+export async function shareDailyProcessingFlow(values: { failureIds: string[]; targetFailureId: string }) {
+  return (await api.post<{ flowId: string }>('/daily-pipeline/failed-cases/processing-flow/share', values)).data
 }
 
 export async function updateDailyVersionFlow({ failureId, values }: {

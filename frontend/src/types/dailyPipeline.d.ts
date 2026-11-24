@@ -125,6 +125,7 @@ export interface DailyFailedCase extends Omit<DailyCollectionDetail['cases'][num
   problemCategory: string | null
   versionFlowId?: string | null
   versionFlowSize?: number | null
+  processFlowSize?: number | null
   issue: DailyCollectionRun['issue']
 }
 
@@ -165,6 +166,7 @@ export interface DailyFailedCaseDetail extends DailyFailedCase {
   processingFlow: {
     currentStageId: DailyProcessingStage['id'] | null
     stages: DailyProcessingStage[]
+    sharedMemberCount?: number | null
     versionFlow?: DailyVersionFlow | null
   }
 }

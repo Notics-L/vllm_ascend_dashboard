@@ -62,7 +62,7 @@ function buildColumns(data: DailyFailedCase[]): ProColumns<DailyFailedCase>[] {
     { title: '处理进展', dataIndex: 'processingProgress', key: 'processingProgress', width: 120, valueType: 'select', order: 3,
       fieldProps: selectField(data.map((row) => row.processingProgress), '全部进展'),
       render: (_, row) => <Link className="daily-collection-history-link" to={'/daily-pipeline/issue-tracking/cases/' + encodeURIComponent(row.id) + '/progress'}>
-        {(row.versionFlowSize ?? 1) > 1 ? '查看共用流程' : '查看'}
+        {(row.processFlowSize ?? row.versionFlowSize ?? 1) > 1 ? '查看共用流程' : '查看'}
       </Link> },
   ]
 }
@@ -82,10 +82,10 @@ function DailyPipelineIssueTracking() {
   const [target, setTarget] = useState<string>()
   const selectedCases = data.filter((row) => selectedIds.includes(row.id))
   const confirmShare = async () => {
-    if (!target || !selectedIds.length || share.isPending) return
+    if (!target || selectedIds.length < 2 || share.isPending) return
     try {
       await share.mutateAsync({ failureIds: selectedIds, targetFailureId: target })
-      void message.success('已共用版本配套流程')
+      void message.success('已共用处理流程')
     } catch (error) {
       const detail = isAxiosError(error) ? error.response?.data?.detail : null
       void message.error(typeof detail === 'string' ? detail : '共用流程失败，请稍后重试')
@@ -113,11 +113,11 @@ function DailyPipelineIssueTracking() {
       headerTitle={false} toolBarRender={false} cardProps={false}
       tableAlertRender={false}
       tableExtraRender={canShare ? () => <div className="daily-cases-actions">
-        <Button disabled={!selectedIds.length || share.isPending} onClick={() => {
-          setTarget(selectedIds.length === 1 ? selectedIds[0] : undefined)
+        <Button disabled={selectedIds.length < 2 || share.isPending} onClick={() => {
+          setTarget(undefined)
           setShareOpen(true)
         }}>
-          共用版本配套流程
+          共用处理流程
         </Button>
       </div> : undefined}
       rowSelection={canShare ? {
@@ -137,8 +137,8 @@ function DailyPipelineIssueTracking() {
       {...dailyTableRefresh(refetch, showFailures && (opening || isFetching), { current: currentPage, onChange: setCurrentPage, defaultPageSize: 10, pageSizeOptions: ['10', '20', '50'], showSizeChanger: true })}
       scroll={{ x: 1100 }}
     />
-    <Modal title="共用版本配套流程" open={shareOpen} okText="确认共用" cancelText="取消"
-      okButtonProps={{ disabled: !target || !selectedIds.length, size: 'small', icon: <CheckOutlined /> }}
+    <Modal title="共用处理流程" open={shareOpen} okText="确认共用" cancelText="取消"
+      okButtonProps={{ disabled: !target || selectedIds.length < 2, size: 'small', icon: <CheckOutlined /> }}
       cancelButtonProps={{ size: 'small', disabled: share.isPending }} confirmLoading={share.isPending}
       footer={(_, { OkBtn, CancelBtn }) => <Space className="daily-cases-actions" size={8}><CancelBtn /><OkBtn /></Space>}
       onOk={confirmShare} onCancel={() => { if (!share.isPending) setShareOpen(false) }}>

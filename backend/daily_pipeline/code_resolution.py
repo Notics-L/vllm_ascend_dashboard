@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import UTC, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 
 from daily_pipeline.collection_source import utc_datetime
 from daily_pipeline.cron import schedule_trigger
@@ -23,6 +23,7 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     failure_notification_recipients,
     now,
     pr_recipients,
+    sync_shared_processing,
 )
 from infrastructure.persistence.models import DailyPipelineCollectionNode as SourceNode
 from infrastructure.persistence.models import DailyPipelineCollectionRun as Run
@@ -128,9 +129,13 @@ async def process_code_issue(tracking, issue_id, *, deadline_only=False):
     issue = await db.get(Issue, issue_id)
     if issue is None or issue.state != "open" or issue.deleted_at is not None:
         return
+    flow_identity = case(
+        (Failure.processing_status.in_(ACTIVE), func.coalesce(Failure.shared_flow_owner_id, Failure.id)),
+        else_=Failure.id,
+    )
     sources = (
         await db.execute(
-            select(Failure.id, SourceNode)
+            select(flow_identity, SourceNode)
             .join(SourceNode, SourceNode.id == Failure.node_id)
             .where(Failure.issue_id == issue_id)
         )
@@ -351,6 +356,7 @@ async def advance_failure(tracking, client, issue_id, identity, references, labe
         node.started_at = node.started_at or point
         if result["deadline_notified"]:
             failure.processing_status = "unresolved"
+            await sync_shared_processing(db, failure)
         if alert:
             recipients = await failure_notification_recipients(db)
             source = await db.get(SourceNode, failure.node_id)

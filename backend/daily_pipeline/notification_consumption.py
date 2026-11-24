@@ -8,7 +8,6 @@ from daily_pipeline.tracking import DailyTrackingService, current_node
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
     FAILURE_NOTIFICATION_STAGE,
-    NOTIFICATION_STAGES,
     STAGES,
     STANDALONE_NOTICE_PURPOSES,
     latest_failure_notifications,
@@ -25,6 +24,12 @@ DELIVERY_MESSAGES = {
 
 def receipt_digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def allows_failure_notice(failure):
+    return failure.processing_status in ACTIVE or (
+        failure.processing_status == "resolved" and getattr(failure, "shared_flow_owner_id", None) is not None
+    )
 
 
 def is_ready(execution):
@@ -86,16 +91,18 @@ class DailyNotificationConsumptionService:
             if execution is not None:
                 node = await self.repository.node(execution.node_id)
             else:
-                if failure.processing_status not in ACTIVE:
+                if not allows_failure_notice(failure):
                     continue
-                node = current_node(await self.repository.nodes(identity))
-                if node is None or node.stage_code not in NOTIFICATION_STAGES or node.status != "waiting":
-                    continue
-                if node.stage_code == FAILURE_NOTIFICATION_STAGE:
+                nodes = await self.repository.nodes(identity)
+                node = next((item for item in nodes if item.stage_code == FAILURE_NOTIFICATION_STAGE
+                             and item.status == "waiting"), None)
+                if node is not None:
                     executions = await latest_failure_notifications(self.db, node.id)
                     execution = next((item for item in executions if is_ready(item)), None)
-                else:
-                    execution = await self.repository.latest_execution(node.id)
+                if execution is None and failure.processing_status in ACTIVE:
+                    node = current_node(nodes)
+                    if node is not None and node.stage_code == "problem_pr_notification" and node.status == "waiting":
+                        execution = await self.repository.latest_execution(node.id)
             if execution is None or not is_ready(execution):
                 continue
             data = execution.request_data or {}
@@ -160,11 +167,13 @@ class DailyNotificationConsumptionService:
                 execution.finished_at = point
             await self.db.commit()
             return {"id": str(identity), "result": outcome, "alreadyProcessed": False}
-        current = current_node(await self.repository.nodes(failure.id))
+        if node.stage_code == FAILURE_NOTIFICATION_STAGE:
+            eligible = allows_failure_notice(failure)
+        else:
+            current = current_node(await self.repository.nodes(failure.id))
+            eligible = failure.processing_status in ACTIVE and current is not None and current.id == node.id
         if (
-            failure.processing_status not in ACTIVE
-            or current is None or current.id != node.id
-            or node.status != "waiting" or execution.status != "waiting"
+            not eligible or node.status != "waiting" or execution.status != "waiting"
             or execution.source != "auto"
         ):
             raise ValueError("流程或通知执行已结束，结果回传已失效")

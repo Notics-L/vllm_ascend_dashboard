@@ -5,6 +5,7 @@ from sqlalchemy.orm import aliased
 
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
+    FAILURE_NOTIFICATION_STAGE,
     NOTIFICATION_STAGES,
     STANDALONE_NOTICE_PURPOSES,
     VERSION_BUILD_NOTICE,
@@ -65,6 +66,8 @@ class DailyNotificationOutboxRepository:
                 or_(
                     purpose.in_(STANDALONE_NOTICE_PURPOSES),
                     and_(Failure.processing_status.in_(ACTIVE), Node.stage_code.in_(NOTIFICATION_STAGES), Node.status == "waiting"),
+                    and_(Failure.processing_status == "resolved", Failure.shared_flow_owner_id.is_not(None),
+                         Node.stage_code == FAILURE_NOTIFICATION_STAGE, Node.status == "waiting"),
                 ),
             )
             .order_by(Failure.id).distinct().limit(100)
