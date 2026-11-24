@@ -19,6 +19,7 @@ export default function ManualProcessingAction({ stage }: { stage: DailyProcessi
     if (!manualEnabled) return
     const result: DailyManualNodeInput['result'] = {}
     if (values.category) result.category = values.category
+    if (values.revert_mode) result.revert_mode = values.revert_mode
     if (values.pr_number) result.pr_number = values.pr_number
     if (values.run_id) result.run_id = values.run_id
     try {
@@ -32,7 +33,8 @@ export default function ManualProcessingAction({ stage }: { stage: DailyProcessi
     }
   }
   return <div className="daily-processing-manual-action">
-    {((code === 'revert_pr' || code === 'problem_pr_notification') && (stage.status === 'failed' || stage.status === 'pending')
+    {(((code === 'revert_pr' && stage.revertMode !== 'manual') || code === 'problem_pr_notification')
+      && (stage.status === 'failed' || stage.status === 'pending')
       || code === 'failure_notification' && stage.status === 'failed') && <>
       <Button type="primary" size="small" icon={<ReloadOutlined />} loading={retry.isPending} disabled={mutation.isPending}
       style={{ marginBottom: 16 }} onClick={async () => {

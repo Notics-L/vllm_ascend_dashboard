@@ -23,6 +23,7 @@ from infrastructure.persistence.daily_pipeline_tracking import (
     PATHS,
     STAGES,
     VERSION_BUILD_NOTICE,
+    completed_node_result,
     now,
     reconcile_case_availability,
     retry_failure_notifications,
@@ -175,6 +176,15 @@ class DailyTrackingService:
                 else STAGES[node.stage_code]
             )
             result_message = latest.message if latest else None
+            revert_mode = None
+            if node.stage_code == "revert_pr":
+                locating_result = next((
+                    item.result_data for item in reversed(executions)
+                    if item.node_id == node.previous_node_id and item.status == "completed"
+                ), None)
+                revert_mode = (locating_result or {}).get("revert_mode", "auto")
+                if revert_mode == "manual" and node.status == "waiting":
+                    result_message = "等待登记用户创建的回退 PR"
             if node.stage_code == FAILURE_NOTIFICATION_STAGE:
                 result_message = {
                     "pending": "等待配置失败通知人",
@@ -198,6 +208,7 @@ class DailyTrackingService:
                         )
                     ),
                     "problemCategory": f.problem_category,
+                    "revertMode": revert_mode,
                     "result": result_message,
                     "resultData": latest.result_data if latest else None,
                     "startedAt": stamp(node.started_at),
@@ -389,6 +400,10 @@ class DailyTrackingService:
             previous = await self.db.get(Node, node.previous_node_id)
             if previous.failure_id != failure.id or previous.status != "completed":
                 raise ValueError("前置节点尚未完成")
+            if node.stage_code == "revert_pr":
+                located = await completed_node_result(self.db, previous.id)
+                if located.get("revert_mode") == "manual":
+                    raise ValueError("请登记用户创建的回退 PR")
         attempt = (
             await self.db.scalar(
                 select(func.max(Execution.attempt_no)).where(Execution.node_id == node.id)
@@ -467,12 +482,15 @@ class DailyTrackingService:
             ):
                 raise ManualInputError("已完成的问题分类不能修改")
         if success and node.stage_code == "locating" and category == "code":
+            revert_mode = result.get("revert_mode", "auto")
+            if revert_mode not in ("auto", "manual"):
+                raise ManualInputError("请选择有效的回退 PR 创建方式")
             try:
                 config = await read_settings(self.db, "repository")
                 repository = config.get("repository")
                 if not repository:
                     raise ValueError("请先配置 Daily 全局仓库")
-                result = {**result, **located_pull_request(result, repository)}
+                result = {**result, **located_pull_request(result, repository), "revert_mode": revert_mode}
             except ValueError as exc:
                 raise ManualInputError(str(exc)) from exc
         automatic_node = None
@@ -501,16 +519,17 @@ class DailyTrackingService:
             )
             previous = node
             for code in codes:
+                manual_revert = code == "revert_pr" and result.get("revert_mode") == "manual"
                 step = Node(
                     failure_id=failure.id,
                     previous_node_id=previous.id,
                     stage_code=code,
-                    status="pending",
+                    status="waiting" if manual_revert else "pending",
                     updated_at=point,
                 )
                 self.db.add(step)
                 await self.db.flush()
-                if code == "revert_pr":
+                if code == "revert_pr" and not manual_revert:
                     automatic_node = step.id
                 previous = step
         else:
@@ -622,6 +641,10 @@ class DailyTrackingService:
             return {"queued": True}
         if node.stage_code not in AUTOMATIC_STAGES or node.status not in ("pending", "failed"):
             raise ValueError("仅可重试当前未完成的自动处理节点")
+        if node.stage_code == "revert_pr":
+            located = await completed_node_result(self.db, node.previous_node_id)
+            if located.get("revert_mode") == "manual":
+                raise ValueError("请登记用户创建的回退 PR")
         node.status, node.finished_at, node.updated_at = "pending", None, now()
         failure.processing_status, failure.ended_at = "running", None
         await sync_shared_processing(self.db, failure)
@@ -660,7 +683,11 @@ class DailyTrackingService:
                 raise ManualInputError("请选择问题分类")
             message = CATEGORIES[result["category"]]
         elif not message:
-            raise ManualInputError("请填写处理说明")
+            code_locating = node.stage_code == "locating" and (
+                result.get("category") or failure.problem_category
+            ) == "code"
+            if node.stage_code != "revert_pr" and not code_locating:
+                raise ManualInputError("请填写处理说明")
         if not operator:
             raise ManualInputError("缺少操作人")
         if success:
@@ -671,8 +698,24 @@ class DailyTrackingService:
             }.get(node.stage_code)
             if required and (type(result.get(required)) is not int or result[required] <= 0):
                 raise ManualInputError("请填写有效的 PR 编号或构建 Run ID")
-            if node.stage_code == "classify" and result.get("category") not in PATHS:
-                raise ManualInputError("请选择问题分类")
+            if node.stage_code == "revert_pr":
+                original_data = await completed_node_result(self.db, node.previous_node_id)
+                original_repo = None
+                if not (original_data.get("pr_url") or original_data.get("pr_repository")):
+                    original_repo = (await read_settings(self.db, "repository")).get("repository")
+                try:
+                    original = located_pull_request(original_data, original_repo)
+                    revert = located_pull_request(result, original["pr_repository"])
+                except ValueError as exc:
+                    raise ManualInputError(str(exc)) from exc
+                if revert["pr_number"] == original["pr_number"]:
+                    raise ManualInputError("回退 PR 和原问题 PR 不能是同一个")
+                result = {
+                    **revert,
+                    "original_pr_number": original["pr_number"],
+                    "original_pr_url": original["pr_url"],
+                }
+                message = message or "已登记回退 PR"
         point = now()
         # Preserve previous attempts. Ending their execution invalidates late callbacks.
         purpose = Execution.request_data["purpose"].as_string()

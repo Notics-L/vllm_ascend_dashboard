@@ -13,7 +13,7 @@ from infrastructure.clients.daily_pipeline_revert import (
 )
 from infrastructure.core.security import decrypt_api_key
 from infrastructure.persistence.daily_pipeline_settings import read_settings
-from infrastructure.persistence.daily_pipeline_tracking import ACTIVE
+from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, completed_node_result
 from infrastructure.persistence.models import DailyPipelineCollectionNode as SourceNode
 from infrastructure.persistence.models import DailyPipelineCollectionRun as Run
 from infrastructure.persistence.models import DailyPipelineFailure as Failure
@@ -51,22 +51,14 @@ async def execute_revert(db, node_id):
         or node.status not in ("pending", "running")
     ):
         return True
+    located = await completed_node_result(db, node.previous_node_id)
+    if located.get("revert_mode") == "manual":
+        return True
     config = await read_settings(db, "repository", "github_token")
-    repository = config.get("repository")
     tracking = DailyTrackingService(db)
     if node.status == "pending":
-        located = await db.scalar(
-            select(Execution)
-            .where(Execution.node_id == node.previous_node_id, Execution.status == "completed")
-            .order_by(Execution.attempt_no.desc())
-            .limit(1)
-        )
         try:
-            target = (
-                located_pull_request(located.result_data or {}, repository)
-                if located
-                else located_pull_request({}, repository)
-            )
+            target = located_pull_request(located, config.get("repository"))
         except ValueError as exc:
             started = await tracking.start_node(node.id, {})
             await tracking.finish_node(started["executionId"], False, {}, str(exc))

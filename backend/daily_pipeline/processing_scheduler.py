@@ -79,7 +79,11 @@ class DailyProcessRunner:
                         or_(
                             and_(
                                 Node.stage_code.in_(AUTOMATIC_STAGES),
-                                Node.status.in_(("pending", "running", "waiting")),
+                                Node.status.in_(("pending", "running")),
+                            ),
+                            and_(
+                                Node.stage_code == "problem_pr_notification",
+                                Node.status == "waiting",
                             ),
                             and_(
                                 Failure.problem_category == "environment",

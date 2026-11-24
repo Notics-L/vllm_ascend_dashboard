@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from api.deps import get_current_user
 from api.v1.daily_pipeline import router
+from daily_pipeline.revert import execute_revert
 from daily_pipeline.tracking import DailyTrackingService, ManualInputError, current_node
 from infrastructure.db.base import get_db
 from infrastructure.persistence.models import DailyPipelineProcessNodeExecution as Execution
@@ -48,13 +49,69 @@ async def test_manual_classification_advances_to_locating_and_records_actor():
     db.commit.assert_awaited_once()
 
 
+@pytest.mark.parametrize("mode", [None, "auto", "manual"])
 @pytest.mark.asyncio
-async def test_locating_selects_only_the_saved_business_path():
+async def test_locating_selects_only_the_saved_business_path(mode):
     failure, node, db, added = objects("locating", category="code")
-    await DailyTrackingService(db).manual_complete(10, True, {"pr_number": 123}, "已定位原因", "alice")
-    assert [item.stage_code for item in added[1:]] == ["revert_pr", "problem_pr_notification", "pr_merge"]
-    assert added[1].previous_node_id == node.id
+    inputs = {"pr_number": 123}
+    if mode is not None:
+        inputs["revert_mode"] = mode
+    service = DailyTrackingService(db)
+    with patch.object(service, "_queue_processing", new_callable=AsyncMock) as queue:
+        queue.return_value = True
+        response = await service.manual_complete(10, True, inputs, "", "alice")
+    locating, revert, notice, merge = added
+    assert [revert.stage_code, notice.stage_code, merge.stage_code] == [
+        "revert_pr", "problem_pr_notification", "pr_merge",
+    ]
+    assert revert.previous_node_id == node.id
     assert failure.processing_status == "running"
+    assert locating.result_data["revert_mode"] == (mode or "auto")
+    if mode == "manual":
+        assert revert.status == "waiting" and response["automaticQueued"] is None
+        queue.assert_not_awaited()
+    else:
+        assert revert.status == "pending" and response["automaticQueued"] is True
+        queue.assert_awaited_once_with(revert.id)
+
+
+@pytest.mark.parametrize("number", [123, 456])
+@pytest.mark.asyncio
+async def test_user_can_register_a_distinct_revert_pr(number):
+    failure, node, db, added = objects("revert_pr", status="waiting", category="code")
+    node.previous_node_id = 9
+    locating = SimpleNamespace(id=9, status="completed", previous_node_id=None)
+    notice = SimpleNamespace(id=11, stage_code="problem_pr_notification", status="pending")
+    db.scalars.return_value = [locating, node]
+    db.scalar.side_effect = [failure, {"pr_number": 123, "revert_mode": "manual"}, 0, notice]
+    service = DailyTrackingService(db)
+    with patch.object(service, "_queue_processing", new_callable=AsyncMock) as queue:
+        if number == 123:
+            with pytest.raises(ManualInputError, match="不能是同一个"):
+                await service.manual_complete(10, True, {"pr_number": number}, "", "alice")
+            assert not added
+            db.commit.assert_not_awaited()
+            queue.assert_not_awaited()
+            return
+        queue.return_value = True
+        await service.manual_complete(10, True, {"pr_number": number}, "", "alice")
+    assert node.status == "completed"
+    assert added[0].result_data["original_pr_url"] == "https://github.com/example/source/pull/123"
+    assert added[0].result_data["pr_url"] == "https://github.com/example/source/pull/456"
+    queue.assert_awaited_once_with(notice.id)
+
+
+@pytest.mark.asyncio
+async def test_manual_revert_is_never_created_by_the_worker():
+    failure, node, db, _ = objects("revert_pr", status="pending", category="code")
+    node.previous_node_id = 9
+    locating = SimpleNamespace(id=9, status="completed", previous_node_id=None)
+    db.scalars.return_value = [locating, node]
+    db.scalar.side_effect = [failure, {"revert_mode": "manual"}]
+    with patch("daily_pipeline.revert.DailyRevertClient") as client:
+        assert await execute_revert(db, node.id)
+        client.assert_not_called()
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -254,17 +311,25 @@ async def test_later_stages_still_require_the_actual_result():
     db.commit.assert_not_awaited()
 
 
+@pytest.mark.parametrize("mode", [None, "manual"])
 @pytest.mark.asyncio
-async def test_revert_retry_needs_no_repository_input():
+async def test_revert_retry_respects_the_selected_creation_mode(mode):
     failure, node, db, _ = objects("revert_pr", status="failed", category="code")
     previous = SimpleNamespace(id=9, status="completed", previous_node_id=None)
     node.previous_node_id = 9
     db.scalars.return_value = [previous, node]
-    db.scalar.side_effect = [failure]
-    result = await DailyTrackingService(db).retry_processing(10)
-    assert result == {"queued": True}
-    assert node.status == "pending" and failure.processing_status == "running"
-    db.commit.assert_awaited_once()
+    db.scalar.side_effect = [failure, {"revert_mode": mode} if mode else None]
+    service = DailyTrackingService(db)
+    if mode == "manual":
+        with pytest.raises(ValueError, match="请登记用户创建的回退 PR"):
+            await service.retry_processing(10)
+        assert node.status == "failed"
+        db.commit.assert_not_awaited()
+    else:
+        result = await service.retry_processing(10)
+        assert result == {"queued": True}
+        assert node.status == "pending" and failure.processing_status == "running"
+        db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

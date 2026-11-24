@@ -33,9 +33,12 @@ it('does not offer completed nodes or readonly users an action', () => {
 
 it('keeps the saved classification readonly during locating', () => {
   const html = renderForm({ stageCode: 'locating', name: '问题定位', problemCategory: 'code' })
-  expect(html).toContain('定位结果')
+  expect(html).not.toContain('<textarea')
   expect(html).not.toContain('问题分类')
   expect(html).toContain('问题 PR 编号')
+  expect(html).toContain('回退 PR 创建方式')
+  expect(html).toContain('系统创建')
+  expect(html).toContain('用户创建')
 })
 
 it('shows the relevant external result reference for later stages', () => {
@@ -52,6 +55,7 @@ it('does not ask for a PR for environment locating', () => {
 
 it('offers an automatic retry only for pending or failed reverts', () => {
   expect(render({ stageCode: 'revert_pr', status: 'failed' })).toContain('重试')
+  expect(render({ stageCode: 'revert_pr', status: 'failed', revertMode: 'manual' })).not.toContain('重试')
   expect(render({ stageCode: 'revert_pr', status: 'running' })).not.toContain('重试')
 })
 
