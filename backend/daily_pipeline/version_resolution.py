@@ -135,11 +135,8 @@ async def flow_view(db, failure, run, issue):
     }
 
 
-async def lock_failures_and_flows(db, identities):
-    query = select(Failure).where(Failure.id.in_(identities)).order_by(Failure.id)
-    rows = list(await db.scalars(query))
-    flow_ids = {failure.version_flow_id for failure in rows if failure.version_flow_id}
-    flows = (
+async def lock_version_flows(db, flow_ids):
+    return (
         {
             flow.id: flow
             for flow in await db.scalars(
@@ -153,6 +150,12 @@ async def lock_failures_and_flows(db, identities):
         if flow_ids
         else {}
     )
+
+
+async def lock_failures_and_flows(db, identities):
+    query = select(Failure).where(Failure.id.in_(identities)).order_by(Failure.id)
+    rows = list(await db.scalars(query))
+    flows = await lock_version_flows(db, {row.version_flow_id for row in rows if row.version_flow_id})
     rows = list(await db.scalars(query.with_for_update().execution_options(populate_existing=True)))
     if len(rows) != len(identities):
         raise LookupError("失败用例不存在")
@@ -190,17 +193,23 @@ async def share_version_flow(db, identities, target_id):
         )
         if member_count != selected_count:
             raise ValueError("共用流程不能拆分，请选中该流程的所有成员或选择保留该流程")
+    flow_id = await attach_version_flow(db, rows, flow)
+    await db.commit()
+    return {"flowId": str(flow_id)}
+
+
+async def attach_version_flow(db, rows, flow):
     if flow is None:
         flow = new_flow(db)
         await db.flush()
     added = any(row.version_flow_id != flow.id for row in rows)
     for row in rows:
         row.version_flow_id = flow.id
+        row.problem_category = "version"
     if added and flow.notified_at and flow.status in ("waiting_build", "building"):
         await enqueue_build_notice(db, flow, shared_update=True)
     await update_member_status(db, flow)
-    await db.commit()
-    return {"flowId": str(flow.id)}
+    return flow.id
 
 
 async def active_members(db, flow, *, for_update=False):

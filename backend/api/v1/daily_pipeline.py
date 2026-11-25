@@ -21,7 +21,7 @@ from daily_pipeline.notification_consumption import DailyNotificationConsumption
 from daily_pipeline.notification_recipients import DailyNotificationRecipientService
 from daily_pipeline.overview import daily_overview
 from daily_pipeline.processing_rollback import rollback_processing_node, rollback_version_stage
-from daily_pipeline.shared_processing import share_processing_flow
+from daily_pipeline.shared_processing import share_processing_flow, unshare_processing_flow
 from daily_pipeline.tracking import DailyTrackingService, ManualInputError
 from daily_pipeline.trigger_config import (
     DEFAULT_TIMEZONE,
@@ -297,6 +297,16 @@ class ProcessingFlowShareInput(BaseModel):
 async def share_failed_case_processing_flow(body: ProcessingFlowShareInput, user: CurrentAdminUser, db: DbSession):
     try:
         return await share_processing_flow(db, body.failureIds, body.targetFailureId)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/failed-cases/{failure_id}/processing-flow/unshare")
+async def unshare_failed_case_processing_flow(failure_id: int, user: CurrentAdminUser, db: DbSession):
+    try:
+        return await unshare_processing_flow(db, failure_id, user.username)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

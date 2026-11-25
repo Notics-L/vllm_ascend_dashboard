@@ -96,7 +96,7 @@ async def cancel_attempts(db, node_ids, point):
         )
 
 
-async def archive_nodes(db, nodes, target_label, operator, point):
+async def archive_nodes(db, nodes, target_label, operator, point, *, message=None):
     stage_codes = {node.id: node.stage_code for node in nodes}
     await cancel_attempts(db, list(stage_codes), point)
     deliveries = await db.scalars(
@@ -124,7 +124,7 @@ async def archive_nodes(db, nodes, target_label, operator, point):
                 source="manual",
                 operator=operator,
                 request_data={"purpose": "process_rollback", "stage_code": node.stage_code},
-                message=f"已回退到「{target_label}」，此节点的原结果已归档",
+                message=message or f"已回退到「{target_label}」，此节点的原结果已归档",
                 started_at=point,
                 finished_at=point,
             )
