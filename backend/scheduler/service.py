@@ -574,6 +574,28 @@ class DataSyncScheduler:
         except Exception as e:
             logger.error(f"Failed to add image build monitor job: {e}", exc_info=True)
 
+        # 上游测试结果每日同步（vllm-ascend/upstream-test）
+        try:
+            if getattr(settings, "UPSTREAM_TEST_ENABLED", True):
+                self.scheduler.add_job(
+                    self._sync_upstream_test_job,
+                    trigger=CronTrigger(
+                        hour=getattr(settings, "UPSTREAM_TEST_SYNC_HOUR", 7),
+                        minute=getattr(settings, "UPSTREAM_TEST_SYNC_MINUTE", 30),
+                        timezone=self._timezone,
+                    ),
+                    id="upstream_test_sync",
+                    name="Upstream Test Sync",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "Upstream test sync scheduled daily at %s:%s",
+                    getattr(settings, "UPSTREAM_TEST_SYNC_HOUR", 7),
+                    getattr(settings, "UPSTREAM_TEST_SYNC_MINUTE", 30),
+                )
+        except Exception as e:
+            logger.error(f"Failed to add upstream test sync job: {e}", exc_info=True)
+
         # Release management - daily AI evaluation
         try:
             ai_eval_enabled = getattr(settings, 'RELEASE_AI_EVAL_ENABLED', True)
@@ -1878,6 +1900,31 @@ class DataSyncScheduler:
                         logger.error(f"Release sync failed for workflow {wf['id']}: {e}")
             except Exception as e:
                 logger.error(f"Release sync job failed: {e}", exc_info=True)
+            finally:
+                await db.close()
+
+    async def _sync_upstream_test_job(self) -> None:
+        """抓取 vllm-ascend/upstream-test 的上游用例结果并落库。"""
+        async with SessionLocal() as db:
+            try:
+                from upstream_test.service import UpstreamTestService
+
+                service = UpstreamTestService(db)
+                result = await service.sync()
+                if result.get("success"):
+                    removed = await service.prune_history(keep=30)
+                    logger.info(
+                        "Upstream test sync stored snapshot %s (weekly=%s version=%s issues=%s), pruned=%s",
+                        result.get("snapshot_id"),
+                        result.get("weekly_summary"),
+                        result.get("version_name"),
+                        result.get("issue_summary"),
+                        removed,
+                    )
+                else:
+                    logger.error("Upstream test sync failed: %s", result.get("error"))
+            except Exception as e:
+                logger.error(f"Upstream test sync job failed: {e}", exc_info=True)
             finally:
                 await db.close()
 

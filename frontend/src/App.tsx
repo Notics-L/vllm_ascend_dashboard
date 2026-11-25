@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Button, ConfigProvider, Spin } from 'antd'
@@ -52,8 +53,12 @@ import ShareReport from './pages/ShareReport'
 import ReleaseManagement from './components/release/ReleaseManagement'
 import BuildRunDetail from './pages/BuildRunDetail'
 import ImageBuildMonitor from './pages/ImageBuildMonitor'
+import UpstreamTest from './pages/UpstreamTest'
+import UpstreamVersionDetail from './pages/upstream-test/VersionDetail'
+import UpstreamCiDetail from './pages/upstream-test/CiDetail'
+import UpstreamIssueDetail from './pages/upstream-test/IssueDetail'
 import { useCurrentUser } from './hooks/useCurrentUser'
-import { credentialsRejected } from './services/api'
+import { credentialsRejected, serviceUnavailable } from './services/api'
 import { appBasePath } from './utils/basePath'
 
 const queryClient = new QueryClient({
@@ -67,14 +72,25 @@ const queryClient = new QueryClient({
 })
 
 function UserCheckFailure({ error, retry }: { error: unknown; retry: () => void }) {
-  if (credentialsRejected(error)) {
+  const unavailable = serviceUnavailable(error)
+
+  // 服务端暂时不可用（数据库重启、网关 503、网络中断）不能当成登录失败：
+  // 保留 token，稍后自动重试，避免用户被永久钉在错误页上。
+  useEffect(() => {
+    if (!unavailable) return
+    const timer = window.setTimeout(() => retry(), 5000)
+    return () => window.clearTimeout(timer)
+  }, [unavailable, retry, error])
+
+  if (!unavailable && credentialsRejected(error)) {
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
     return <Navigate to="/login" replace />
   }
+
   return (
     <div className="route-loading-state">
-      <span>暂时无法获取用户信息</span>
+      <span>{unavailable ? '服务暂时不可用，正在自动重试…' : '暂时无法获取用户信息'}</span>
       <Button onClick={retry}>重试</Button>
     </div>
   )
@@ -244,6 +260,11 @@ function App() {
               {/* 模型管理页面 */}
               <Route path="models" element={<Models />} />
               <Route path="models/:id" element={<ModelDetail />} />
+              {/* 上游测试 */}
+              <Route path="upstream-test" element={<UpstreamTest />} />
+              <Route path="upstream-test/version" element={<UpstreamVersionDetail />} />
+              <Route path="upstream-test/ci" element={<UpstreamCiDetail />} />
+              <Route path="upstream-test/issues" element={<UpstreamIssueDetail />} />
               <Route path="resources" element={<ResourceDashboard />} />
               {/* 模型每日报告页面 */}
               <Route path="models/reports/:date" element={<ModelDailyReport />} />

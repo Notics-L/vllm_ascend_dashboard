@@ -100,6 +100,12 @@ from infrastructure.persistence.models.workflow_actions import (
     WorkflowActionSchedule,
     WorkflowSchedulePermission,
 )
+# 上游测试模型（同样必须在 Base 创建之后导入）
+from infrastructure.persistence.models.upstream_test import (
+    UpstreamTestCaseResult,
+    UpstreamTestIssue,
+    UpstreamTestSnapshot,
+)
 
 
 class User(Base):
