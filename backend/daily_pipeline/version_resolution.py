@@ -1,16 +1,13 @@
 """Version compatibility resolution, with explicitly shared failures and manual builds."""
 
 import re
-from datetime import UTC
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 
 from daily_pipeline.collection_source import utc_datetime
 from daily_pipeline.processing_rollback import VERSION_STAGE_NAMES, version_can_rollback
 from daily_pipeline.pull_requests import REPOSITORY_PATTERN, located_pull_request
-from daily_pipeline.trigger_config import DEFAULT_TIMEZONE
 from infrastructure.persistence.daily_pipeline_settings import (
     DEFAULT_VERSION_BUILD_WORKFLOW,
     read_settings,
@@ -36,7 +33,7 @@ BUILD_RUN_PATH = re.compile(r"/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/([
 FLOW_MESSAGES = {
     "waiting_resolution": "等待登记修复或回退 PR，或人工确认外部配套已恢复",
     "waiting_pr": "等待修复或回退 PR 合入",
-    "waiting_build": "等待人工触发镜像构建并登记构建链接",
+    "waiting_build": "等待登记镜像构建 Run 链接",
     "building": "跟踪镜像构建结果",
     "build_failed": "镜像构建未成功，可以重新构建并登记新的链接",
     "resolved": "镜像构建成功",
@@ -282,7 +279,7 @@ async def submit_version_action(tracking, failure_id, action, actor, data):
         client = await tracking._client(target["repository"])
         async with client:
             remote = await client.run(run_id)
-        verify_build_run(remote, target, flow.ready_at)
+        verify_build_run(remote, target)
         flow.build = {"run_id": run_id, "url": url, "registered_by": actor}
         flow.status = "building"
     else:
@@ -295,22 +292,10 @@ async def submit_version_action(tracking, failure_id, action, actor, data):
     return {"status": flow.status}
 
 
-def verify_build_run(remote, target, ready_at):
+def verify_build_run(remote, target):
     path = (remote.get("path") or "").split("@", 1)[0]
     if path != f".github/workflows/{target['workflow']}":
         raise ValueError("构建链接不是配置的镜像构建工作流")
-    created_at = utc_datetime(remote.get("created_at"))
-    if not created_at:
-        raise ValueError("GitHub 没有返回该构建 Run 的创建时间，请稍后重试")
-    if ready_at and created_at < ready_at.replace(microsecond=0):
-        timezone = ZoneInfo(DEFAULT_TIMEZONE)
-        created_text = created_at.replace(tzinfo=UTC).astimezone(timezone).strftime("%Y-%m-%d %H:%M:%S")
-        ready_text = ready_at.replace(tzinfo=UTC).astimezone(timezone).strftime("%Y-%m-%d %H:%M:%S")
-        raise ValueError(
-            "构建时间早于本次配套恢复确认或 PR 合入时间。"
-            f"Run 创建于 {created_text}，本次最早允许的构建时间为 {ready_text}（均为北京时间）。"
-            "请登记之后通过 Run workflow 触发的新构建。"
-        )
 
 
 async def enqueue_build_notice(db, flow, *, shared_update=False):
@@ -348,11 +333,11 @@ async def enqueue_build_notice(db, flow, *, shared_update=False):
         (
             f"Daily Run #{run.run_id} 的版本配套流程已合并。如已触发构建，登记该 Run 即可。"
             if shared_update
-            else f"Daily Run #{run.run_id} 的版本配套已具备构建条件，请手动触发镜像构建。"
+            else f"Daily Run #{run.run_id} 的版本配套已具备构建条件，请登记对应的镜像构建 Run。"
         ),
         f"构建入口：{target['trigger_url']}",
         f"待构建分支：{run.source_branch or '以合入或恢复的目标分支为准'}",
-        "触发后请在「问题跟踪 → 失败用例 → 处理进展」登记实际构建 Run 链接。",
+        "请在「问题跟踪 → 失败用例 → 处理进展」登记实际构建 Run 链接。",
     ]
     if len(members) > 1:
         content.append(f"本次有 {len(members)} 条失败用例共用版本配套流程，只需构建和登记一次。")
@@ -420,7 +405,7 @@ async def advance_version_flow(tracking, flow_id):
             )
             flow.message = (
                 "修复 PR" if kind == "repair" else "回退 PR"
-            ) + " 已合入，等待人工构建镜像"
+            ) + " 已合入，等待登记镜像构建链接"
             break
         else:
             return
@@ -431,7 +416,7 @@ async def advance_version_flow(tracking, flow_id):
         client = await tracking._client(target["repository"])
         async with client:
             remote = await client.run(flow.build["run_id"])
-            verify_build_run(remote, target, flow.ready_at)
+            verify_build_run(remote, target)
             if remote.get("status") != "completed":
                 return
             conclusion = remote.get("conclusion")
