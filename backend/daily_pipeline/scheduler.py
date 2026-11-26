@@ -29,6 +29,7 @@ from infrastructure.clients.daily_pipeline_scheduler import (
     SERVICE_SUBJECT,
 )
 from infrastructure.core.config import settings
+from infrastructure.core.github_audit import github_audit_writer
 from infrastructure.core.logging import setup_db_logging
 from infrastructure.core.security import decode_token
 from infrastructure.db.base import SessionLocal
@@ -257,19 +258,20 @@ def create_control_app() -> FastAPI:
         app.state.schedule_lock = asyncio.Lock()
         app.state.collector = DailyRunCollector(scheduler)
         app.state.processor = DailyProcessRunner(scheduler)
-        scheduler.start(paused=True)
-        try:
+        async with github_audit_writer("daily_scheduler"):
+            scheduler.start(paused=True)
             try:
-                await reload_daily_schedules(scheduler)
-            except ValueError:
-                logger.exception("Some Daily tasks could not be loaded at startup")
-            await app.state.collector.restore()
-            await app.state.processor.restore()
-            scheduler.resume()
-            logger.info("Daily scheduler ready; task configurations loaded at startup")
-            yield
-        finally:
-            scheduler.shutdown()
+                try:
+                    await reload_daily_schedules(scheduler)
+                except ValueError:
+                    logger.exception("Some Daily tasks could not be loaded at startup")
+                await app.state.collector.restore()
+                await app.state.processor.restore()
+                scheduler.resume()
+                logger.info("Daily scheduler ready; task configurations loaded at startup")
+                yield
+            finally:
+                scheduler.shutdown()
 
     app = FastAPI(lifespan=lifespan)
     bearer = HTTPBearer(auto_error=False)
