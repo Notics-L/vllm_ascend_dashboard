@@ -6,6 +6,7 @@ from fastapi import Path as ApiPath
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 
 from api.deps import CurrentAdminUser, CurrentUser, DbSession
+from daily_pipeline.case_rerun import rerun_daily_case
 from daily_pipeline.cases import CatalogSourceError, DailyCaseService
 from daily_pipeline.collection import DailyCollectionService
 from daily_pipeline.collection_source import CollectionSourceError
@@ -386,6 +387,18 @@ async def failed_case_detail(failure_id: int, user: CurrentUser, db: DbSession):
         return await DailyTrackingService(db).detail(failure_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/failed-cases/{failure_id}/rerun")
+async def rerun_failed_case(failure_id: Annotated[int, ApiPath(gt=0)], user: CurrentAdminUser, db: DbSession):
+    try:
+        return await rerun_daily_case(db, failure_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except CollectionSourceError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/issues")

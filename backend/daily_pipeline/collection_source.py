@@ -208,9 +208,13 @@ class DailyCollectionSource:
         self.repository = repository
         self.credential = credential
 
-    async def collect_snapshot(self, history: dict, known_runs: list[dict]):
+    async def collect_snapshot(self, history: dict, known_runs: list[dict], pending_reruns=None):
         try:
             async with DailyCollectionClient(self.repository, self.credential) as client:
+                for child_id, expected_attempt in (pending_reruns or {}).items():
+                    child = await client.run(int(child_id))
+                    if int(child.get("run_attempt", 1)) < expected_attempt or child.get("status") != "completed":
+                        return None
                 return await self._collect(client, history, known_runs)
         except CollectionSourceError:
             raise
@@ -278,7 +282,9 @@ class DailyCollectionSource:
             seen_children.add(child_id)
             child_jobs = job_cache.get(child_id)
             if child_jobs is None:
-                child_jobs = await client.jobs(child_id, int(child.get("run_attempt", 1)))
+                attempt = int(child.get("run_attempt", 1))
+                child_jobs = await (client.latest_jobs(child_id, attempt) if attempt > 1 else client.jobs(child_id, attempt))
+                job_cache[child_id] = child_jobs
             child_ref = f"workflow:{child_id}"
             nodes.append(collection_node(
                 child_ref, None, "workflow_run", child_id,
@@ -401,7 +407,10 @@ class DailyCollectionSource:
             groups = await client.concurrency_groups(candidate_id)
             if any(group.get("group_name", "").endswith("-" + identity) for group in groups):
                 return candidate
-            candidate_jobs = await client.jobs(candidate_id, int(candidate.get("run_attempt", 1)))
+            attempt = int(candidate.get("run_attempt", 1))
+            candidate_jobs = await (
+                client.latest_jobs(candidate_id, attempt) if attempt > 1 else client.jobs(candidate_id, attempt)
+            )
             job_cache[candidate_id] = candidate_jobs
             for job in candidate_jobs:
                 if not any(step.get("name") in TEST_STEPS for step in job.get("steps", [])):

@@ -159,6 +159,36 @@ class DailyCollectionClient:
             "jobs",
         )
 
+    async def latest_jobs(self, run_id: int, attempt: int):
+        # A partial rerun gives jobs new IDs only for the jobs that ran again.
+        # Keep jobs from earlier attempts when a newer attempt omitted them.
+        jobs = []
+        newer_names: set[str] = set()
+        for number in range(attempt, 0, -1):
+            batch = await self.jobs(run_id, number)
+            jobs.extend(job for job in batch if job["name"] not in newer_names)
+            newer_names.update(job["name"] for job in batch)
+        return jobs
+
+    async def rerun_job(self, job_id: int) -> None:
+        try:
+            response = await self.client.post(f"{self.prefix}/actions/jobs/{job_id}/rerun")
+        except httpx.RequestError:
+            raise CollectionSourceError(
+                "未能确认 GitHub 是否受理重跑，请先查看对应的 Actions Run"
+            ) from None
+        if response.status_code == 201:
+            return
+        messages = {
+            401: "Daily GitHub Token 无效或已过期",
+            403: "GitHub 拒绝重跑，请检查 Daily Token 的 Actions 写入权限和重跑期限",
+            404: "GitHub 找不到该 Job，或 Daily Token 无权重跑",
+            409: "该流水线当前无法重跑，请稍后刷新",
+            422: "GitHub 当前无法重跑该 Job，请检查运行状态和重跑期限",
+            429: "GitHub 请求受限，请稍后重试",
+        }
+        raise CollectionSourceError(messages.get(response.status_code, f"GitHub 重跑请求失败（HTTP {response.status_code}）"))
+
     async def download(self, path: str):
         response = await self.request(path, missing_ok=True)
         if response is None:

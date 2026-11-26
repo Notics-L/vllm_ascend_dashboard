@@ -187,6 +187,11 @@ export async function rollbackDailyProcessing(input: DailyProcessingRollback) {
   }
 }
 
+export async function rerunDailyFailedCase(failureId: string) {
+  const url = `/daily-pipeline/failed-cases/${encodeURIComponent(failureId)}/rerun`
+  return (await api.post<{ collectionQueued: boolean }>(url, {})).data
+}
+
 export async function retryDailyProcessing({ nodeId }: { nodeId: string }) {
   return (await api.post<{ queued: boolean }>(`/daily-pipeline/processing/nodes/${encodeURIComponent(nodeId)}/retry`, {})).data
 }

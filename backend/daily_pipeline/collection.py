@@ -146,6 +146,7 @@ class DailyCollectionService:
                 "id", "repository", "source_branch", "workflow", "run_id", "daily_cases", "triggered_at",
             )}
             root = tree["run"]
+            pending_reruns = root.pending_reruns
             known_runs = [{
                 "run_id": root.run_id, "parent_run_id": None, "workflow": root.workflow,
                 "issue_number": root.issue_number, "issue_state": root.issue_state,
@@ -172,7 +173,9 @@ class DailyCollectionService:
             logger.info("Daily collection started run_id=%d repository=%s", run_id, history["repository"])
             try:
                 source = DailyCollectionSource(history["repository"], token)
-                snapshot = await source.collect_snapshot(history, known_runs)
+                snapshot = await source.collect_snapshot(history, known_runs, pending_reruns)
+                if snapshot is None:
+                    return False
                 applied = await self.repository.apply_snapshot(run_id, snapshot)
             except Exception:
                 await self.repository.db.rollback()

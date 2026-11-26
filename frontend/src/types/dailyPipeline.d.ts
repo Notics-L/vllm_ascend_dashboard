@@ -184,6 +184,7 @@ export interface DailyFailedCaseDetail extends DailyFailedCase {
     currentStageId: DailyProcessingStage['id'] | null
     stages: DailyProcessingStage[]
     archivedStages?: DailyProcessingStage[]
+    caseRerun?: { failureId: string; pending: boolean; runUrl: string | null } | null
     sharedMemberCount?: number | null
     versionFlow?: DailyVersionFlow | null
   }

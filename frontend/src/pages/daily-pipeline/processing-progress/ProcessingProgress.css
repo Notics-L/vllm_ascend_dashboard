@@ -166,6 +166,7 @@
 }
 
 .daily-processing-manual-action,
+.daily-processing-rerun-action,
 .daily-processing-execution-records {
   margin-top: 24px;
   padding-top: 16px;

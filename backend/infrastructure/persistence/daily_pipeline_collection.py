@@ -320,6 +320,8 @@ class DailyCollectionRepository:
                 resolved[ref] = row
             for field, value in values.items():
                 setattr(root, field, value)
+            if root.pending_reruns and snapshot.get("complete"):
+                root.pending_reruns = None
             await ingest_snapshot(self.db, run_id, snapshot, resolved)
             if history and counts:
                 await DailyCaseRepository(self.db).add_execution_counts(counts)

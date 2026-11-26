@@ -4,6 +4,7 @@ import logging
 
 from sqlalchemy import func, or_, select, update
 
+from daily_pipeline.case_rerun import can_rerun_case
 from daily_pipeline.code_resolution import process_code_issue
 from daily_pipeline.collection_source import utc_datetime
 from daily_pipeline.github_links import github_issue_url, github_run_url
@@ -305,6 +306,11 @@ class DailyTrackingService:
                 "archivedStages": sorted(archived_stages, key=lambda stage: stage["updatedAt"] or "", reverse=True),
                 "sharedMemberCount": shared_members,
                 "versionFlow": version_flow,
+                "caseRerun": {
+                    "failureId": str(f.id),
+                    "pending": str(source.source_run_id) in (run.pending_reruns or {}),
+                    "runUrl": github_run_url(run.repository, source.source_run_id),
+                } if can_rerun_case(f, source, run) else None,
             },
         }
 
