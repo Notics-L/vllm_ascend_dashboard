@@ -77,6 +77,7 @@ COPY backend/tooling/ ./tooling/
 COPY backend/workflow_actions/ ./workflow_actions/
 
 COPY backend/failure_analysis/ ./failure_analysis/
+COPY backend/image_build/ ./image_build/
 COPY backend/image_build_monitor/ ./image_build_monitor/
 COPY backend/test_board/ ./test_board/
 COPY backend/model_sync/ ./model_sync/

@@ -1,0 +1,169 @@
+@startuml
+title 镜像构建与 Daily 推荐 · UML 交互图（时序图）
+
+hide footbox
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam ArrowColor #475569
+skinparam sequenceGroupBackgroundColor #F8FAFC
+skinparam sequenceGroupBorderColor #94A3B8
+skinparam sequenceDividerBackgroundColor #EAF2FF
+
+actor "看板用户" as User
+boundary "页面" as UI
+control "构建 API\n与触发服务" as Build
+control "镜像构建\n调度进程" as Scheduler
+control "Workflow\n同步服务" as Sync
+control "采集与重跑" as Collect
+control "Daily 流水线" as Daily
+control "Daily 推荐" as Rec
+database "MySQL" as DB
+participant "社区 GitHub" as GH
+
+== 初始化与 Workflow 同步 ==
+
+note over Scheduler, DB
+  初始化与迁移创建构建表。构建仓库默认 vllm-project/vllm-ascend，
+  Workflow 同步默认启用，间隔 10 分钟。已有配置会保留。
+  部署时将镜像构建调度进程纳入停写、启动和健康检查。
+end note
+alt 手动同步
+  User -> UI : 同步 Workflow
+  UI -> Build : POST /workflows/sync
+  Build -> Sync : 立即同步
+else 定时同步
+  Scheduler -> DB : Leader 租约 / 读取同步开关与间隔
+  Scheduler -> Sync : 到期执行同步
+end
+Sync -> DB : 读取构建仓库和 Actions 凭据，获取同步锁
+Sync -> GH : 枚举分支，按 HEAD 读取 schedule_nightly_image_build_with_base.yaml
+GH --> Sync : 分支信息与 Workflow YAML
+Sync -> DB : 新增或更新变化的定义，标记已失效分支
+opt 手动同步
+  Sync --> Build : 变更数量和失败数量
+  Build --> UI : 刷新定义并展示同步结果
+end
+
+== Daily 推荐独立维护 ==
+
+opt 手动触发 Daily
+  User -> UI : 在确认弹窗选择是否参与推荐
+  UI -> Daily : POST /daily-pipeline/trigger（includeInRecommendation）
+end
+alt Daily 触发成功且参与推荐
+  note over Daily : 定时触发默认参与。手动触发由弹窗选择。
+  Daily -> DB : 先提交触发历史和采集根节点
+  Daily ->> Rec : 提交后初始化推荐轮次
+  Rec -> DB : 独立事务清空上一轮 PR 候选
+  Rec -> GH : 从 Run HEAD 查询触发前的源码主线
+  Rec -> DB : 写入本轮基准 SHA、提交时间及可选 PR
+else 代码问题定位到 PR 或跟踪结束
+  Daily -> DB : 提交定位结果或结束状态
+  Daily ->> Rec : 监听已提交变更
+  opt 新定位的有效问题 PR
+    Rec -> GH : 查问题 PR 前一个主线提交
+  end
+  Rec -> DB : 写回退候选或标记候选过期
+end
+
+== 配置、保存与触发构建 ==
+
+User -> UI : 从「镜像 → 构建」新增或修改任务
+UI -> Build : GET /workflows
+Build -> DB : 读取可用分支、inputs 与默认值
+Build --> UI : 返回定义，按参数类型渲染表单
+note over UI, Build
+  源码分支优先跟随 Workflow 分支，无法选择时使用 YAML 默认值。
+  支持下拉、开关、多选、数值和文本输入。
+  source_ref 可按源码分支、使用推荐或手动填写。
+end note
+opt source_ref 选择系统推荐
+  UI -> Rec : 按仓库和源码分支预览
+  Rec -> DB : 读取本轮基准及有效候选
+  Rec --> UI : 回退最远的候选、基准 SHA 或空
+end
+UI -> Build : 保存任务（Cron 可留空）
+Build -> Build : 校验参数、推荐可用性和同源码分支 Cron 冲突
+alt 校验通过
+  Build -> DB : 保存任务
+  Build --> UI : 返回保存结果，页面更新任务列表
+else 参数、推荐或时间校验失败
+  Build --> UI : 拒绝保存，返回冲突或缺失原因
+end
+
+opt 删除选中的构建任务
+  UI -> Build : DELETE /trigger-tasks
+  Build -> DB : 删除选中的任务
+end
+
+User -> UI : 点击「触发」
+UI -> Build : POST /trigger-tasks/{id}/trigger
+Build -> DB : 锁定任务，读取最新 Workflow 定义
+opt 推荐模式
+  Build -> Rec : 触发时再次读取 Daily 推荐
+  Rec --> Build : 推荐 SHA 或空
+end
+alt 推荐模式下无可用 SHA
+  Build -> DB : 保存触发失败及原因
+else 参数就绪
+  Build -> DB : 先保存待提交记录及脱敏参数快照
+  Build -> GH : Actions Token 提交 workflow_dispatch\nref 为 Workflow 分支，inputs 携带构建参数
+  GH --> Build : 受理、明确失败或结果未知
+  Build -> DB : 更新提交结果，记录返回的 Run ID
+end
+Build --> UI : 触发结果，触发记录可查看详情
+
+== 构建采集、详情与刷新 ==
+
+Scheduler -> Collect : 扫描已提交且带 Run ID 的记录
+Collect -> DB : 登记采集，读取到期的 Run
+loop 构建执行中或发布汇总待采集
+  Collect -> GH : 用 Actions Token 读取 Run 与各轮 Jobs
+  GH --> Collect : run_attempt、运行状态与 Job 结果
+  Collect -> Collect : 汇总芯片 / 系统的 Base、Nightly 结果和链接
+  opt 已完成且汇总 Job 未跳过
+    Collect -> GH : 下载当前轮次 build-info-run-{run_id}-{attempt}
+    GH --> Collect : 包含 build-info.json 的 ZIP
+    Collect -> Collect : 校验 Run ID，读取 Tag、Digest 和源码 SHA
+  end
+  Collect -> DB : 按版本条件更新快照，安排下一次采集
+end
+User -> UI : 查看采集列表或双击打开详情
+UI -> Build : 查询列表或详情
+Build -> DB : 读取采集状态、矩阵与发布汇总
+opt 点击详情左下角「刷新」
+  UI -> Build : POST /collection/runs/{id}/refresh
+  Build -> Collect : 主动采集同一 Run
+  Collect -> DB : 更新采集快照
+  Build -> DB : 读取最新详情
+end
+Build --> UI : 构建结果、矩阵、可用时展示「发布信息」
+
+== 失败 Job 重跑与继续采集 ==
+
+User -> UI : 从列表或详情点击「重跑」
+UI -> Build : POST /collection/runs/{id}/rerun-failed
+Build -> Collect : 管理员授权后检查 Run
+Collect -> GH : GET 同一 Run，核实已结束、失败和最新轮次
+alt 允许重跑
+  Collect -> DB : 条件登记待确认轮次，防重复提交
+  Collect -> GH : POST /actions/runs/{id}/rerun-failed-jobs
+  alt GitHub 已接收
+    Collect -> DB : 确认重跑，继续跟踪
+  else 请求结果未知
+    Collect -> DB : 保留待确认轮次，等待 GitHub 状态
+  else GitHub 拒绝
+    Collect -> DB : 清除待确认轮次
+  end
+  Collect --> Build : 返回提交状态
+  Build --> UI : 刷新构建结果，重跑入口按状态置灰
+  opt 已受理或结果待确认
+    Scheduler -> Collect : 后续轮询仍用原 Run ID
+    Collect -> GH : 等待 run_attempt 更新并读取 Jobs
+    Collect -> DB : 保留未重跑的成功 Job，更新本轮结果与发布信息
+  end
+else 构建仍在执行、已成功，或状态已变化
+  Collect --> Build : 拒绝重跑
+end
+@enduml

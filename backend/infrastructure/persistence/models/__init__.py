@@ -54,7 +54,8 @@ __all__ = [
     "ContributorScoringVersion", "ContributorScoreSnapshot", "ContributorScoreUpdateAudit",
     "ContributorAIReport",
     "ReleaseWorkflow", "ReleaseBuildRun", "ReleaseBuildGroup",
-    "ImageBuildMonitorTarget", "ImageBuildAlert",
+    "ImageBuildMonitorTarget", "ImageBuildAlert", "ImageBuildWorkflowDefinition",
+    "ImageBuildCollectionRun", "ImageBuildConfig", "ImageBuildScheduledTask", "ImageBuildTriggerRecord", "ImageBuildTriggerTask",
     "ReleaseThirdPartyVersion", "ReleaseThirdPartyBaseline",
     "WorkflowActionLog", "WorkflowActionPermission",
     "WorkflowActionSchedule", "WorkflowSchedulePermission",
@@ -72,10 +73,16 @@ from infrastructure.persistence.models.daily_pipeline_collection import (
 from infrastructure.persistence.models.github_operation import GitHubOperation
 
 # 发布件管理模型（必须在 Base 创建之后导入，避免循环导入）
+from infrastructure.persistence.models.image_build_collection import ImageBuildCollectionRun
+from infrastructure.persistence.models.image_build_config import ImageBuildConfig
 from infrastructure.persistence.models.image_build_monitor import (
     ImageBuildAlert,
     ImageBuildMonitorTarget,
 )
+from infrastructure.persistence.models.image_build_schedule import ImageBuildScheduledTask
+from infrastructure.persistence.models.image_build_trigger_record import ImageBuildTriggerRecord
+from infrastructure.persistence.models.image_build_trigger_task import ImageBuildTriggerTask
+from infrastructure.persistence.models.image_build_workflow import ImageBuildWorkflowDefinition
 from infrastructure.persistence.models.notifications import (
     NotificationAction,
     NotificationContact,

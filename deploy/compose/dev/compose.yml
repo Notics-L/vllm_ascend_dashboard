@@ -159,6 +159,33 @@ services:
       start_period: 30s
     profiles: ["workers"]
 
+  image-build-scheduler:
+    build:
+      context: ../../../
+      dockerfile: backend/api/Dockerfile
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ../../../.env.local
+    environment:
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER:-dashboard}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-vllm_dashboard}
+      DB_POOL_SIZE: 2
+      DB_MAX_OVERFLOW: 0
+      ENVIRONMENT: development
+    command: python -m image_build.scheduler
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "image_build.scheduler", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    profiles: ["workers"]
+
   collector:
     build:
       context: ../../../

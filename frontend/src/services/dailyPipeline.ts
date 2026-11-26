@@ -1,5 +1,5 @@
 import api from './api'
-import type { DailyNotificationConsumptionPage, DailyNotificationConsumptionResult, DailyNotificationConsumptionStatus, DailyNotificationRecipient, DailyNotificationRecipientInput, DailyManualNodeInput, DailyOverviewData, DailyCase, DailyCaseUpdate, DailyCollectionRun, DailyCollectionDetail, DailyFailedCase, DailyFailedCaseDetail, DailyIssueDetail, DailyIssueItem, DailyPipelineSchedule, DailyTriggerHistoryDetail, DailyTriggerHistoryPage, DailySelectionResult, DailyTriggerConfig, DailyTriggerConfigInput } from '../types/dailyPipeline'
+import type { DailyNotificationConsumptionPage, DailyNotificationConsumptionResult, DailyNotificationConsumptionStatus, DailyNotificationRecipient, DailyNotificationRecipientInput, DailyManualNodeInput, DailyOverviewData, DailyCase, DailyCaseUpdate, DailyCollectionRun, DailyCollectionDetail, DailyFailedCase, DailyFailedCaseDetail, DailyIssueDetail, DailyIssueItem, DailyPipelineSchedule, DailySourceRecommendation, DailyTriggerHistoryDetail, DailyTriggerHistoryPage, DailySelectionResult, DailyTriggerConfig, DailyTriggerConfigInput } from '../types/dailyPipeline'
 
 export type { DailyCase, DailyCaseInput, DailyCaseUpdate, DailySelectionResult, NightlyCase } from '../types/dailyPipeline'
 
@@ -68,9 +68,18 @@ export const testDailyTriggerConnection = async (githubToken?: string) => {
   return response.data
 }
 
-export const triggerDailyPipeline = async (): Promise<DailyTriggerHistoryDetail> => {
-  const response = await api.post<DailyTriggerHistoryDetail>('/daily-pipeline/trigger', {})
+export const triggerDailyPipeline = async (includeInRecommendation: boolean): Promise<DailyTriggerHistoryDetail> => {
+  const response = await api.post<DailyTriggerHistoryDetail>('/daily-pipeline/trigger', { includeInRecommendation })
   return response.data
+}
+
+export async function getDailySourceRecommendation(branch: string, repository: string, signal?: AbortSignal) {
+  const response = await api.get<DailySourceRecommendation>('/daily-pipeline/source-ref-recommendation', {
+    params: { branch, repository },
+    signal,
+    validateStatus: (status) => (status >= 200 && status < 300) || status === 404,
+  })
+  return response.status === 404 ? null : response.data
 }
 
 export const previewDailySchedule = async (cron: string, signal?: AbortSignal): Promise<DailyPipelineSchedule> => {

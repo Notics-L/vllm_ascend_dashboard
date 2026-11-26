@@ -19,6 +19,7 @@ from daily_pipeline.cron import schedule_trigger
 from daily_pipeline.dispatch import trigger_daily_pipeline
 from daily_pipeline.logging import setup_daily_file_logging
 from daily_pipeline.processing_scheduler import DailyProcessRunner
+from daily_pipeline.recommendation_events import watch_daily_recommendations
 from daily_pipeline.tracking import DailyTrackingService
 from daily_pipeline.trigger_config import TRIGGER_TASK
 from daily_pipeline.version_resolution import advance_version_flow, version_work_ids
@@ -263,11 +264,12 @@ def create_control_app() -> FastAPI:
                 await reload_daily_schedules(scheduler)
             except ValueError:
                 logger.exception("Some Daily tasks could not be loaded at startup")
-            await app.state.collector.restore()
-            await app.state.processor.restore()
-            scheduler.resume()
-            logger.info("Daily scheduler ready; task configurations loaded at startup")
-            yield
+            async with watch_daily_recommendations(recover=True):
+                await app.state.collector.restore()
+                await app.state.processor.restore()
+                scheduler.resume()
+                logger.info("Daily scheduler ready; task configurations loaded at startup")
+                yield
         finally:
             scheduler.shutdown()
 

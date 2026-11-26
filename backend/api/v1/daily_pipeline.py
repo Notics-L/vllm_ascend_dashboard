@@ -22,6 +22,7 @@ from daily_pipeline.notification_recipients import DailyNotificationRecipientSer
 from daily_pipeline.overview import daily_overview
 from daily_pipeline.processing_rollback import rollback_processing_node, rollback_version_stage
 from daily_pipeline.shared_processing import share_processing_flow
+from daily_pipeline.source_recommendation import SourceRecommendation, get_source_recommendation
 from daily_pipeline.tracking import DailyTrackingService, ManualInputError
 from daily_pipeline.trigger_config import (
     DEFAULT_TIMEZONE,
@@ -52,6 +53,17 @@ async def overview(user: CurrentUser, db: DbSession, days: Annotated[int, Query(
     return await daily_overview(db, days)
 
 
+@router.get("/source-ref-recommendation")
+async def source_ref_recommendation(
+    db: DbSession, _: CurrentUser, branch: Annotated[str, Query(min_length=1, max_length=255)],
+    repository: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+) -> SourceRecommendation:
+    recommendation = await get_source_recommendation(db, branch, repository=repository)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="该源码分支暂无可用的 Daily 推荐 SHA")
+    return recommendation
+
+
 def get_case_service(db: DbSession) -> DailyCaseService:
     return DailyCaseService(DailyCaseRepository(db))
 
@@ -70,10 +82,14 @@ class HistoryIds(BaseModel):
     ids: set[Annotated[int, Field(gt=0)]] = Field(min_length=1)
 
 
+class ManualTriggerInput(BaseModel):
+    includeInRecommendation: bool = True
+
+
 @router.post("/trigger")
-async def manual_trigger(user: CurrentAdminUser, db: DbSession):
+async def manual_trigger(user: CurrentAdminUser, db: DbSession, body: ManualTriggerInput | None = None):
     try:
-        return await trigger_daily_pipeline(db)
+        return await trigger_daily_pipeline(db, include_in_recommendation=body.includeInRecommendation if body else True)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

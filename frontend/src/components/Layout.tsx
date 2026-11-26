@@ -22,6 +22,7 @@ import {
   CloudServerOutlined,
   CloudUploadOutlined,
   CodeOutlined,
+  ContainerOutlined,
   DashboardOutlined,
   ExperimentOutlined,
   GithubOutlined,
@@ -50,6 +51,9 @@ const { Header, Sider, Content } = AntLayout
 
 type NavigationItem = NonNullable<MenuProps['items']>[number]
 
+const imageMenuKey = 'images'
+const submenuChevron = <RightOutlined className="app-submenu-chevron" aria-hidden />
+
 const primaryNavigation: NavigationItem[] = [
   { key: '/', icon: <DashboardOutlined />, label: '运营总览' },
   {
@@ -60,7 +64,15 @@ const primaryNavigation: NavigationItem[] = [
       { key: '/pr-pipeline', icon: <PullRequestOutlined />, label: 'PR 流水线' },
       { key: '/ci', icon: <CheckCircleOutlined />, label: 'CI 运行' },
       { key: '/workflow-actions', icon: <PlayCircleOutlined />, label: 'Actions 操作' },
-      { key: '/image-build-monitor', icon: <BellOutlined />, label: '镜像构建监控' },
+      {
+        key: imageMenuKey,
+        icon: <ContainerOutlined />,
+        label: '镜像',
+        children: [
+          { key: '/image-build', label: '构建' },
+          { key: '/image-build-monitor', label: '监控' },
+        ],
+      },
       {
         key: '/daily-pipeline',
         icon: <ScheduleOutlined />,
@@ -123,7 +135,8 @@ const routeMeta = [
   { prefix: '/contributor-board', title: '贡献者分析', section: '研发交付' },
   { prefix: '/ci', title: 'CI 运行', section: '研发交付' },
   { prefix: '/workflow-actions', title: 'Actions 操作', section: '研发交付' },
-  { prefix: '/image-build-monitor', title: '镜像构建监控', section: '研发交付' },
+  { prefix: '/image-build', title: '镜像 · 构建', section: '研发交付' },
+  { prefix: '/image-build-monitor', title: '镜像 · 监控', section: '研发交付' },
   { prefix: '/daily-pipeline/overview', title: 'Daily流水线 · 概览', section: '研发交付' },
   { prefix: '/daily-pipeline/cases', title: 'Daily流水线 · daily用例', section: '研发交付' },
   { prefix: '/daily-pipeline/configuration', title: 'Daily流水线 · 配置', section: '研发交付' },
@@ -197,6 +210,10 @@ function Layout() {
     return items
   }, [hasAdminRole, isSuperAdmin])
   const selectedKey = getSelectedNavigation(location.pathname)
+  const defaultOpenKeys = [
+    ...(selectedKey.startsWith('/daily-pipeline') ? ['/daily-pipeline'] : []),
+    ...(['/image-build', '/image-build-monitor'].includes(selectedKey) ? [imageMenuKey] : []),
+  ]
   const currentPage = routeMeta.find((item) => item.prefix === selectedKey) || {
     title: '运营总览',
     section: '社区运维',
@@ -266,7 +283,8 @@ function Layout() {
           <Menu
             theme="dark"
             mode="inline"
-            defaultOpenKeys={location.pathname.startsWith('/daily-pipeline') ? ['/daily-pipeline'] : []}
+            defaultOpenKeys={defaultOpenKeys}
+            expandIcon={submenuChevron}
             selectedKeys={[selectedKey]}
             items={navigationItems}
             onClick={handleNavigate}
@@ -342,8 +360,17 @@ function Layout() {
 
         <Content
           id="main-content"
-          className={['/daily-pipeline/overview', '/daily-pipeline/cases', '/daily-pipeline/configuration', '/daily-pipeline/collection', '/daily-pipeline/issue-tracking', '/daily-pipeline/processing-progress', '/admin/github-operations']
-            .includes(location.pathname.replace(/\/+$/, '')) || location.pathname.startsWith('/daily-pipeline/cases/') || location.pathname.startsWith('/daily-pipeline/collection/runs/') || location.pathname.startsWith('/daily-pipeline/issue-tracking/')
+          className={[
+            '/image-build',
+            '/daily-pipeline/overview',
+            '/daily-pipeline/cases',
+            '/daily-pipeline/configuration',
+            '/daily-pipeline/collection',
+            '/daily-pipeline/issue-tracking',
+            '/daily-pipeline/processing-progress',
+            '/admin/github-operations',
+          ]
+            .includes(location.pathname.replace(/\/+$/, '')) || location.pathname.startsWith('/image-build/collection/runs/') || location.pathname.startsWith('/daily-pipeline/cases/') || location.pathname.startsWith('/daily-pipeline/collection/runs/') || location.pathname.startsWith('/daily-pipeline/issue-tracking/')
             ? 'app-content app-content-wide'
             : 'app-content'}
         >
@@ -361,7 +388,8 @@ function Layout() {
       >
         <Menu
           mode="inline"
-          defaultOpenKeys={location.pathname.startsWith('/daily-pipeline') ? ['/daily-pipeline'] : []}
+          defaultOpenKeys={defaultOpenKeys}
+          expandIcon={submenuChevron}
           selectedKeys={[selectedKey]}
           items={navigationItems}
           onClick={handleNavigate}

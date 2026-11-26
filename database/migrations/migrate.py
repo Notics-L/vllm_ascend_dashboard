@@ -47,7 +47,18 @@ from database.migrations.github_operations import run as migrate_github_operatio
 from database.migrations.github_workflow_run_metadata import (
     run as migrate_github_workflow_run_metadata,
 )
+from database.migrations.image_build_collection import run as migrate_image_build_collection
+from database.migrations.image_build_config import run as migrate_image_build_config
 from database.migrations.image_build_monitor import run as migrate_image_build_monitor
+from database.migrations.image_build_repository import run as migrate_image_build_repository
+from database.migrations.image_build_scheduled_tasks import run as migrate_image_build_schedules
+from database.migrations.image_build_trigger_record_details import (
+    run as migrate_image_build_trigger_record_details,
+)
+from database.migrations.image_build_trigger_records import run as migrate_image_build_trigger_records
+from database.migrations.image_build_trigger_tasks import run as migrate_image_build_trigger_tasks
+from database.migrations.image_build_source_ref_mode import run as migrate_image_build_source_ref_mode
+from database.migrations.image_build_workflows import run as migrate_image_build_workflows
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
 from database.migrations.notifications import run as migrate_notifications
@@ -147,6 +158,15 @@ async def migrate() -> None:
     release_groups_result = await migrate_release_build_groups_columns()
     release_tp_url_result = await migrate_release_third_party_repository_url()
     image_build_monitor_result = await migrate_image_build_monitor()
+    await migrate_image_build_workflows()
+    await migrate_image_build_schedules()
+    await migrate_image_build_trigger_tasks()
+    await migrate_image_build_source_ref_mode()
+    await migrate_image_build_trigger_records()
+    await migrate_image_build_trigger_record_details()
+    await migrate_image_build_collection()
+    await migrate_image_build_config()
+    await migrate_image_build_repository()
     await migrate_workflow_actions()
     await migrate_workflow_action_schedules()
     notifications_result = await migrate_notifications()
