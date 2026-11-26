@@ -13,6 +13,8 @@ from infrastructure.core.config import settings
 __all__ = [
     # User
     "UserBase", "UserCreate", "UserUpdate", "UserResponse", "PasswordChange", "PasswordReset",
+    "UserImportParseResponse", "UserImportRow", "UserImportUsernameRules", "UserImportRequest",
+    "UserImportPreviewRow", "UserImportPreviewResponse", "UserImportExecuteResponse",
     # Auth
     "Token", "LoginRequest", "RegisterRequest",
     # CI
@@ -123,6 +125,9 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     """更新用户 Schema"""
+    username: str | None = Field(
+        None, min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$'
+    )
     email: str | None = None
     phone: str | None = None
     role: str | None = None
@@ -167,6 +172,73 @@ class UserResponse(UserBase):
     role: str
     is_active: bool
     created_at: datetime
+
+
+# ============ User Import Schemas ============
+
+class UserImportParseResponse(BaseModel):
+    """Excel 解析结果"""
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    total: int
+    sheet_name: str
+
+
+class UserImportRow(BaseModel):
+    """待导入的单行原始数据"""
+    row_number: int
+    username_raw: str = ""
+    email_raw: str = ""
+    password: str | None = None
+    role: str | None = None
+
+
+class UserImportUsernameRules(BaseModel):
+    """用户名生成规则"""
+    lowercase: bool = True
+    remove_spaces: bool = True
+    remove_special: bool = True
+
+
+class UserImportRequest(BaseModel):
+    """导入预览 / 执行请求"""
+    rows: list[UserImportRow]
+    default_password: str = Field(..., min_length=6, max_length=128)
+    default_role: str = "user"
+    username_rules: UserImportUsernameRules = Field(default_factory=UserImportUsernameRules)
+
+
+class UserImportPreviewRow(BaseModel):
+    """导入预览行"""
+    row_number: int
+    source_username: str
+    source_email: str
+    username: str
+    email: str
+    password: str
+    role: str
+    status: str  # ok | renamed | invalid
+    renamed: bool = False
+    messages: list[str] = Field(default_factory=list)
+
+
+class UserImportPreviewResponse(BaseModel):
+    """导入预览结果"""
+    rows: list[UserImportPreviewRow]
+    total: int
+    valid_count: int
+    renamed_count: int
+    invalid_count: int
+    updated_count: int = 0
+
+
+class UserImportExecuteResponse(BaseModel):
+    """导入执行结果"""
+    created: int
+    updated: int = 0
+    skipped: int
+    failed: int
+    errors: list[str] = Field(default_factory=list)
 
 
 # ============ Auth Schemas ============

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Table,
   Card,
@@ -19,12 +19,14 @@ import {
   DeleteOutlined,
   UserOutlined,
   LockOutlined,
+  UploadOutlined,
 } from '@ant-design/icons'
 import type { FormProps } from 'antd'
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '../hooks/useUsers'
 import type { User, UserCreate, UserUpdate } from '../services/users'
 import { formatTimezone } from '../utils/timezone'
 import ResetPasswordModal from '../components/ResetPasswordModal'
+import ImportUsersModal from '../components/ImportUsersModal'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 
 type FieldType = {
@@ -37,6 +39,8 @@ type FieldType = {
 
 function UserManagement() {
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  const [searchText, setSearchText] = useState('')
   const [resetPasswordModalOpen, setResetPasswordModalOpen] = useState(false)
   const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null)
   const [resetPasswordUsername, setResetPasswordUsername] = useState<string>('')
@@ -50,6 +54,16 @@ function UserManagement() {
   const deleteMutation = useDeleteUser()
 
   const isSuperAdmin = currentUser?.role === 'super_admin'
+
+  const filteredUsers = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase()
+    if (!keyword) return users
+    return (users || []).filter(
+      (user) =>
+        user.username.toLowerCase().includes(keyword) ||
+        (user.email || '').toLowerCase().includes(keyword)
+    )
+  }, [users, searchText])
 
   // 打开新建用户弹窗
   const handleCreate = () => {
@@ -96,6 +110,7 @@ function UserManagement() {
     if (editingUser) {
       // 更新用户
       const updateData: UserUpdate = {
+        username: values.username,
         email: values.email,
         role: values.role,
         is_active: values.is_active,
@@ -280,21 +295,37 @@ function UserManagement() {
       {/* 页面标题 */}
       <div className="stripe-page-header">
         <h1 className="stripe-page-title" style={{ margin: 0, fontSize: 24, fontWeight: 400 }}>用户管理</h1>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={handleCreate}
-          className="stripe-btn-primary"
-        >
-          新建用户
-        </Button>
+        <Space>
+          <Button
+            icon={<UploadOutlined />}
+            onClick={() => setIsImportModalOpen(true)}
+            disabled={!isSuperAdmin}
+          >
+            批量导入
+          </Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={handleCreate}
+            className="stripe-btn-primary"
+          >
+            新建用户
+          </Button>
+        </Space>
       </div>
 
       {/* 用户列表 */}
       <Card>
+        <Input.Search
+          allowClear
+          placeholder="搜索用户名或邮箱"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          style={{ width: 320, marginBottom: 16 }}
+        />
         <Table
           columns={columns}
-          dataSource={users}
+          dataSource={filteredUsers}
           loading={isLoading}
           rowKey="id"
           pagination={{
@@ -321,7 +352,21 @@ function UserManagement() {
           onFinish={onFinish}
           autoComplete="off"
         >
-          {!editingUser && <CreateUserFields />}
+          {editingUser ? (
+            <Form.Item<FieldType>
+              label="用户名"
+              name="username"
+              rules={[
+                { required: true, message: '请输入用户名' },
+                { min: 3, message: '用户名至少 3 个字符' },
+                { pattern: /^[a-zA-Z0-9_-]+$/, message: '仅支持字母、数字、下划线和短横线' },
+              ]}
+            >
+              <Input placeholder="请输入用户名" />
+            </Form.Item>
+          ) : (
+            <CreateUserFields />
+          )}
 
           <Form.Item<FieldType>
             label="邮箱"
@@ -380,6 +425,12 @@ function UserManagement() {
         username={resetPasswordUsername}
         onClose={() => setResetPasswordModalOpen(false)}
         onSuccess={() => {}}
+      />
+
+      {/* 批量导入用户弹窗 */}
+      <ImportUsersModal
+        open={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
       />
     </div>
   )
