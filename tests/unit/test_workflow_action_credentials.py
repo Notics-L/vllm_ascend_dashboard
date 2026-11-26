@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from api.v1.project_dashboard import get_dashboard_config, update_dashboard_config
 from contracts.schemas import ProjectDashboardConfigUpdate
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import ProjectDashboardConfig, User
 from workflow_actions.credentials import (
     CREDENTIAL_CONFIG_KEY,
@@ -16,7 +17,7 @@ from workflow_actions.credentials import (
     decrypt_token,
     encrypt_token,
     get_credential_status,
-    get_github_token,
+    get_github_credential,
     save_github_token,
 )
 
@@ -80,7 +81,9 @@ async def test_saved_token_is_encrypted_and_status_has_no_secret():
     stored = db.row.config_value["token_encrypted"]
     assert stored != "github_pat_secret"
     assert "github_pat_secret" not in str(db.row.config_value)
-    assert await get_github_token(db) == "github_pat_secret"
+    credential = await get_github_credential(db)
+    assert credential == GitHubCredential("actions", "github_pat_secret")
+    assert "github_pat_secret" not in repr(credential)
 
     status = await get_credential_status(db)
     assert status["configured"] is True
@@ -92,7 +95,7 @@ async def test_saved_token_is_encrypted_and_status_has_no_secret():
     assert cleared_status["configured"] is False
     assert cleared_status["updated_by"] == "admin"
     with pytest.raises(ValueError, match="未配置 Actions 专用"):
-        await get_github_token(db)
+        await get_github_credential(db)
 
 
 @pytest.mark.asyncio

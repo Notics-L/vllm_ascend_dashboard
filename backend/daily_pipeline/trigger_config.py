@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from daily_pipeline.cron import schedule_trigger
 from infrastructure.clients.daily_pipeline_config import check_trigger_permission
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, update_schedule
-from infrastructure.core.security import decrypt_api_key, encrypt_api_key
+from infrastructure.core.github_credentials import daily_github_credential
+from infrastructure.core.security import encrypt_api_key
 from infrastructure.persistence.daily_pipeline_schedules import (
     delete_schedule,
     read_schedule,
@@ -34,15 +35,14 @@ async def trigger_config(db: AsyncSession):
 async def check_trigger_connection(db: AsyncSession, token: str | None):
     keys = ("repository",) if token else ("repository", "github_token")
     settings = await read_settings(db, *keys)
-    token = token or decrypt_api_key(settings.get("github_token") or "")
-    if not token:
+    credential = daily_github_credential(settings, candidate=token)
+    if not credential:
         raise ValueError("请输入 GitHub Token")
-    if not token.isascii() or not token.isprintable() or any(ch.isspace() for ch in token):
-        raise ValueError("GitHub Token 格式无效")
+    credential.validate()
     repository = settings.get("repository")
     if not repository:
         raise ValueError("请先配置目标仓库")
-    verified, detail = await check_trigger_permission(repository, token)
+    verified, detail = await check_trigger_permission(repository, credential)
     return {"verified": verified, "detail": detail}
 
 

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import User
 from scheduler.service import DataSyncScheduler
 from workflow_actions.schedule_schemas import WorkflowScheduleCreate, cron_preview, cron_trigger
@@ -23,6 +24,8 @@ from workflow_actions.service import (
     _result,
     execute_workflow_action,
 )
+
+pytestmark = pytest.mark.usefixtures("github_audit_records")
 
 
 class FakeResult:
@@ -294,7 +297,7 @@ async def test_dispatch_retries_only_when_safe(
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
 
     status, _, _ = await _github_request(
-        "token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
+        GitHubCredential("actions", "token"), "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
     )
 
     assert status == expected_status
@@ -329,7 +332,7 @@ async def test_dispatch_honors_rate_limit_wait(
 
     monkeypatch.setattr("workflow_actions.service.GitHubAsyncClient", client)
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
-    await _github_request("token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10))
+    await _github_request(GitHubCredential("actions", "token"), "POST", "/dispatches", {}, retry_delays=(2, 5, 10))
 
     assert len(calls) == expected_calls
     assert delays == expected_delays
@@ -350,7 +353,7 @@ async def test_uncertain_dispatch_error_is_reported(monkeypatch):
         lambda **kwargs: GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs),
     )
     status, body, error = await _github_request(
-        "token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
+        GitHubCredential("actions", "token"), "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
     )
     output = _result(status, body, error)["output"]
     assert "ReadTimeout" in output
@@ -360,12 +363,12 @@ async def test_uncertain_dispatch_error_is_reported(monkeypatch):
 @pytest.mark.asyncio
 async def test_scheduled_server_failure_reports_uncertain_dispatch(monkeypatch):
     async def token(db):
-        return "token"
+        return GitHubCredential("actions", "token")
 
     async def request(*args, **kwargs):
         return 503, None, ""
 
-    monkeypatch.setattr("workflow_actions.service.get_github_token", token)
+    monkeypatch.setattr("workflow_actions.service.get_github_credential", token)
     monkeypatch.setattr("workflow_actions.service._github_request", request)
     result = await execute_workflow_action(
         FakeDB(),
@@ -399,10 +402,10 @@ async def test_connection_retry_respects_total_wait_limit(monkeypatch):
     )
     monkeypatch.setattr("workflow_actions.service.asyncio.sleep", sleep)
     status, _, error = await _github_request(
-        "token", "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
+        GitHubCredential("actions", "token"), "POST", "/dispatches", {}, retry_delays=(2, 5, 10)
     )
     assert status is None
-    assert error == "ConnectError"
+    assert error == "GitHub request failed (ConnectError)"
     assert len(calls) == 2
     assert delays == [599]
 

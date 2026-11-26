@@ -10,10 +10,9 @@ import httpx
 
 from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_credential
 
 logger = logging.getLogger(__name__)
-
-GITHUB_API_BASE = "https://api.github.com"
 
 
 class GitHubAPIService:
@@ -22,32 +21,29 @@ class GitHubAPIService:
     def __init__(self):
         self.owner = settings.GITHUB_OWNER or "vllm-project"
         self.repo = settings.GITHUB_REPO or "vllm-ascend"
-        self.token = settings.GITHUB_TOKEN
+        self._credential = global_github_credential()
         self.headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": f"{self.owner}/{self.repo}-dashboard",
         }
-        if self.token:
-            self.headers["Authorization"] = f"Bearer {self.token}"
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> dict[str, Any] | None:
         """发送 GitHub API 请求"""
-        url = f"{GITHUB_API_BASE}{endpoint}"
         try:
             async with GitHubAsyncClient(
-                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+                audit_source="github_api", credential=self._credential, headers=self.headers, timeout=30.0
             ) as client:
-                response = await client.request(method, url, **kwargs)
+                response = await client.request(method, endpoint, **kwargs)
                 response.raise_for_status()
                 # Some endpoints return empty response (e.g., rerun workflow)
                 if response.status_code == 201 or not response.content:
                     return {"success": True}
                 return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"GitHub API HTTP error: {e.response.status_code} - {e.response.text}")
+            logger.error("GitHub API returned HTTP %s", e.response.status_code)
             return None
         except Exception as e:
-            logger.error(f"GitHub API request failed: {str(e)}")
+            logger.error("GitHub API request failed (%s)", type(e).__name__)
             return None
 
     async def get_stale_issues_and_prs(self, days: int = 7) -> dict[str, list[dict[str, Any]]]:
@@ -129,19 +125,19 @@ class GitHubAPIService:
         logger.info(f"Attempting to rerun workflow {run_id} for {self.owner}/{self.repo}")
         try:
             async with GitHubAsyncClient(
-                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+                audit_source="github_api", credential=self._credential, headers=self.headers, timeout=30.0
             ) as client:
-                response = await client.post(f"{GITHUB_API_BASE}{endpoint}")
-                logger.info(f"GitHub API response: {response.status_code} - {response.text[:200] if response.text else 'empty'}")
+                response = await client.post(endpoint)
+                logger.info("GitHub rerun returned HTTP %s", response.status_code)
                 # GitHub returns 201 Created on success
                 if response.status_code == 201:
                     logger.info(f"✓ Successfully triggered rerun for workflow {run_id}")
                     return True
                 else:
-                    logger.error(f"✗ Failed to rerun workflow {run_id}: {response.status_code} - {response.text}")
+                    logger.error("GitHub workflow %s rerun failed with HTTP %s", run_id, response.status_code)
                     return False
         except Exception as e:
-            logger.error(f"✗ Error rerunning workflow {run_id}: {str(e)}", exc_info=True)
+            logger.error("GitHub workflow %s rerun failed (%s)", run_id, type(e).__name__)
             return False
 
     async def rerun_check_suite(self, check_suite_id: int) -> bool:
@@ -150,18 +146,18 @@ class GitHubAPIService:
         logger.info(f"Attempting to rerun check suite {check_suite_id}")
         try:
             async with GitHubAsyncClient(
-                audit_source="github_api", credential_source="global", headers=self.headers, timeout=30.0
+                audit_source="github_api", credential=self._credential, headers=self.headers, timeout=30.0
             ) as client:
-                response = await client.post(f"{GITHUB_API_BASE}{endpoint}")
+                response = await client.post(endpoint)
                 # GitHub returns 201 Created on success
                 if response.status_code == 201:
                     logger.info(f"✓ Successfully triggered rerun for check suite {check_suite_id}")
                     return True
                 else:
-                    logger.error(f"✗ Failed to rerun check suite {check_suite_id}: {response.status_code} - {response.text[:200]}")
+                    logger.error("GitHub check suite %s rerun failed with HTTP %s", check_suite_id, response.status_code)
                     return False
         except Exception as e:
-            logger.error(f"✗ Error rerunning check suite {check_suite_id}: {str(e)}", exc_info=True)
+            logger.error("GitHub check suite %s rerun failed (%s)", check_suite_id, type(e).__name__)
             return False
 
     async def get_pr_check_runs(self, pr_number: int) -> list[dict[str, Any]]:

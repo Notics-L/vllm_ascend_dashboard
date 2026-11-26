@@ -12,10 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from image_build import collection_source as source
+from infrastructure.core.github_audit import (
+    GITHUB_AUDIT_UNAVAILABLE_MESSAGE,
+    GitHubAuditUnavailable,
+)
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.models import ImageBuildCollectionRun as Collection
 from infrastructure.persistence.models import ImageBuildTriggerRecord as Trigger
-from workflow_actions.credentials import get_github_token
+from workflow_actions.credentials import get_github_credential
 
 logger = logging.getLogger(__name__)
 _SCAN_INTERVAL_SECONDS = 10
@@ -133,10 +138,10 @@ def _error_message(exc: Exception) -> str:
 
 
 async def _read_snapshot(
-    row: Collection, token: str, repository: str, now: datetime,
+    row: Collection, credential: GitHubCredential, repository: str, now: datetime,
 ) -> dict[str, Any]:
     run_url = f"https://github.com/{repository}/actions/runs/{row.run_id}"
-    async with source.github_client(token) as client:
+    async with source.github_client(credential) as client:
         run = await source.get_run(client, repository, row.run_id)
         attempt = run["run_attempt"]
         if attempt < row.run_attempt:
@@ -202,7 +207,7 @@ async def collect_run(run_id: int, *, force: bool = False) -> None:
         # Use a separate session to apply the snapshot only if the row is still current.
         revision, repository = row.revision, trigger.repository
         try:
-            token = await get_github_token(db)
+            credential = await get_github_credential(db)
         except ValueError:
             await _update_snapshot(db, run_id, revision, {
                 "last_error": "请先在 Actions 操作中配置 GitHub Token", "next_collect_at": now + _RETRY_INTERVAL,
@@ -213,7 +218,7 @@ async def collect_run(run_id: int, *, force: bool = False) -> None:
 
     try:
         async with asyncio.timeout(_NETWORK_TIMEOUT_SECONDS):
-            values = await _read_snapshot(row, token, repository, now)
+            values = await _read_snapshot(row, credential, repository, now)
     except (httpx.HTTPError, ValueError, TimeoutError) as exc:
         values = {"last_error": _error_message(exc), "next_collect_at": now + _RETRY_INTERVAL}
         logger.warning("Image build collection failed run_id=%s error_type=%s", run_id, type(exc).__name__)
@@ -266,12 +271,12 @@ async def rerun_failed_jobs(
         raise RerunConflict("只有已结束且失败的构建可以重跑")
     repository, revision, observed_attempt = trigger.repository, row.revision, row.run_attempt
     try:
-        token = await get_github_token(db)
+        credential = await get_github_credential(db)
     except ValueError as exc:
         raise RerunUnavailable("请先在 Actions 操作中配置 GitHub Token") from exc
     await db.rollback()
 
-    async with source.github_client(token) as client:
+    async with source.github_client(credential) as client:
         try:
             remote = await source.get_run(client, repository, run_id)
         except (httpx.HTTPError, ValueError) as exc:
@@ -294,6 +299,9 @@ async def rerun_failed_jobs(
         logger.info("Image build failed-job rerun requested run_id=%s user=%s attempt=%s", run_id, username, pending_attempt)
         try:
             response = await client.post(f"/repos/{repository}/actions/runs/{run_id}/rerun-failed-jobs")
+        except GitHubAuditUnavailable:
+            await _record_rerun_response(db, run_id, pending_attempt, requested_at, accepted=False)
+            raise RerunUnavailable(GITHUB_AUDIT_UNAVAILABLE_MESSAGE) from None
         except httpx.RequestError:
             # Do not submit a second POST if GitHub might have received the first one.
             return "unknown"

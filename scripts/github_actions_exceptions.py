@@ -5,7 +5,7 @@ Usage:
     python scripts/github_actions_exceptions.py <run-url>
 
 Optional authentication:
-    PowerShell: $env:GITHUB_TOKEN = "github_pat_..."
+    PowerShell: $env:GITHUB_ACTIONS_REPORT_TOKEN = "<read-only-token>"
 
 The report includes failed, queued, cancelled, and skipped jobs. The two
 housekeeping jobs ``clear-pre-logs`` and
@@ -24,7 +24,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -51,41 +52,61 @@ def parse_run_url(run_url: str) -> tuple[str, str, str]:
     return owner_repo, run_id, run_url.rstrip("/")
 
 
-def github_headers() -> dict[str, str]:
-    token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+def _is_github_api(url: str) -> bool:
+    parsed = urlsplit(url)
+    return parsed.scheme == "https" and parsed.netloc.lower() == "api.github.com"
+
+
+class _GitHubReportRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise URLError("GitHub redirect requires HTTPS")
+        redirect = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirect is not None and not _is_github_api(newurl):
+            redirect.remove_header("Authorization")
+        return redirect
+
+
+_GITHUB_OPENER = build_opener(_GitHubReportRedirect())
+
+
+def _github_request(url: str) -> Request:
+    if not _is_github_api(url):
+        raise ValueError("Expected the GitHub API HTTPS origin")
+    token = os.environ.get("GITHUB_ACTIONS_REPORT_TOKEN", "").strip()
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "vllm-ascend-dashboard-actions-report",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return headers
+    return Request(url, headers=headers)
 
 
 def github_get(url: str) -> dict | list:
-    request = Request(url, headers=github_headers())
+    request = _github_request(url)
     try:
-        with urlopen(request, timeout=30) as response:
+        with _GITHUB_OPENER.open(request, timeout=30) as response:
             return json.load(response)
     except HTTPError as exc:
         if exc.code == 403:
             raise RuntimeError(
-                "GitHub API 请求受限，请稍后重试或配置 GITHUB_TOKEN 环境变量"
+                "GitHub API 请求受限，请稍后重试或配置 GITHUB_ACTIONS_REPORT_TOKEN 环境变量"
             ) from exc
         raise RuntimeError(f"GitHub API 请求失败：HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"无法访问 GitHub API：{exc.reason}") from exc
+    except URLError:
+        raise RuntimeError("无法访问 GitHub API") from None
 
 
 def github_get_bytes(url: str) -> bytes:
-    request = Request(url, headers=github_headers())
+    request = _github_request(url)
     try:
-        with urlopen(request, timeout=60) as response:
+        with _GITHUB_OPENER.open(request, timeout=60) as response:
             return response.read()
     except HTTPError as exc:
         raise RuntimeError(f"GitHub 日志请求失败：HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"无法访问 GitHub 日志：{exc.reason}") from exc
+    except URLError:
+        raise RuntimeError("无法访问 GitHub 日志") from None
 
 
 def fetch_run(owner_repo: str, run_id: str) -> dict:

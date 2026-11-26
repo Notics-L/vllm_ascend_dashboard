@@ -14,6 +14,7 @@ from sqlalchemy import bindparam, text
 
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.db.base import SessionLocal
 from infrastructure.tasks.scheduler_config import SCHEDULER_RUNTIME_SETTING_MAP
 from release_management.ai_evaluator import TrustworthinessEvaluator
@@ -889,11 +890,10 @@ class DataSyncScheduler:
 
     def _initialize_github_client(self) -> None:
         """初始化 GitHub 客户端"""
-        if not settings.GITHUB_TOKEN:
+        if not global_github_configured():
             logger.warning("GITHUB_TOKEN not configured, GitHub API calls will fail")
 
         self.github_client = GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         )

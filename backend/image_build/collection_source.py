@@ -12,6 +12,7 @@ import httpx
 
 from image_build.workflow_sync import WORKFLOW_PATH
 from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.core.github_credentials import GitHubCredential
 
 WORKFLOW_NAME = "Nightly Image Build (with base)"
 RESULT_LABELS = {
@@ -32,13 +33,11 @@ _FAILURES = {"failure", "timed_out", "startup_failure", "action_required", "stal
 _WAITING = {"requested", "queued", "pending", "waiting"}
 
 
-def github_client(token: str) -> httpx.AsyncClient:
+def github_client(credential: GitHubCredential) -> httpx.AsyncClient:
     return GitHubAsyncClient(
-        audit_source="image_build_collection", credential_source="actions",
-        base_url="https://api.github.com",
+        audit_source="image_build_collection", credential=credential,
         headers={
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
         },
         timeout=httpx.Timeout(12, connect=5),

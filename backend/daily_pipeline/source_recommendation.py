@@ -21,7 +21,7 @@ from infrastructure.clients.daily_pipeline_collection import (
     CollectionSourceError,
     DailyCollectionClient,
 )
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.persistence.daily_pipeline_settings import read_settings, set_setting
 from infrastructure.persistence.daily_pipeline_tracking import ACTIVE
 from infrastructure.persistence.models import DailyPipelineCollectionNode as CollectionNode
@@ -303,10 +303,10 @@ async def refresh_source_recommendation(db: AsyncSession) -> bool:
     baseline_point = None
     candidates = {}
     ineligible = set()
-    token = decrypt_api_key(settings.get("github_token") or "")
-    if token and (needed or not baseline_ready):
+    credential = daily_github_credential(settings)
+    if credential and (needed or not baseline_ready):
         try:
-            async with asyncio.timeout(_LOOKUP_TIMEOUT), DailyCollectionClient(history.repository, token) as client:
+            async with asyncio.timeout(_LOOKUP_TIMEOUT), DailyCollectionClient(history.repository, credential, audit_source="daily_source_recommendation") as client:
                 cutoff = _utc(history.triggered_at)
                 branch = history.source_branch.removeprefix("refs/heads/")
                 pending = set()

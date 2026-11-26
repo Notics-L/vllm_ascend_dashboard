@@ -29,6 +29,7 @@ from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     CIJob,
     CIResult,
@@ -1225,7 +1226,7 @@ class CIDailyReportBuilder:
                 or f.get("analysis_status") == "failed"
             )
         ]
-        if not settings.GITHUB_TOKEN:
+        if not global_github_configured():
             logger.warning("GITHUB_TOKEN not configured; skip raw log collection")
             report["_raw_log_stats"] = {
                 "targets": len(targets),
@@ -1240,7 +1241,6 @@ class CIDailyReportBuilder:
         from infrastructure.clients.github_client import GitHubClient
 
         github = GitHubClient(
-            settings.GITHUB_TOKEN,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         )
@@ -1296,7 +1296,7 @@ class CIDailyReportBuilder:
         report["_raw_log_stats"] = {
             "targets": len(targets),
             "collected": collected,
-            "skipped_no_token": not bool(settings.GITHUB_TOKEN),
+            "skipped_no_token": not global_github_configured(),
         }
         logger.info(
             "collected raw logs: %d/%d failures", collected, len(targets)

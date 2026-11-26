@@ -9,8 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daily_pipeline.source_recommendation import get_source_recommendation
 from image_build.workflow_sync import WORKFLOW_PATH
+from infrastructure.core.github_audit import (
+    GITHUB_AUDIT_UNAVAILABLE_MESSAGE,
+    GitHubAuditUnavailable,
+)
 from infrastructure.persistence.models import ImageBuildTriggerRecord, ImageBuildTriggerTask
-from workflow_actions.credentials import get_github_token
+from workflow_actions.credentials import get_github_credential
 from workflow_actions.service import dispatch_workflow, redact_workflow_data
 
 DISPATCH_TIMEOUT_SECONDS = 45
@@ -82,7 +86,7 @@ async def submit_trigger_task(
     await db.commit()
 
     try:
-        token = await get_github_token(db)
+        credential = await get_github_credential(db)
     except ValueError as exc:
         record.status = "failed"
         record.message = str(exc)
@@ -91,16 +95,20 @@ async def submit_trigger_task(
         try:
             async with asyncio.timeout(DISPATCH_TIMEOUT_SECONDS):
                 result = await dispatch_workflow(
-                    token,
+                    credential,
                     repository=repository,
                     workflow_path=WORKFLOW_PATH,
                     ref=record.workflow_branch,
                     inputs=inputs,
                     return_run_details=True,
+                    audit_source="image_build_trigger",
                 )
         except TimeoutError:
             record.status = "unknown"
             record.message = UNKNOWN_MESSAGE
+        except GitHubAuditUnavailable:
+            record.status = "failed"
+            record.message = GITHUB_AUDIT_UNAVAILABLE_MESSAGE
         else:
             record.github_status_code = result["status_code"]
             if result["success"]:

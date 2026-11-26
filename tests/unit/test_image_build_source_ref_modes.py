@@ -9,6 +9,8 @@ from api.v1 import image_build
 from api.v1.image_build import TriggerTaskPayload, _validate_trigger_task, trigger_task
 from daily_pipeline.source_recommendation import SourceRecommendation
 from image_build import trigger
+from infrastructure.core.github_audit import GitHubAuditUnavailable
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import ImageBuildWorkflowDefinition
 
 
@@ -72,7 +74,7 @@ async def test_recommended_task_without_sha_does_not_dispatch(monkeypatch, sourc
     read_recommendation = AsyncMock(return_value=None)
     get_token = AsyncMock()
     monkeypatch.setattr(trigger, "get_source_recommendation", read_recommendation)
-    monkeypatch.setattr(trigger, "get_github_token", get_token)
+    monkeypatch.setattr(trigger, "get_github_credential", get_token)
 
     record = await trigger.submit_trigger_task(
         db, task, "tester", repository="example/builds", supports_source_ref=True, source_branch=source_branch,
@@ -115,7 +117,7 @@ async def test_trigger_uses_configured_repository_for_workflow_recommendation_an
     ))
     dispatch = AsyncMock(return_value={"success": True, "status_code": 200, "run_id": 9})
     monkeypatch.setattr(trigger, "get_source_recommendation", read_recommendation)
-    monkeypatch.setattr(trigger, "get_github_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(trigger, "get_github_credential", AsyncMock(return_value=GitHubCredential("actions", "token")))
     monkeypatch.setattr(trigger, "dispatch_workflow", dispatch)
 
     result = await trigger_task(7, db, SimpleNamespace(username="tester"))
@@ -130,6 +132,27 @@ async def test_trigger_uses_configured_repository_for_workflow_recommendation_an
     assert snapshot["source_recommendation"]["pr_number"] == pr_number
     assert snapshot["source_recommendation"]["committed_at"] == "2026-11-26T08:00:00Z"
     assert result.run_url == "https://github.com/example/builds/actions/runs/9"
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_does_not_leave_build_waiting_for_submission(monkeypatch):
+    db = SimpleNamespace(
+        scalar=AsyncMock(return_value=None), add=Mock(),
+        flush=AsyncMock(), refresh=AsyncMock(), commit=AsyncMock(),
+    )
+    task = SimpleNamespace(id=1, workflow_branch="main", source_ref_mode="branch", inputs_json={})
+    monkeypatch.setattr(trigger, "get_github_credential", AsyncMock(
+        return_value=GitHubCredential("actions", "test-token"),
+    ))
+    monkeypatch.setattr(trigger, "dispatch_workflow", AsyncMock(
+        side_effect=GitHubAuditUnavailable("could not commit audit attempt"),
+    ))
+
+    record = await trigger.submit_trigger_task(db, task, "tester", repository="example/builds")
+
+    assert record.status == "failed"
+    assert "审计暂不可用" in record.message
+    assert record.run_id is None
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from sqlalchemy import bindparam, or_, select, text
 
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.db.base import SessionLocal
 from infrastructure.github_run_metadata import workflow_file_from_ref
 from infrastructure.persistence.models import CIJob, CIResult, PullRequest, WorkflowConfig
@@ -87,7 +88,7 @@ class NpuOccupancyRepository:
             for record in records
             if record.workflow_run_id and record.organization and record.repository
         }
-        if not candidates or not settings.GITHUB_TOKEN:
+        if not candidates or not global_github_configured():
             return
         # Failed lookups are not a durable cache entry.  Their repository
         # identity may have been repaired since the last attempt.
@@ -134,7 +135,7 @@ class NpuOccupancyRepository:
         request_limiter = asyncio.Semaphore(settings.NPU_OCCUPANCY_METADATA_BACKFILL_CONCURRENCY)
 
         async def fetch_repository(organization: str, repository: str, wanted: set[int]) -> None:
-            client = GitHubClient(settings.GITHUB_TOKEN, owner=organization, repo=repository)
+            client = GitHubClient(owner=organization, repo=repository)
 
             async def fetch_one(run_id: int) -> None:
                 try:
@@ -162,7 +163,7 @@ class NpuOccupancyRepository:
 
     def _schedule_workflow_metadata_backfill(self, records: list[OccupancyRecord]) -> None:
         """Schedule one de-duplicated metadata batch without delaying page reads."""
-        if not settings.GITHUB_TOKEN or not any(record.workflow_run_id for record in records):
+        if not global_github_configured() or not any(record.workflow_run_id for record in records):
             return
         task = type(self)._metadata_backfill_task
         if task is not None and not task.done():

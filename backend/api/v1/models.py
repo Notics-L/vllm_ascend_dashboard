@@ -1113,7 +1113,7 @@ async def upload_report(
     content_type = "json" if filename.endswith(".json") else "yaml"
 
     # 使用 ModelSyncService 处理上传
-    sync_service = ModelSyncService(db, GitHubClient(settings.GITHUB_TOKEN))
+    sync_service = ModelSyncService(db, GitHubClient())
 
     try:
         report = await sync_service.create_report_from_upload(

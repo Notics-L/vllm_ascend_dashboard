@@ -64,7 +64,11 @@ from api.v1 import (
 from daily_pipeline.logging import setup_daily_file_logging
 from daily_pipeline.recommendation_events import watch_daily_recommendations
 from infrastructure.core.config import settings
-from infrastructure.core.github_audit import github_audit_writer
+from infrastructure.core.github_audit import (
+    GITHUB_AUDIT_UNAVAILABLE_MESSAGE,
+    GitHubAuditUnavailable,
+    github_audit_writer,
+)
 from infrastructure.core.logging import setup_db_logging
 from infrastructure.db.base import engine
 from infrastructure.persistence.models import Base
@@ -579,6 +583,15 @@ def create_app() -> FastAPI:
         }
 
     # ── 全局异常处理器 ──────────────────────────────────────────
+
+    @app.exception_handler(GitHubAuditUnavailable)
+    async def github_audit_unavailable_handler(_request, _exc):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=503,
+            content={"code": 503, "msg": GITHUB_AUDIT_UNAVAILABLE_MESSAGE, "data": None},
+        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc):

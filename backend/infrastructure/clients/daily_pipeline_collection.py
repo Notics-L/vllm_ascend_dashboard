@@ -9,6 +9,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.core.github_credentials import GitHubCredential, daily_github_credential
 
 API_VERSION = "2026-03-10"
 PAGE_SIZE = 100
@@ -24,20 +25,21 @@ class CollectionSourceError(Exception):
 class DailyCollectionClient:
     audit_source = "daily_collection"
 
-    def __init__(self, repository: str, token: str):
+    def __init__(self, repository: str, credential: GitHubCredential | str, *, audit_source: str | None = None):
         parts = repository.split("/")
         if len(parts) != 2 or not all(parts):
             raise CollectionSourceError("Daily 目标仓库配置无效")
         self.repository = repository
         self.prefix = "/repos/" + "/".join(quote(part, safe="") for part in parts)
+        self._credential = (
+            daily_github_credential({}, candidate=credential) if isinstance(credential, str) else credential
+        )
         self.client = GitHubAsyncClient(
-            audit_source=self.audit_source,
-            credential_source="daily",
-            base_url="https://api.github.com",
+            audit_source=audit_source or self.audit_source,
+            credential=self._credential,
             timeout=httpx.Timeout(60, connect=15),
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {token}",
                 "X-GitHub-Api-Version": API_VERSION,
             },
         )

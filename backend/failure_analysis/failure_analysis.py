@@ -10,10 +10,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import httpx
 from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import (
+    global_github_configured,
+    global_github_credential,
+)
 from infrastructure.persistence.models import (
     CIJob,
     CIResult,
@@ -1523,13 +1529,12 @@ class FailureAnalysisService:
     async def _fetch_job_annotations(self, job_id: int, db: AsyncSession) -> list[dict]:
         try:
             from infrastructure.clients.github_client import GitHubClient
-            github_token = settings.GITHUB_TOKEN
-            if not github_token:
+            if not global_github_configured():
                 logger.warning("GitHub token not configured, cannot fetch annotations")
                 return []
-            client = GitHubClient(token=github_token, owner=settings.GITHUB_OWNER, repo=settings.GITHUB_REPO)
-            url = f"/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/jobs/{job_id}/annotations"
-            response = await client._request("GET", url)
+            async with GitHubClient() as client:
+                url = f"/repos/{client.owner}/{client.repo}/actions/jobs/{job_id}/annotations"
+                response = await client._request("GET", url)
             if isinstance(response, list):
                 return response
             if isinstance(response, dict) and 'items' in response:
@@ -1840,13 +1845,12 @@ class FailureAnalysisService:
 
         try:
             from infrastructure.clients.github_client import GitHubClient
-            github_token = settings.GITHUB_TOKEN
-            if not github_token:
+            if not global_github_configured():
                 lines.append("（GitHub Token 未配置，无法获取 commit 对比详情）")
                 return "\n".join(lines)
 
-            client = GitHubClient(token=github_token, owner=settings.GITHUB_OWNER, repo=settings.GITHUB_REPO)
-            compare = await client.get_compare_commits(base_sha, head_sha)
+            async with GitHubClient() as client:
+                compare = await client.get_compare_commits(base_sha, head_sha)
 
             commits = compare.get("commits", [])
             if commits:
@@ -2734,12 +2738,18 @@ class FailureAnalysisService:
         downloading artifacts for runs that will never be analyzed.
         """
 
-        import aiohttp
+        credential = global_github_credential()
+        repo_path = f"/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions"
 
-        from infrastructure.clients.github_http import github_aiohttp_trace
-
-        request_timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
-        trace_configs = [github_aiohttp_trace("failure_analysis", "global")]
+        async def fetch(path: str, **kwargs) -> httpx.Response:
+            async with asyncio.timeout(60), GitHubAsyncClient(
+                audit_source="failure_analysis",
+                credential=credential,
+                headers={"Accept": "application/vnd.github+json"},
+                timeout=httpx.Timeout(60, connect=10, read=30),
+                follow_redirects=True,
+            ) as client:
+                return await client.get(f"{repo_path}/{path}", **kwargs)
 
         cache_dir = self._data_root() / "failure-analysis" / job.workflow_name
         workspace = _analysis_log_workspace.get()
@@ -2753,11 +2763,6 @@ class FailureAnalysisService:
                 return cached
             return local
 
-        headers = {
-            "Authorization": f"Bearer {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-        }
-
         result = {"job_log": None, "run_log_zip": None, "artifacts_dir": None, "jobs_list": None}
 
         # 1. Job log.  GitHub may remove the individual blob while retaining the
@@ -2767,22 +2772,16 @@ class FailureAnalysisService:
             job_log_path.unlink()
         job_log_errors: list[str] = []
         if not job_log_path.exists():
-            job_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/jobs/{job.job_id}/logs"
             for attempt in range(1, 4):
                 try:
-                    async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
-                        async with session.get(job_url, headers=headers) as resp:
-                            if resp.status == 200:
-                                payload = await resp.read()
-                                if payload:
-                                    job_log_path.write_bytes(payload)
-                                    break
-                                job_log_errors.append(f"attempt {attempt}: HTTP 200 with empty body")
-                            else:
-                                body = (await resp.text(errors="replace"))[:500]
-                                job_log_errors.append(
-                                    f"attempt {attempt}: HTTP {resp.status}: {body}"
-                                )
+                    resp = await fetch(f"jobs/{job.job_id}/logs")
+                    if resp.status_code == 200:
+                        if resp.content:
+                            job_log_path.write_bytes(resp.content)
+                            break
+                        job_log_errors.append(f"attempt {attempt}: HTTP 200 with empty body")
+                    else:
+                        job_log_errors.append(f"attempt {attempt}: HTTP {resp.status_code}")
                 except Exception as e:
                     job_log_errors.append(
                         f"attempt {attempt}: {type(e).__name__}: {e}"
@@ -2798,19 +2797,15 @@ class FailureAnalysisService:
         run_zip_path = evidence_path(f"run_{job.run_id}_logs.zip")
         run_log_errors: list[str] = []
         if not run_zip_path.exists():
-            run_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{job.run_id}/logs"
             try:
-                async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
-                    async with session.get(run_url, headers=headers) as resp:
-                        if resp.status == 200:
-                            payload = await resp.read()
-                            if payload:
-                                run_zip_path.write_bytes(payload)
-                            else:
-                                run_log_errors.append("run logs returned HTTP 200 with empty body")
-                        else:
-                            body = (await resp.text(errors="replace"))[:500]
-                            run_log_errors.append(f"run logs HTTP {resp.status}: {body}")
+                resp = await fetch(f"runs/{job.run_id}/logs")
+                if resp.status_code == 200:
+                    if resp.content:
+                        run_zip_path.write_bytes(resp.content)
+                    else:
+                        run_log_errors.append("run logs returned HTTP 200 with empty body")
+                else:
+                    run_log_errors.append(f"run logs HTTP {resp.status_code}")
             except Exception as e:
                 run_log_errors.append(f"run logs {type(e).__name__}: {e}")
                 logger.warning("Failed to fetch run logs ZIP: %s", e)
@@ -2861,15 +2856,8 @@ class FailureAnalysisService:
                 from collector.ci import CICollector
                 from infrastructure.clients.github_client import GitHubClient
 
-                evidence_client = GitHubClient(
-                    token=settings.GITHUB_TOKEN,
-                    owner=settings.GITHUB_OWNER,
-                    repo=settings.GITHUB_REPO,
-                )
-                try:
+                async with GitHubClient() as evidence_client:
                     await CICollector(evidence_client, db).materialize_run_artifacts(job.run_id)
-                finally:
-                    await evidence_client.close()
             except Exception as exc:
                 # Logs can still establish a useful comparison if GitHub has
                 # expired an artifact.  Preserve the reason in the evidence
@@ -2892,15 +2880,12 @@ class FailureAnalysisService:
             result["artifacts_dir"] = str(artifacts_dir)
 
         # 4. Run jobs 鍒楄〃锛堝鑺傜偣鍦烘櫙闇€瑕侊級
-        import json
         jobs_path = evidence_path(f"run_{job.run_id}_jobs.json")
         if not jobs_path.exists():
-            jobs_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{job.run_id}/jobs?per_page=100"
             try:
-                async with aiohttp.ClientSession(timeout=request_timeout, trace_configs=trace_configs) as session:
-                    async with session.get(jobs_url, headers=headers) as resp:
-                        if resp.status == 200:
-                            jobs_path.write_text(json.dumps(await resp.json(), ensure_ascii=False, indent=2))
+                resp = await fetch(f"runs/{job.run_id}/jobs", params={"per_page": 100})
+                if resp.status_code == 200:
+                    jobs_path.write_text(json.dumps(resp.json(), ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception as e:
                 logger.warning("Failed to fetch jobs list: %s", e)
         if jobs_path.exists():

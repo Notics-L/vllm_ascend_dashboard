@@ -8,7 +8,7 @@ from daily_pipeline.github_links import github_run_url
 from daily_pipeline.merged_pr import DailyMergedPRService
 from infrastructure.clients.daily_pipeline_collection import DailyCollectionClient
 from infrastructure.clients.daily_pipeline_scheduler import start_collection
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
 from infrastructure.persistence.daily_pipeline_settings import read_settings
 
@@ -109,7 +109,7 @@ class DailyCollectionService:
             raise LookupError("关联 Issue 不存在")
         repository = history.repository
         config = await read_settings(self.repository.db, "github_token")
-        token = decrypt_api_key(config.get("github_token") or "")
+        token = daily_github_credential(config)
         if not token:
             raise CollectionSourceError("请先配置 GitHub Token")
         await self.repository.db.rollback()
@@ -154,7 +154,7 @@ class DailyCollectionService:
                 for node in tree["nodes"] if node.node_type == "workflow_run"
             ]
             config = await read_settings(self.repository.db, "github_token")
-            token = decrypt_api_key(config.get("github_token") or "")
+            token = daily_github_credential(config)
             if not token:
                 raise CollectionSourceError("请先配置 GitHub Token")
             # Network requests do not hold the session's read transaction open.

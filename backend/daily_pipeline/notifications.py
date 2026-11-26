@@ -11,7 +11,7 @@ from infrastructure.clients.daily_pipeline_collection import (
     DailyCollectionClient,
 )
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, start_processing
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.persistence.daily_pipeline_settings import (
     DEFAULT_REVERT_DEADLINE_MINUTES,
     REVERT_DEADLINE_KEY,
@@ -186,7 +186,7 @@ async def execute_notification(db, node_id):
         target = located_pull_request(original_data, repository)
         original_url = target["pr_url"]
         revert_url = None if optimize else located_pull_request(result, repository)["pr_url"]
-        token = decrypt_api_key(config.get("github_token") or "")
+        token = daily_github_credential(config)
         if not token:
             return await _waiting(db, node, execution, "请先配置 GitHub Token")
         async with DailyCollectionClient(target["pr_repository"], token) as client:

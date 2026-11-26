@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from daily_pipeline import dispatch, recommendation_events
 from daily_pipeline import source_recommendation as daily
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import (
     DailyPipelineCollectionNode,
     DailyPipelineConfig,
@@ -122,11 +123,12 @@ async def test_refreshed_baseline_and_culprit_predecessor_come_from_mainline(mon
     monkeypatch.setattr(daily, "_active_problem_prs", AsyncMock(return_value=active))
     monkeypatch.setattr(daily, "_lock_baseline", AsyncMock(return_value=baseline))
     monkeypatch.setattr(daily, "read_settings", AsyncMock(return_value={"github_token": "dummy"}))
-    monkeypatch.setattr(daily, "decrypt_api_key", lambda _: "dummy")
+    monkeypatch.setattr(daily, "daily_github_credential", lambda _: GitHubCredential("daily", "dummy"))
     monkeypatch.setattr(daily, "set_setting", save_candidate)
 
     class DailyGitHub:
-        def __init__(self, repository, token):
+        def __init__(self, repository, credential, *, audit_source):
+            assert credential.source == "daily" and audit_source == "daily_source_recommendation"
             assert repository == history.repository
 
         async def __aenter__(self):
@@ -267,7 +269,7 @@ async def test_daily_dispatch_commits_before_initializing_recommendation(
     response = {"id": "7", "result": "触发成功", "runId": 1234}
     monkeypatch.setattr(dispatch, "SessionLocal", SimpleNamespace(begin=recommendation_transaction))
     monkeypatch.setattr(dispatch, "read_settings", AsyncMock(return_value=settings))
-    monkeypatch.setattr(dispatch, "decrypt_api_key", lambda token: token)
+    monkeypatch.setattr(dispatch, "daily_github_credential", lambda _: GitHubCredential("daily", "test-token"))
     monkeypatch.setattr(dispatch, "DailyCaseRepository", Mock(return_value=SimpleNamespace(
         list_cases=AsyncMock(return_value=[]),
     )))

@@ -19,7 +19,7 @@ from contracts.schemas import (
     ResourceQuantity,
 )
 from infrastructure.clients.github_client import GitHubClient
-from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     CIResult,
     KubernetesClusterConfig,
@@ -207,7 +207,7 @@ class PersistedResourceMetricsService:
         cache.  A first visit could therefore expose a YAML filename until a
         separate Occupancy sync happened to populate it.
         """
-        if not settings.GITHUB_TOKEN:
+        if not global_github_configured():
             return {}
         resolved: dict[int, str] = {}
         clients: dict[tuple[str, str], GitHubClient] = {}
@@ -220,7 +220,7 @@ class PersistedResourceMetricsService:
                 if not owner or not repo:
                     continue
                 client = clients.setdefault(
-                    (owner, repo), GitHubClient(settings.GITHUB_TOKEN, owner=owner, repo=repo)
+                    (owner, repo), GitHubClient(owner=owner, repo=repo)
                 )
                 try:
                     run = await client.get_workflow_run(run_id)

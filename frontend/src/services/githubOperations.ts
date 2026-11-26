@@ -1,6 +1,6 @@
 import api from './api'
 
-export type GitHubOperationResult = 'success' | 'redirect' | 'failed'
+export type GitHubOperationResult = 'pending' | 'success' | 'redirect' | 'failed'
 export type GitHubOperationType = 'read' | 'write'
 export type GitHubCredentialSource = 'global' | 'daily' | 'actions'
 

@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zipfile import ZipFile
 
+import httpx
 import pytest
 
 from failure_analysis.failure_analysis import FailureAnalysisService
 from infrastructure.clients import github_cache
 from infrastructure.clients.claude_code_cli import ClaudeCodeCLI
+from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
 
 
@@ -32,7 +34,7 @@ def test_claude_cli_never_inherits_dashboard_github_credentials(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_analysis_downloads_missing_logs_via_audited_backend_and_cleans_on_cancel(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, github_audit_records,
 ):
     service = FailureAnalysisService()
     monkeypatch.setattr(service, "_data_root", lambda: tmp_path)
@@ -43,30 +45,17 @@ async def test_analysis_downloads_missing_logs_via_audited_backend_and_cleans_on
     archive.write_bytes(b"existing archive")
     requests = []
 
-    class Session:
-        status = 200
+    def respond(request):
+        assert request.headers["Authorization"] == "Bearer test-configured-github-credential"
+        requests.append(str(request.url))
+        if request.url.path.endswith("/logs"):
+            return httpx.Response(200, content=b"temporary log evidence")
+        return httpx.Response(200, json={"jobs": []})
 
-        def __init__(self, *, timeout, trace_configs):
-            assert trace_configs[0].on_request_end and trace_configs[0].on_request_exception
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            pass
-
-        def get(self, url, *, headers):
-            assert headers["Authorization"] == "Bearer test-configured-github-credential"
-            requests.append(url)
-            return self
-
-        async def read(self):
-            return b"temporary log evidence"
-
-        async def json(self):
-            return {"jobs": []}
-
-    monkeypatch.setattr("aiohttp.ClientSession", Session)
+    monkeypatch.setattr(
+        "failure_analysis.failure_analysis.GitHubAsyncClient",
+        lambda **kwargs: GitHubAsyncClient(transport=httpx.MockTransport(respond), **kwargs),
+    )
     downloaded = asyncio.Event()
     paths = {}
 

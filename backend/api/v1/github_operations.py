@@ -13,7 +13,7 @@ from infrastructure.persistence.models import GitHubOperation
 
 router = APIRouter(prefix="/github-operations", tags=["GitHub 操作记录"])
 
-OperationResult = Literal["success", "redirect", "failed"]
+OperationResult = Literal["pending", "success", "redirect", "failed"]
 OperationType = Literal["read", "write"]
 
 

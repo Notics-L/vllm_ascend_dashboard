@@ -30,9 +30,21 @@ env:
   IMAGE_NAME_FRONTEND: ${{ github.repository }}-frontend
 
 jobs:
+  github-audit-boundary:
+    name: GitHub audit boundary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check for GitHub audit bypasses
+        run: python3 scripts/check_github_audit_boundary.py
+
   quality:
-    # 质量检查仅在 PR 上运行（信息性，不阻塞构建）。
-    # push/dispatch 直接构建 —— 敏捷优先，速度优先。
+    needs: github-audit-boundary
+    # 完整质量检查在 PR 上运行。
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -119,7 +131,7 @@ jobs:
           pnpm audit --prod --audit-level=high
 
   build-backend:
-    # push/dispatch 即刻构建，不等质量门；与 build-frontend 并行。
+    needs: github-audit-boundary
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -185,6 +197,7 @@ jobs:
           echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}@${{ steps.backend_image.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
   build-frontend:
+    needs: github-audit-boundary
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:

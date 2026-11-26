@@ -53,6 +53,7 @@ from contracts.schemas import (
     WorkflowStatusRun,
 )
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     CIJob,
     CIResult,
@@ -1336,7 +1337,6 @@ async def get_run_live_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Run {run_id} 不存在")
 
     client = GitHubClient(
-        token=settings.GITHUB_TOKEN,
         owner=settings.GITHUB_OWNER,
         repo=settings.GITHUB_REPO,
     )
@@ -1737,14 +1737,13 @@ async def debug_workflows():
         from infrastructure.clients.github_client import GitHubClient
         from infrastructure.core.config import settings
 
-        if not settings.GITHUB_TOKEN:
+        if not global_github_configured():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="GITHUB_TOKEN not configured",
             )
 
         client = GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         )
@@ -1967,12 +1966,11 @@ async def refresh_run_version_snapshot(run_id: int, current_user: CurrentAdminUs
             candidates.append((job, source_step))
     if not candidates:
         raise HTTPException(status_code=404, detail="No Job with a version-reporting step")
-    if not settings.GITHUB_TOKEN:
+    if not global_github_configured():
         raise HTTPException(status_code=503, detail="GitHub Token is not configured")
 
     from infrastructure.clients.github_client import GitHubClient
     async with GitHubClient(
-        token=settings.GITHUB_TOKEN,
         owner=settings.GITHUB_OWNER,
         repo=settings.GITHUB_REPO,
     ) as client:
@@ -2036,7 +2034,7 @@ async def get_job_performance_trends(
                 for parsed in results if parsed["reason"]
             ],
         }
-    if not settings.GITHUB_TOKEN:
+    if not global_github_configured():
         raise HTTPException(status_code=503, detail="GitHub Token is not configured")
 
     from infrastructure.clients.github_client import GitHubClient
@@ -2046,7 +2044,6 @@ async def get_job_performance_trends(
         try:
             async with semaphore:
                 async with GitHubClient(
-                    token=settings.GITHUB_TOKEN,
                     owner=settings.GITHUB_OWNER,
                     repo=settings.GITHUB_REPO,
                 ) as client:
@@ -2058,7 +2055,6 @@ async def get_job_performance_trends(
             if items and config_reference and run and run.head_sha:
                 try:
                     async with GitHubClient(
-                        token=settings.GITHUB_TOKEN,
                         owner=settings.GITHUB_OWNER,
                         repo=settings.GITHUB_REPO,
                     ) as client:
@@ -2208,12 +2204,11 @@ async def compare_ci_jobs(
             f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/compare/"
             f"{start['vllm_ascend_commit']}...{end['vllm_ascend_commit']}"
         )
-        if settings.GITHUB_TOKEN:
+        if global_github_configured():
             try:
                 from infrastructure.clients.github_client import GitHubClient
 
                 async with GitHubClient(
-                    token=settings.GITHUB_TOKEN,
                     owner=settings.GITHUB_OWNER,
                     repo=settings.GITHUB_REPO,
                 ) as client:
@@ -2373,14 +2368,13 @@ async def get_job_failure_summary(
     fallback = stage["first_failed_step"]
     if job.conclusion == "success":
         return {"summary": None, "failed_step": None, "source": "success"}
-    if not settings.GITHUB_TOKEN:
+    if not global_github_configured():
         return {"summary": fallback, "failed_step": fallback, "source": "steps", "reason": "GitHub Token 未配置"}
 
     try:
         from infrastructure.clients.github_client import GitHubClient
 
         async with GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         ) as client:
@@ -2453,10 +2447,9 @@ async def create_job_log_root_cause(
         from infrastructure.clients.llm_client import LLMClient
         from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 
-        if not settings.GITHUB_TOKEN:
+        if not global_github_configured():
             raise RuntimeError("GitHub Token 未配置")
         async with GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         ) as client:
@@ -2564,12 +2557,11 @@ async def create_job_log_root_cause(
             f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/compare/"
             f"{start['workflow_head_sha']}...{end['workflow_head_sha']}"
         )
-        if settings.GITHUB_TOKEN:
+        if global_github_configured():
             try:
                 from infrastructure.clients.github_client import GitHubClient
 
                 async with GitHubClient(
-                    token=settings.GITHUB_TOKEN,
                     owner=settings.GITHUB_OWNER,
                     repo=settings.GITHUB_REPO,
                 ) as client:
@@ -4149,14 +4141,13 @@ async def get_nightly_gantt(
     if cached is not None and (now_ts - cached[0]) < _NIGHTLY_GANTT_CACHE_TTL:
         return cached[1]
 
-    if not settings.GITHUB_TOKEN:
+    if not global_github_configured():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="GITHUB_TOKEN not configured",
         )
 
     client = GitHubClient(
-        token=settings.GITHUB_TOKEN,
         owner=settings.GITHUB_OWNER,
         repo=settings.GITHUB_REPO,
     )

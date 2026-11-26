@@ -11,7 +11,8 @@ from infrastructure.clients.daily_pipeline_revert import (
     RetryableRevertError,
     RevertError,
 )
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_audit import GitHubAuditUnavailable
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.persistence.daily_pipeline_settings import read_settings
 from infrastructure.persistence.daily_pipeline_tracking import ACTIVE, completed_node_result
 from infrastructure.persistence.models import DailyPipelineCollectionNode as SourceNode
@@ -104,7 +105,7 @@ async def execute_revert(db, node_id):
     run = await db.get(Run, source.run_id)
     run_url = f"https://github.com/{run.repository}/actions/runs/{run.run_id}"
     try:
-        token = decrypt_api_key(config.get("github_token") or "")
+        token = daily_github_credential(config)
         if not token:
             raise RevertError("请先配置 GitHub Token")
         async with DailyRevertClient(target["pr_repository"], token) as client:
@@ -116,7 +117,7 @@ async def execute_revert(db, node_id):
             "original_pr_number": target["pr_number"],
             "original_pr_url": target["pr_url"],
         }
-    except RetryableRevertError:
+    except (RetryableRevertError, GitHubAuditUnavailable):
         await db.rollback()
         logger.warning("Automatic revert will retry node_id=%s execution_id=%s", node_id, identity)
         raise

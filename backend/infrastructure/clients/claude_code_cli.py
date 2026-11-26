@@ -22,25 +22,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from infrastructure.core.github_credentials import environment_without_github_credentials
 from tooling.parsers.format_proxy import FormatProxy
 
 # Claude Code CLI 日志持久化目录
 _CLI_LOG_DIR = Path(__file__).parent.parent.parent / "data" / "claude_logs"
-_GITHUB_CREDENTIAL_ENV = frozenset({
-    "GH_TOKEN",
-    "GH_ENTERPRISE_TOKEN",
-    "GITHUB_TOKEN",
-    "GITHUB_ENTERPRISE_TOKEN",
-    "GITHUB_PERSONAL_ACCESS_TOKEN",
-    "GITHUB_ACCESS_TOKEN",
-    "GITHUB_API_TOKEN",
-})
 
 logger = logging.getLogger(__name__)
 
 
 def _cli_environment() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key.upper() not in _GITHUB_CREDENTIAL_ENV}
+    return environment_without_github_credentials()
 
 
 # ---------------------------------------------------------------------------

@@ -183,7 +183,7 @@ class CollectorRunner:
 
     async def _run_ci_sync(self, ctx: TaskContext, task_params: dict):
         """CI 数据同步。"""
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async def persist_progress(progress: dict):
                 await self.worker._write_checkpoint(
@@ -383,7 +383,7 @@ class CollectorRunner:
         """模型报告同步。"""
         from model_sync.model_sync_service import ModelSyncService
 
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async with SessionLocal() as db:
                 service = ModelSyncService(db, github)
@@ -485,7 +485,7 @@ class CollectorRunner:
         """Synchronize the code heatmap via GitHub from the Collector role."""
         from collector.heatmap import sync_heatmap_from_github
 
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async with SessionLocal() as db:
                 result = await sync_heatmap_from_github(
@@ -572,7 +572,7 @@ class CollectorRunner:
         from test_board.issues_found_derivator import IssuesFoundDerivator
         from test_board.test_board_service import TestBoardService
 
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async with SessionLocal() as db:
                 count = await TestBoardService(db, github).parse_ci_results(
@@ -619,7 +619,7 @@ class CollectorRunner:
 
     async def _run_pr_sync(self, ctx: TaskContext, task_params: dict):
         """Synchronize pull-request pipeline data from GitHub."""
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async with SessionLocal() as db:
                 collector = PRPipelineCollector(github, db)
@@ -642,7 +642,7 @@ class CollectorRunner:
         """Collect historical PR data; this can be long-running and rate-limited."""
         from collector.pr_pipeline_historical import PRPipelineHistoricalCollector
 
-        github = GitHubClient(settings.GITHUB_TOKEN)
+        github = GitHubClient()
         try:
             async with SessionLocal() as db:
                 result = await PRPipelineHistoricalCollector(github, db).collect_historical(

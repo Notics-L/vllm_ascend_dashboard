@@ -38,8 +38,10 @@ async def run() -> None:
                              'github_client', 'github_api', 'failure_analysis', 'agent', 'workflow_actions')
         """))
         if os.getenv("ENVIRONMENT", "").lower() == "production":
+            # Runtime roles can finish attempts without editing their identity or deleting history.
+            outcome_columns = "result, http_status, duration_ms, error_type, github_request_id"
             await conn.execute(
-                text(f"GRANT SELECT, INSERT ON `{table.name}` TO :account@'%'"),
+                text(f"GRANT SELECT, INSERT, UPDATE ({outcome_columns}) ON `{table.name}` TO :account@'%'"),
                 {"account": os.getenv("CONTROL_DB_USER", "control_svc")},
             )
             for setting, default in (
@@ -47,6 +49,9 @@ async def run() -> None:
                 ("COLLECTOR_DB_USER", "collector_svc"),
             ):
                 await conn.execute(
-                    text(f"GRANT INSERT ON `{table.name}` TO :account@'%'"),
+                    text(
+                        f"GRANT INSERT, SELECT (id, result), UPDATE ({outcome_columns}) "
+                        f"ON `{table.name}` TO :account@'%'"
+                    ),
                     {"account": os.getenv(setting, default)},
                 )
