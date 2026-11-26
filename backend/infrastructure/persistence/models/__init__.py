@@ -94,17 +94,18 @@ from infrastructure.persistence.models.release_management import (
     ReleaseThirdPartyVersion,
     ReleaseWorkflow,
 )
-from infrastructure.persistence.models.workflow_actions import (
-    WorkflowActionLog,
-    WorkflowActionPermission,
-    WorkflowActionSchedule,
-    WorkflowSchedulePermission,
-)
+
 # 上游测试模型（同样必须在 Base 创建之后导入）
 from infrastructure.persistence.models.upstream_test import (
     UpstreamTestCaseResult,
     UpstreamTestIssue,
     UpstreamTestSnapshot,
+)
+from infrastructure.persistence.models.workflow_actions import (
+    WorkflowActionLog,
+    WorkflowActionPermission,
+    WorkflowActionSchedule,
+    WorkflowSchedulePermission,
 )
 
 

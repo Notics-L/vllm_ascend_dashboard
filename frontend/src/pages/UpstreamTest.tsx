@@ -34,8 +34,9 @@ import {
   syncUpstreamTest,
   type UpstreamTestsStat,
 } from '../services/upstreamTest'
-import { FailureReasonList, ISSUE_TABLE_WIDTH, StatusBar } from './upstream-test/shared'
+import { ISSUE_TABLE_WIDTH } from './upstream-test/constants'
 import { issueColumns } from './upstream-test/columns'
+import { FailureReasonList, StatusBar } from './upstream-test/shared'
 
 const { Text, Title } = Typography
 

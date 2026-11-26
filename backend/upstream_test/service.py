@@ -9,12 +9,12 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.config import settings
-from upstream_test.collector import UpstreamTestCollector
 from infrastructure.persistence.models import (
     UpstreamTestCaseResult,
     UpstreamTestIssue,
     UpstreamTestSnapshot,
 )
+from upstream_test.collector import UpstreamTestCollector
 
 logger = logging.getLogger(__name__)
 

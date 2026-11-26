@@ -79,7 +79,7 @@ def _norm_status(value: str | None) -> str:
 
 
 def _summary(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {key: 0 for key in STATUS_KEYS}
+    counts = dict.fromkeys(STATUS_KEYS, 0)
     for row in rows:
         counts[_norm_status(row.get("status"))] = counts.get(_norm_status(row.get("status")), 0) + 1
     total = len(rows)

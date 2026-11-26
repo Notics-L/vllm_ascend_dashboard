@@ -1,7 +1,7 @@
 import { Tag, Tooltip, Typography, type TableColumnsType } from 'antd'
 
 import type { IssueRow } from '../../services/upstreamTest'
-import { IMPACT_COLOR, PATH_COLUMN_WIDTH } from './shared'
+import { IMPACT_COLOR, PATH_COLUMN_WIDTH } from './constants'
 
 const { Text } = Typography
 

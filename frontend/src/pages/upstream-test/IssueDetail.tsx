@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { getUpstreamOverview, listUpstreamIssues } from '../../services/upstreamTest'
 import { issueColumns } from './columns'
-import { ISSUE_TABLE_WIDTH } from './shared'
+import { ISSUE_TABLE_WIDTH } from './constants'
 
 const { Title } = Typography
 

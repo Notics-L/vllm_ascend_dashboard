@@ -5,8 +5,9 @@ import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 
 import { getVersionDetail, type StatusSummary } from '../../services/upstreamTest'
-import { CASE_TABLE_WIDTH, FailureReasonList, ISSUE_TABLE_WIDTH, StatusBar } from './shared'
+import { CASE_TABLE_WIDTH, ISSUE_TABLE_WIDTH } from './constants'
 import { caseColumns, issueColumns } from './columns'
+import { FailureReasonList, StatusBar } from './shared'
 
 const { Text, Title } = Typography
 
