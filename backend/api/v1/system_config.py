@@ -21,6 +21,7 @@ from api.deps import (
 )
 from infrastructure.core.config import settings
 from infrastructure.core.email import SMTP_CONFIG_KEY
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import ProjectDashboardConfig, User
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ async def get_system_config(
         "github_config": {
             "owner": settings.GITHUB_OWNER,
             "repo": settings.GITHUB_REPO,
-            "token_configured": bool(settings.GITHUB_TOKEN),
+            "token_configured": global_github_configured(),
         },
         "sync_config": {
             "ci_sync_config": {
@@ -181,7 +182,6 @@ async def update_app_config(
 @router.put("/github")
 async def update_github_config(
     payload: GitHubConfigUpdateRequest | None = Body(default=None),
-    github_token: str | None = Query(None),
     current_user: Annotated[User, Depends(get_current_active_super_admin_user)] = None
 ):
     """
@@ -213,7 +213,7 @@ async def update_github_config(
             else "GitHub Token 已是清除状态"
         )
 
-    requested_token = payload.github_token if payload else github_token
+    requested_token = payload.github_token if payload else None
     if not do_clear and requested_token is not None and len(requested_token.strip()) > 0:
         # 验证 token 格式（GitHub token 通常以 ghp_ 或 github_pat_ 开头）
         token = requested_token.strip()
@@ -254,7 +254,6 @@ async def update_github_config(
         finally:
             await github_client.close()
 
-        settings.GITHUB_TOKEN = token
         await persist_github_runtime_config(token=token)
         updates.append("GitHub Token 已更新" + ("（未验证）" if not verified else ""))
 
@@ -619,7 +618,7 @@ async def get_system_status(
             "type": "mysql",
         },
         "github": {
-            "configured": bool(settings.GITHUB_TOKEN),
+            "configured": global_github_configured(),
             "owner": settings.GITHUB_OWNER,
             "repo": settings.GITHUB_REPO,
         },

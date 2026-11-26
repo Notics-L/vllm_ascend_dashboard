@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from api.deps import get_current_user, get_db
 from api.v1.workflow_actions import router
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import User, WorkflowActionSchedule
 from workflow_actions.schemas import (
     WorkflowActionPermissionCreate,
@@ -48,9 +49,9 @@ class FakeDB:
 @pytest.fixture(autouse=True)
 def mock_dedicated_token(monkeypatch):
     async def get_token(db):
-        return "actions-test-token"
+        return GitHubCredential("actions", "actions-test-token")
 
-    monkeypatch.setattr("workflow_actions.service.get_github_token", get_token)
+    monkeypatch.setattr("workflow_actions.service.get_github_credential", get_token)
 
 
 def dispatch_request(**overrides):
@@ -274,7 +275,7 @@ async def test_dispatch_logs_attempt_and_submits_json(monkeypatch):
     )
     calls = []
 
-    async def github_request(token, method, endpoint, payload=None):
+    async def github_request(token, method, endpoint, payload=None, **kwargs):
         calls.append((method, endpoint, payload))
         return 204, None, ""
 
@@ -307,7 +308,7 @@ async def test_log_source_does_not_expand_username(monkeypatch):
         )
     )
 
-    async def github_request(token, method, endpoint, payload=None):
+    async def github_request(token, method, endpoint, payload=None, **kwargs):
         return 204, None, ""
 
     monkeypatch.setattr("workflow_actions.service._github_request", github_request)

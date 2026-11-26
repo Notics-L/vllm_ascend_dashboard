@@ -12,6 +12,7 @@ from infrastructure.clients.daily_pipeline_collection import (
     CollectionSourceError,
     DailyCollectionClient,
 )
+from infrastructure.core.github_credentials import GitHubCredential
 
 logger = logging.getLogger(__name__)
 NIGHTLY_CONFIG_PATH = ".github/workflows/configs/nightly_config.yaml"
@@ -203,13 +204,13 @@ def main_job_nodes(jobs):
 
 
 class DailyCollectionSource:
-    def __init__(self, repository: str, token: str):
+    def __init__(self, repository: str, credential: GitHubCredential | str):
         self.repository = repository
-        self.token = token
+        self.credential = credential
 
     async def collect_snapshot(self, history: dict, known_runs: list[dict]):
         try:
-            async with DailyCollectionClient(self.repository, self.token) as client:
+            async with DailyCollectionClient(self.repository, self.credential) as client:
                 return await self._collect(client, history, known_runs)
         except CollectionSourceError:
             raise

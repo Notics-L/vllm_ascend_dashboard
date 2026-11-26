@@ -230,7 +230,6 @@ class AgentService:
         # 4. 注入运行时上下文（DB session、token 等）
         context_tokens = set_tool_context(
             memory_manager=self.memory,
-            github_token=os.environ.get("GITHUB_TOKEN", ""),
             memory_filters=task.memory_filters,
         )
 

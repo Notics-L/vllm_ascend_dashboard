@@ -11,6 +11,7 @@ from api.deps import CurrentAdminUser, CurrentUser, DbSession
 from image_build_monitor.service import ImageBuildMonitorService
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import ImageBuildMonitorTarget, ReleaseWorkflow
 
 router = APIRouter()
@@ -61,10 +62,9 @@ async def get_overview(
 
 @router.get("/github-status")
 async def get_github_status(_: CurrentUser) -> dict[str, Any]:
-    if not settings.GITHUB_TOKEN:
+    if not global_github_configured():
         return {"ok": False, "mode": "none", "message": "未配置 GITHUB_TOKEN"}
     client = GitHubClient(
-        token=settings.GITHUB_TOKEN,
         owner=settings.GITHUB_OWNER,
         repo=settings.GITHUB_REPO,
     )

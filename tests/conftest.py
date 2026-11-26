@@ -3,6 +3,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,6 +25,26 @@ from infrastructure.persistence.models.test_board import (  # noqa: E402
     TestSuiteSnapshot,
 )
 from tests.mysql_test_db import create_test_engine, reset_tables  # noqa: E402
+
+
+@pytest.fixture
+def github_audit_records(monkeypatch):
+    """Record both audit stages in memory for tests using mock GitHub transports."""
+    from infrastructure.clients import github_http
+    from infrastructure.core.github_audit import GitHubAuditAttempt
+
+    records = []
+
+    async def begin(**record):
+        records.append({**record, "result": "pending"})
+        return GitHubAuditAttempt(len(records), 0)
+
+    async def finish(attempt, **result):
+        records[attempt.row_id - 1].update(result)
+
+    monkeypatch.setattr(github_http, "begin_github_operation", begin)
+    monkeypatch.setattr(github_http, "finish_github_operation", finish)
+    return records
 
 
 @pytest_asyncio.fixture

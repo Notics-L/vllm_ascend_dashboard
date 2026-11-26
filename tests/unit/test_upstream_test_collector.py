@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 
+from infrastructure.core.config import settings
 from upstream_test.collector import (
+    DEFAULT_CI_WORKFLOW_FILE,
+    UpstreamTestCollector,
     _failure_reasons,
     _pick_latest_version,
     _pick_latest_weekly,
@@ -186,3 +190,44 @@ def test_shorten_keeps_short_text_and_truncates_long_text() -> None:
 
 def test_shorten_collapses_whitespace() -> None:
     assert _shorten("a\n\n b   c") == "a b c"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_runs", [False, True])
+async def test_collection_authenticates_and_audits_github_api_only(
+    monkeypatch, caplog, fail_runs, github_audit_records,
+):
+    token = "local-audit-test-token"
+    monkeypatch.setattr(settings, "GITHUB_TOKEN", token)
+    operations = github_audit_records
+
+    def respond(request):
+        path = request.url.path
+        if request.url.host == "raw.githubusercontent.com":
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, text=CASE_CSV if path.endswith("v0.33.0.csv") else ISSUE_CSV)
+        if "/contents/" in path:
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, json=[{"type": "file", "name": "v0.33.0.csv"}])
+        assert request.headers["Authorization"] == f"Bearer {token}"
+        if path.endswith("/workflows"):
+            return httpx.Response(200, json={"workflows": [{"id": 5, "path": DEFAULT_CI_WORKFLOW_FILE}]})
+        if path.endswith("/runs"):
+            if fail_runs:
+                raise httpx.ReadTimeout(f"raw transport error with {token}", request=request)
+            return httpx.Response(200, json={"workflow_runs": []})
+        assert "/git/trees/" in path
+        return httpx.Response(200, json={"tree": []})
+
+    result = await UpstreamTestCollector(transport=httpx.MockTransport(respond)).collect()
+
+    assert result["upstream_tests"]["available"]
+    assert result["ci_summary"]["available"] is not fail_runs
+    assert len(operations) == 3
+    assert {record["source"] for record in operations} == {"upstream_test"}
+    assert {record["credential_source"] for record in operations} == {"global"}
+    assert [record["result"] for record in operations] == [
+        "success", "failed" if fail_runs else "success", "success",
+    ]
+    assert token not in repr(result)
+    assert token not in caplog.text

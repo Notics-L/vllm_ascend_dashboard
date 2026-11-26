@@ -5,9 +5,11 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_github_client_surfaces_http_401_as_authentication_error():
+async def test_github_client_surfaces_http_401_as_authentication_error(monkeypatch):
     from infrastructure.clients.github_client import GitHubAuthenticationError, GitHubClient
+    from infrastructure.core.config import settings
 
+    monkeypatch.setattr(settings, "DEBUG", False)
     client = GitHubClient("test-token")
     request = httpx.Request("GET", "https://api.github.com/user")
 

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.clients.github_client import GitHubClient
-from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     NotificationAction,
     NotificationDelivery,
@@ -191,11 +191,10 @@ class IvrService:
         if not workflow_id or not run_ids:
             return await self._finish(record, False, {"message": "事件缺少 Workflow 或 Run 信息"})
         workflow = await self.db.get(ReleaseWorkflow, int(workflow_id))
-        if workflow is None or not settings.GITHUB_TOKEN:
+        if workflow is None or not global_github_configured():
             return await self._finish(record, False, {"message": "缺少 GitHub 配置，无法执行"})
 
         client = GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=workflow.repo_owner,
             repo=workflow.repo_name,
         )

@@ -24,8 +24,9 @@ from urllib.parse import urlparse
 from smolagents import tool
 
 from agent.memory_manager import MemoryManager
-from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.clients.github_http import GitHubAsyncClient, github_git_environment
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import GitHubCredential, global_github_credential
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ logger = logging.getLogger(__name__)
 _ctx_memory_manager: contextvars.ContextVar[MemoryManager | None] = (
     contextvars.ContextVar("memory_manager", default=None)
 )
-_ctx_github_token: contextvars.ContextVar[str] = (
-    contextvars.ContextVar("github_token", default="")
+_ctx_github_credential: contextvars.ContextVar[GitHubCredential | None] = (
+    contextvars.ContextVar("github_credential", default=None)
 )
 _ctx_event_loop: contextvars.ContextVar[asyncio.AbstractEventLoop | None] = (
     contextvars.ContextVar("agent_event_loop", default=None)
@@ -52,7 +53,7 @@ def set_tool_context(
     """在 Agent 运行前注入运行时上下文（并发安全）"""
     return (
         _ctx_memory_manager.set(memory_manager),
-        _ctx_github_token.set(github_token or settings.GITHUB_TOKEN),
+        _ctx_github_credential.set(global_github_credential(github_token or None, prefer_environment=True)),
         _ctx_event_loop.set(asyncio.get_running_loop()),
         _ctx_memory_filters.set(memory_filters),
     )
@@ -62,17 +63,13 @@ def reset_tool_context(tokens: tuple[contextvars.Token, contextvars.Token, conte
     """Restore the previous context after an agent run."""
     memory_token, github_token, loop_token, filters_token = tokens
     _ctx_memory_manager.reset(memory_token)
-    _ctx_github_token.reset(github_token)
+    _ctx_github_credential.reset(github_token)
     _ctx_event_loop.reset(loop_token)
     _ctx_memory_filters.reset(filters_token)
 
 
 def _get_memory_manager() -> MemoryManager | None:
     return _ctx_memory_manager.get(None)
-
-
-def _get_github_token() -> str:
-    return _ctx_github_token.get("") or settings.GITHUB_TOKEN
 
 
 def _safe_data_path(path: str) -> Path:
@@ -275,19 +272,17 @@ def fetch_github_api(url: str) -> str:
     ):
         return f"Error: 仅允许 api.github.com 域名，不支持: {parsed.netloc}"
 
-    token = _get_github_token()
+    credential = _ctx_github_credential.get() or global_github_credential(prefer_environment=True)
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
 
     try:
         import asyncio
 
         async def _fetch():
-            async with GitHubAsyncClient(audit_source="agent", credential_source="global", timeout=30) as client:
+            async with GitHubAsyncClient(audit_source="agent", credential=credential, timeout=30) as client:
                 resp = await client.get(url, headers=headers)
                 return resp
 
@@ -382,7 +377,7 @@ def _run_git(args: list[str], max_chars: int = 30000, repository: str = "vllm_as
             encoding="utf-8",
             errors="replace",
             timeout=60,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "PAGER": "cat"},
+            env={**github_git_environment(), "PAGER": "cat"},
         )
         output = result.stdout
         if result.stderr:
@@ -608,7 +603,7 @@ def run_bash(command: str) -> str:
             errors="replace",
             timeout=timeout,
             cwd=repo_path,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "PAGER": "cat"},
+            env={**github_git_environment(), "PAGER": "cat"},
         )
         output = result.stdout
         if result.stderr:

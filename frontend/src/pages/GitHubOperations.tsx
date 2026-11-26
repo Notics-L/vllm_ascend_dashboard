@@ -14,6 +14,7 @@ const timeFormat = new Intl.DateTimeFormat('sv-SE', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
 })
 const results = {
+  pending: { label: '结果待确认', color: 'default' },
   success: { label: '成功', color: 'green' },
   redirect: { label: '重定向', color: 'blue' },
   failed: { label: '失败', color: 'red' },
@@ -35,6 +36,10 @@ const sources: Record<string, string> = {
   npu_occupancy: 'NPU 占用',
   release_management: '发布件管理',
   image_build_monitor: '镜像构建监控',
+  image_build_trigger: '镜像构建触发',
+  image_build_workflow_sync: '镜像构建工作流同步',
+  image_build_collection: '镜像构建采集',
+  upstream_test: '上游测试',
   models: '模型管理',
   model_sync: '模型同步',
   model_sync_configs: '模型同步配置',
@@ -49,6 +54,7 @@ const sources: Record<string, string> = {
   notifications: '通知服务',
   daily_config: 'Daily 配置与触发',
   daily_collection: 'Daily 采集',
+  daily_source_recommendation: 'Daily 源码推荐',
   daily_revert: 'Daily 回退',
   failure_analysis: 'CI 失败分析',
   agent: 'AI 问题定位',
@@ -58,6 +64,7 @@ const processes: Record<string, string> = {
   scheduler: '调度器',
   collector: '采集器',
   daily_scheduler: 'Daily 调度器',
+  image_build: '镜像构建调度器',
 }
 const credentialSources: Record<GitHubCredentialSource, string> = {
   global: '全局 Token',

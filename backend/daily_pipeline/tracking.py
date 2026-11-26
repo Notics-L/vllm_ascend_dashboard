@@ -15,7 +15,7 @@ from infrastructure.clients.daily_pipeline_collection import (
     DailyCollectionClient,
 )
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, start_processing
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.persistence.daily_pipeline_settings import read_settings
 from infrastructure.persistence.daily_pipeline_tracking import (
     ACTIVE,
@@ -328,7 +328,7 @@ class DailyTrackingService:
 
     async def _client(self, repository):
         settings = await read_settings(self.db, "github_token")
-        token = decrypt_api_key(settings.get("github_token") or "")
+        token = daily_github_credential(settings)
         if not token:
             raise CollectionSourceError("请先配置 GitHub Token")
         return DailyCollectionClient(repository, token)

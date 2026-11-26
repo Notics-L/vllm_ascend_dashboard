@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import User, WorkflowActionLog, WorkflowActionPermission
-from workflow_actions.credentials import get_github_token
+from workflow_actions.credentials import get_github_credential
 from workflow_actions.schemas import WorkflowActionRequest
 
 _SENSITIVE_KEY_RE = re.compile(
@@ -154,24 +155,23 @@ def _format_output(status_code: int | None, body: Any, error: str = "") -> str:
 
 
 async def _github_request(
-    token: str,
+    credential: GitHubCredential,
     method: str,
     endpoint: str,
     payload: dict[str, Any] | None = None,
     *,
     retry_delays: tuple[float, ...] = (),
+    audit_source: str = "workflow_actions",
 ) -> tuple[int | None, Any, str | _UncertainSubmission]:
     headers = {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "vllm-ascend-dashboard/workflow-actions",
     }
     total_wait = 0.0
     async with GitHubAsyncClient(
-        audit_source="workflow_actions",
-        credential_source="actions",
-        base_url="https://api.github.com",
+        audit_source=audit_source,
+        credential=credential,
         headers=headers,
         timeout=30.0,
         verify=True,
@@ -238,7 +238,7 @@ def _result(
 
 
 async def dispatch_workflow(
-    token: str,
+    credential: GitHubCredential,
     *,
     repository: str,
     workflow_path: str,
@@ -246,18 +246,16 @@ async def dispatch_workflow(
     inputs: dict[str, Any],
     return_run_details: bool = False,
     retry_delays: tuple[float, ...] = (),
+    audit_source: str = "workflow_actions",
 ) -> dict[str, Any]:
     workflow_file = quote(workflow_path.rsplit("/", 1)[-1], safe="")
     endpoint = f"/repos/{repository}/actions/workflows/{workflow_file}/dispatches"
     payload: dict[str, Any] = {"ref": ref, "inputs": inputs}
     if return_run_details:
         payload["return_run_details"] = True
-    if retry_delays:
-        status_code, body, error = await _github_request(
-            token, "POST", endpoint, payload, retry_delays=retry_delays,
-        )
-    else:
-        status_code, body, error = await _github_request(token, "POST", endpoint, payload)
+    status_code, body, error = await _github_request(
+        credential, "POST", endpoint, payload, retry_delays=retry_delays, audit_source=audit_source,
+    )
     result = _result(status_code, body, error)
     if status_code is not None and 500 <= status_code < 600:
         result["output"] += f"\n{_UNCERTAIN_SUBMISSION}。"
@@ -301,7 +299,7 @@ async def execute_workflow_action(
     await db.commit()
 
     try:
-        token = await get_github_token(db)
+        token = await get_github_credential(db)
     except ValueError as exc:
         return _result(None, None, str(exc))
 
@@ -339,7 +337,7 @@ async def execute_workflow_action(
 
 async def test_github_credential(db: AsyncSession) -> dict[str, Any]:
     try:
-        token = await get_github_token(db)
+        token = await get_github_credential(db)
     except ValueError as exc:
         return _result(None, None, str(exc))
     repository = f"/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}"

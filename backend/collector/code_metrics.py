@@ -8,6 +8,7 @@ from datetime import date
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infrastructure.core.github_credentials import environment_without_github_credentials
 from infrastructure.persistence.models import (
     CodeComplexityDetail,
     CodeDuplicationDetail,
@@ -117,6 +118,7 @@ class CodeMetricsCollector:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "cloc", "--json", "--quiet", repo_path,
+                env=environment_without_github_credentials(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -259,7 +261,8 @@ class CodeMetricsCollector:
             else:
                 args = [jscpd_bin, "--reporters", "json", "--output", output_dir, repo_path]
 
-            env = {**os.environ, "PATH": os.environ.get("PATH", "") + ":/usr/bin:/usr/local/bin"}
+            env = environment_without_github_credentials()
+            env["PATH"] = env.get("PATH", "") + ":/usr/bin:/usr/local/bin"
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
@@ -360,6 +363,7 @@ class CodeMetricsCollector:
                     "--include=*.hpp", "--include=*.cc", "--include=*.cmake",
                     "--include=CMakeLists.txt", "--include=*.sh",
                     pattern, repo_path,
+                    env=environment_without_github_credentials(),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
@@ -381,6 +385,7 @@ class CodeMetricsCollector:
                 proc = await asyncio.create_subprocess_exec(
                     "find", module_path, "-name", "*.py", "-o", "-name", "*.cpp", "-o", "-name", "*.h",
                     "-o", "-name", "*.hpp", "-o", "-name", "*.cc",
+                    env=environment_without_github_credentials(),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )

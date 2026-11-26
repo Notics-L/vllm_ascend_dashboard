@@ -10,8 +10,9 @@ from typing import Any
 
 import httpx
 
-from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.clients.github_http import GITHUB_API_URL, GitHubAsyncClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import GitHubCredential, global_github_credential
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class GitHubClient:
     - 请求日志记录
     """
 
-    BASE_URL = "https://api.github.com"
+    BASE_URL = GITHUB_API_URL
     API_VERSION = "2022-11-28"
 
     # 速率限制阈值（保留 10% 的余量）
@@ -57,7 +58,10 @@ class GitHubClient:
     RATE_LIMIT_MAX_WAIT_PER_LOOP = 3700  # 单次等待上限（秒），略小于重置窗口 1h，防止异常挂死
     RATE_LIMIT_WAIT_LOOPS = 12  # 最多续等次数（累计上限 12 个重置窗口 ≈ 12h，覆盖全量同步 ~10h）
 
-    def __init__(self, token: str, owner: str | None = None, repo: str | None = None):
+    def __init__(
+        self, token: str | None = None, owner: str | None = None, repo: str | None = None,
+        *, credential: GitHubCredential | None = None,
+    ):
         """
         初始化 GitHub 客户端
 
@@ -66,7 +70,7 @@ class GitHubClient:
             owner: GitHub 组织名
             repo: 仓库名
         """
-        self.token = token
+        self._credential = credential if credential is not None else global_github_credential(token)
         self.owner = owner or settings.GITHUB_OWNER or "vllm-project"
         self.repo = repo or settings.GITHUB_REPO or "vllm-ascend"
 
@@ -87,18 +91,17 @@ class GitHubClient:
     def _create_http_client(self) -> httpx.AsyncClient:
         return GitHubAsyncClient(
             audit_source="github_client",
-            credential_source="global",
+            credential=self._credential,
             base_url=self.BASE_URL,
             headers=self._get_headers(),
             timeout=httpx.Timeout(30.0, connect=10.0, read=60.0, write=30.0),
             follow_redirects=True,
             limits=httpx.Limits(max_keepalive_connections=50, max_connections=100),
-            verify=not settings.DEBUG,
         )
 
     async def _fallback_to_anonymous(self) -> bool:
         """本地开发环境下，Token 失效时降级为匿名访问公开仓库。"""
-        if not settings.DEBUG or not self.token or self._anonymous_fallback_done:
+        if not settings.DEBUG or not self._credential or self._anonymous_fallback_done:
             return False
         logger.warning(
             "GitHub token is invalid; falling back to unauthenticated public API "
@@ -107,7 +110,7 @@ class GitHubClient:
             self.repo,
         )
         self._anonymous_fallback_done = True
-        self.token = ""
+        self._credential = global_github_credential("")
         # 401 响应可能带有 X-RateLimit-Remaining: 0，重置状态避免匿名请求继续等待。
         self.rate_limit_remaining = 60
         self.rate_limit_reset = None
@@ -121,14 +124,11 @@ class GitHubClient:
 
     def _get_headers(self) -> dict[str, str]:
         """获取请求头"""
-        headers = {
+        return {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": self.API_VERSION,
             "User-Agent": f"vllm-ascend-dashboard/{self.API_VERSION}",
         }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        return headers
 
     async def _request(
         self,
@@ -186,7 +186,7 @@ class GitHubClient:
                     # 检查是否是速率限制
                     remaining = response.headers.get("X-RateLimit-Remaining")
                     if remaining == "0":
-                        if not self.token:
+                        if not self._credential:
                             # 匿名访问不等待重置，避免本地开发请求长时间挂起。
                             raise GitHubRateLimitError(
                                 "GitHub anonymous API rate limit exceeded; "
@@ -228,7 +228,7 @@ class GitHubClient:
 
             except httpx.HTTPStatusError as e:
                 last_error = e
-                logger.warning(f"HTTP error: {e.response.status_code} - {e.response.text}")
+                logger.warning("GitHub API returned HTTP %s", e.response.status_code)
 
                 # 4xx 错误不重试
                 if 400 <= e.response.status_code < 500:
@@ -529,10 +529,9 @@ class GitHubClient:
         # 注意：下载 URL 不是 GitHub API，所以不能使用 self.client
         async with GitHubAsyncClient(
             audit_source="github_client",
-            credential_source="global",
+            credential=self._credential,
             follow_redirects=True,
             timeout=httpx.Timeout(60.0),
-            headers={"Authorization": f"Bearer {self.token}"} if self.token else {}
         ) as download_client:
             response = await download_client.get(download_url)
             response.raise_for_status()

@@ -12,7 +12,11 @@ from daily_pipeline.recommendation_events import note_recommendation_round
 from daily_pipeline.source_recommendation import begin_recommendation_round
 from infrastructure.clients.daily_pipeline_config import dispatch_daily_workflow
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, start_collection
-from infrastructure.core.security import decrypt_api_key
+from infrastructure.core.github_audit import (
+    GITHUB_AUDIT_UNAVAILABLE_MESSAGE,
+    GitHubAuditUnavailable,
+)
+from infrastructure.core.github_credentials import daily_github_credential
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.daily_pipeline_cases import DailyCaseRepository
 from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
@@ -35,7 +39,7 @@ async def trigger_daily_pipeline(
     settings = await read_settings(db, "repository", "source_branch", "github_token")
     repository = settings.get("repository") or ""
     branch = settings.get("source_branch") or ""
-    token = decrypt_api_key(settings.get("github_token") or "")
+    credential = daily_github_credential(settings)
     rows = await DailyCaseRepository(db).list_cases(is_daily=True)
     failure_times = await active_daily_failure_times(db)
     enabled_rows = [row for row in rows if row.enabled and not is_case_fault_blocked(row, failure_times)]
@@ -59,11 +63,10 @@ async def trigger_daily_pipeline(
     result = "触发成功"
     error = None
     try:
-        if not (repository and branch and token):
+        if not (repository and branch and credential):
             raise ValueError("请先保存 GitHub Token 并配置目标仓库和分支")
-        if not token.isascii() or not token.isprintable() or any(ch.isspace() for ch in token):
-            raise ValueError("GitHub Token 格式无效")
-        run_id = await dispatch_daily_workflow(repository, branch, token, cases)
+        credential.validate()
+        run_id = await dispatch_daily_workflow(repository, branch, credential, cases)
     except httpx.HTTPStatusError as exc:
         messages = {
             401: "GitHub Token 无效或已过期",
@@ -75,6 +78,8 @@ async def trigger_daily_pipeline(
         error = messages.get(exc.response.status_code, "GitHub 触发服务响应异常")
     except httpx.RequestError:
         error = "GitHub 触发请求未正常完成，请检查 GitHub 运行记录"
+    except GitHubAuditUnavailable:
+        error = GITHUB_AUDIT_UNAVAILABLE_MESSAGE
     except ValueError as exc:
         error = str(exc)
     if error:

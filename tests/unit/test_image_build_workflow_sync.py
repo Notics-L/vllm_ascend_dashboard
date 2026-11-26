@@ -8,6 +8,8 @@ import httpx
 import pytest
 
 from image_build import workflow_sync
+from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.core.github_credentials import GitHubCredential
 
 TEST_REPOSITORY = "example/builds"
 OTHER_REPOSITORY = "example/other-builds"
@@ -270,10 +272,10 @@ async def test_sync_uses_current_repository_environments_for_every_branch(monkey
 
 
 @pytest.mark.asyncio
-async def test_sync_reads_configured_repository_on_every_run(monkeypatch):
+async def test_sync_reads_configured_repository_on_every_run(monkeypatch, github_audit_records):
     store = DefinitionStore()
     monkeypatch.setattr(workflow_sync, "SessionLocal", store)
-    monkeypatch.setattr(workflow_sync, "get_github_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(workflow_sync, "get_github_credential", AsyncMock(return_value=GitHubCredential("actions", "token")))
 
     @asynccontextmanager
     async def lock():
@@ -296,7 +298,7 @@ async def test_sync_reads_configured_repository_on_every_run(monkeypatch):
         return file_response(source)
 
     def github_client(**kwargs):
-        return httpx.AsyncClient(transport=httpx.MockTransport(transport), base_url=kwargs["base_url"])
+        return GitHubAsyncClient(transport=httpx.MockTransport(transport), **kwargs)
 
     monkeypatch.setattr(workflow_sync, "GitHubAsyncClient", github_client)
     sync = workflow_sync.ImageBuildWorkflowSync()

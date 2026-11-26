@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from infrastructure.clients.git_mirror import GitMirrorRepository
+from infrastructure.clients.github_http import github_git_environment
 from infrastructure.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class GitHubLocalCache:
 
     def _get_git_env(self) -> dict:
         """获取 git 命令的环境变量，包括代理配置"""
-        env = os.environ.copy()
+        env = github_git_environment()
 
         # 尝试从 git config 读取代理配置
         try:
@@ -828,6 +829,7 @@ class GitHubLocalCache:
                 check=True,
                 capture_output=True,
                 timeout=60,
+                env=self._get_git_env(),
             )
 
             result = subprocess.run(

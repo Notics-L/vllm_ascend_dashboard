@@ -797,7 +797,7 @@ async def trigger_collection(
         from infrastructure.clients.github_client import GitHubClient
         from infrastructure.core.config import settings
 
-        client = GitHubClient(token=settings.GITHUB_TOKEN)
+        client = GitHubClient()
         # 尝试触发 code-metrics workflow
         url = f"/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/workflows/code-metrics.yml/dispatches"
         payload = {"ref": branch, "inputs": {"branch": branch, "tag": tag}}

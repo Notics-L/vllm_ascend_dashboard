@@ -14,7 +14,7 @@ from infrastructure.persistence.models import (
     UpstreamTestIssue,
     UpstreamTestSnapshot,
 )
-from upstream_test.collector import UpstreamTestCollector
+from upstream_test.collector import UpstreamTestCollector, UpstreamTestUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -46,22 +46,22 @@ class UpstreamTestService:
         collector = UpstreamTestCollector()
         try:
             payload = await collector.collect(
-                ci_token=getattr(settings, "GITHUB_TOKEN", "") or "",
                 ci_owner=getattr(settings, "UPSTREAM_TEST_CI_OWNER", "vllm-project"),
                 ci_repo=getattr(settings, "UPSTREAM_TEST_CI_REPO", "vllm-ascend"),
                 ci_workflow_id=getattr(settings, "UPSTREAM_TEST_CI_WORKFLOW_ID", None) or None,
             )
         except Exception as exc:  # noqa: BLE001 - 记录失败快照而非静默
-            logger.error("Upstream test sync failed: %s", exc, exc_info=True)
+            logger.error("Upstream test sync failed (%s)", type(exc).__name__)
+            error = str(exc) if isinstance(exc, UpstreamTestUnavailable) else "上游测试同步失败，请查看服务端日志"
             snapshot = UpstreamTestSnapshot(
                 fetched_at=datetime.now(UTC),
                 source_repo="vllm-ascend/upstream-test",
                 status="failed",
-                error_message=str(exc)[:4000],
+                error_message=error,
             )
             self.db.add(snapshot)
             await self.db.commit()
-            return {"success": False, "error": str(exc), "snapshot_id": snapshot.id}
+            return {"success": False, "error": error, "snapshot_id": snapshot.id}
 
         snapshot = UpstreamTestSnapshot(
             fetched_at=payload["fetched_at"],

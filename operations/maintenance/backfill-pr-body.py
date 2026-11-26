@@ -28,7 +28,8 @@ sys.path.insert(0, str(repository_root / "backend"))
 
 from sqlalchemy import select
 
-from infrastructure.core.config import settings
+from infrastructure.core.github_audit import github_audit_writer, github_feature
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.models import PullRequest
 from infrastructure.clients.github_client import GitHubClient
@@ -55,19 +56,14 @@ async def backfill(limit: int | None = None, dry_run: bool = False) -> dict:
     Returns:
         统计字典 {scanned, missing_body, backfilled, failed, skipped}
     """
-    gh = GitHubClient(
-        token=settings.GITHUB_TOKEN,
-        owner=settings.GITHUB_OWNER,
-        repo=settings.GITHUB_REPO,
-    ) if settings.GITHUB_TOKEN else None
-    if not gh:
+    if not global_github_configured():
         raise RuntimeError("GITHUB_TOKEN 未配置，无法调用 GitHub API")
 
     stmt = select(PullRequest).order_by(PullRequest.created_at.desc())
     if limit:
         stmt = stmt.limit(limit)
 
-    async with SessionLocal() as db:
+    async with GitHubClient() as gh, SessionLocal() as db:
         prs = list((await db.execute(stmt)).scalars().all())
         stats = {"scanned": len(prs), "missing_body": 0, "backfilled": 0, "failed": 0, "skipped": 0}
 
@@ -107,13 +103,22 @@ async def backfill(limit: int | None = None, dry_run: bool = False) -> dict:
     return stats
 
 
+async def run_backfill(limit: int | None, dry_run: bool) -> dict:
+    feature = github_feature.set("backfill_pr_body")
+    try:
+        async with github_audit_writer("maintenance"):
+            return await backfill(limit=limit, dry_run=dry_run)
+    finally:
+        github_feature.reset(feature)
+
+
 def main():
     parser = argparse.ArgumentParser(description="回填历史 PR 的 body 字段")
     parser.add_argument("--limit", type=int, default=None, help="只处理前 N 个 PR")
     parser.add_argument("--dry-run", action="store_true", help="仅检查不写入")
     args = parser.parse_args()
 
-    stats = asyncio.run(backfill(limit=args.limit, dry_run=args.dry_run))
+    stats = asyncio.run(run_backfill(limit=args.limit, dry_run=args.dry_run))
     print(f"\n回填统计: {stats}")
 
 

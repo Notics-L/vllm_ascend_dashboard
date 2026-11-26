@@ -1,17 +1,14 @@
 """Create Daily revert PRs from branches with DCO-signed commits."""
 
 import asyncio
-import base64
-import os
 import re
 import subprocess
 import tempfile
-from contextlib import nullcontext
 
 import httpx
 
 from infrastructure.clients.daily_pipeline_collection import DailyCollectionClient
-from infrastructure.clients.github_http import audit_github_git
+from infrastructure.clients.github_http import run_github_git
 
 
 class RevertError(Exception):
@@ -24,10 +21,6 @@ class RetryableRevertError(RevertError):
 
 class DailyRevertClient(DailyCollectionClient):
     audit_source = "daily_revert"
-
-    def __init__(self, repository: str, token: str):
-        super().__init__(repository, token)
-        self._token = token
 
     async def _json(self, method, path, **kwargs):
         try:
@@ -150,52 +143,16 @@ class DailyRevertClient(DailyCollectionClient):
         raise RevertError("无法确认原 PR 对应的合入提交范围，请人工回退")
 
     def _prepare_signed_branch(self, original, branch, name, email):
-        auth = base64.b64encode(f"x-access-token:{self._token}".encode()).decode()
-        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        env.update(
-            {
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-                "GIT_CONFIG_VALUE_0": f"Authorization: Basic {auth}",
-                "LC_ALL": "C",
-            }
-        )
         url = f"https://github.com/{self.repository}.git"
         ref = f"refs/heads/{branch}"
         base_ref = f"refs/heads/{original['base']['ref']}"
         with tempfile.TemporaryDirectory(prefix="daily-revert-") as repo:
 
             def git(*args, stdin=None):
-                audit = (
-                    audit_github_git(
-                        self.audit_source, self.repository, self._token, args[0], credential_source="daily",
-                    )
-                    if args[0] in {"fetch", "ls-remote", "push"} else nullcontext()
+                return run_github_git(
+                    self._credential, self.repository, *args, audit_source=self.audit_source,
+                    cwd=repo, name=name, email=email, stdin=stdin,
                 )
-                with audit:
-                    return subprocess.run(
-                        [
-                            "git",
-                            "-c",
-                            "credential.helper=",
-                            "-c",
-                            "http.followRedirects=false",
-                            "-c",
-                            f"user.name={name}",
-                            "-c",
-                            f"user.email={email}",
-                            *args,
-                        ],
-                        cwd=repo,
-                        env=env,
-                        input=stdin,
-                        encoding="utf-8",
-                        errors="replace",
-                        capture_output=True,
-                        check=True,
-                        timeout=120,
-                    ).stdout
 
             try:
                 git("init", "--template=")

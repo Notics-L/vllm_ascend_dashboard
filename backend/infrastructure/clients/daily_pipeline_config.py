@@ -4,6 +4,7 @@ import json
 import httpx
 
 from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.core.github_credentials import GitHubCredential
 
 
 async def read_nightly_config(repository: str, branch: str, path: str) -> str:
@@ -13,11 +14,10 @@ async def read_nightly_config(repository: str, branch: str, path: str) -> str:
         return response.text
 
 
-async def check_trigger_permission(repository: str, token: str) -> tuple[bool, str]:
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+async def check_trigger_permission(repository: str, credential: GitHubCredential) -> tuple[bool, str]:
+    headers = {"Accept": "application/vnd.github+json"}
     async with GitHubAsyncClient(
-        audit_source="daily_config", credential_source="daily",
-        base_url="https://api.github.com", headers=headers, timeout=10,
+        audit_source="daily_config", credential=credential, headers=headers, timeout=10,
     ) as client:
         repo = await client.get(f"/repos/{repository}")
         repo.raise_for_status()
@@ -30,7 +30,7 @@ async def check_trigger_permission(repository: str, token: str) -> tuple[bool, s
     if push is False:
         return False, "当前账号没有目标仓库的写入权限"
     scopes = repo.headers.get("X-OAuth-Scopes")
-    if scopes is None or token.startswith("github_pat_"):
+    if scopes is None or credential.fine_grained:
         return False, "工作流可访问，无法通过只读查询确认 Token 的 Actions 写权限"
     if "repo" not in {scope.strip() for scope in scopes.split(",")}:
         return False, "Token 缺少触发工作流所需的 repo 授权"
@@ -39,15 +39,15 @@ async def check_trigger_permission(repository: str, token: str) -> tuple[bool, s
     return True, "已确认 Token 具备目标工作流的触发权限"
 
 
-async def dispatch_daily_workflow(repository: str, branch: str, token: str, cases: dict[str, list[str]]) -> int:
+async def dispatch_daily_workflow(
+    repository: str, branch: str, credential: GitHubCredential, cases: dict[str, list[str]],
+) -> int:
     headers = {
-        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2026-03-10",
     }
     async with GitHubAsyncClient(
-        audit_source="daily_config", credential_source="daily",
-        base_url="https://api.github.com", headers=headers, timeout=30,
+        audit_source="daily_config", credential=credential, headers=headers, timeout=30,
     ) as client:
         response = await client.post(
             f"/repos/{repository}/actions/workflows/schedule_daily_test.yaml/dispatches",

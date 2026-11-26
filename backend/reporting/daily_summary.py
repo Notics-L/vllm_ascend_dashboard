@@ -78,7 +78,7 @@ class DailySummaryService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.github_client = GitHubClient(token=settings.GITHUB_TOKEN)
+        self.github_client = GitHubClient()
         self.file_store = DailyDataFileStore()
 
     async def refresh_pr_issue_status(

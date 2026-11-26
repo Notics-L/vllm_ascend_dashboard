@@ -12,6 +12,7 @@ from starlette.responses import StreamingResponse
 from api.deps import CurrentUser, DbSession
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     LLMProviderConfig,
     ReleaseAIEvaluation,
@@ -34,11 +35,9 @@ router = APIRouter()
 # ==================== Dependency Factories ====================
 
 async def get_github_client() -> GitHubClient:
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         raise HTTPException(400, "GitHub Token 未配置")
     return GitHubClient(
-        token=token,
         owner=settings.GITHUB_OWNER or "vllm-project",
         repo=settings.GITHUB_REPO or "vllm-ascend",
     )
@@ -68,11 +67,9 @@ async def get_report_generator() -> ReportGenerator:
 
 
 def _make_github() -> GitHubClient:
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         raise HTTPException(400, "GitHub Token 未配置")
     return GitHubClient(
-        token=token,
         owner=settings.GITHUB_OWNER or "vllm-project",
         repo=settings.GITHUB_REPO or "vllm-ascend",
     )
@@ -83,7 +80,7 @@ def _make_github() -> GitHubClient:
 @router.get("/release-management/config-check")
 async def check_config(db: DbSession):
     result = {
-        "github_configured": bool(settings.GITHUB_TOKEN),
+        "github_configured": global_github_configured(),
         "github_owner": settings.GITHUB_OWNER or "vllm-project",
         "github_repo": settings.GITHUB_REPO or "vllm-ascend",
         "llm_configured": False,
@@ -129,11 +126,9 @@ async def discover_workflows(
     owner: str = Query(default="vllm-project"),
     repo: str = Query(default="vllm-ascend"),
 ):
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         raise HTTPException(400, "GitHub Token 未配置")
     svc = ReleaseManagementService(db, GitHubClient(
-        token=token,
         owner=owner,
         repo=repo,
     ))
@@ -217,7 +212,6 @@ async def _run_sync_task(task_id: int, workflow_id: int, days_back: int, max_run
                 return
 
             github = GitHubClient(
-                token=settings.GITHUB_TOKEN or "",
                 owner=wf.repo_owner,
                 repo=wf.repo_name,
             )
@@ -271,8 +265,7 @@ async def trigger_sync(
 ):
     """触发异步同步任务 - 支持 全量/增量/范围 三种模式"""
     import asyncio
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         raise HTTPException(400, "GitHub Token 未配置")
 
     # 检查是否有 running/pending 任务
@@ -317,8 +310,7 @@ async def retry_sync(
 ):
     """根据历史记录重试同步"""
     import asyncio
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         raise HTTPException(400, "GitHub Token 未配置")
 
     old_task = await db.get(ReleaseAnalysisTask, task_id)

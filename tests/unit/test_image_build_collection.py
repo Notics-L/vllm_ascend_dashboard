@@ -12,6 +12,7 @@ import httpx
 
 from image_build import collection
 from image_build import collection_source as source
+from infrastructure.core.github_credentials import GitHubCredential
 
 RUN_ID = 45670572975
 REPOSITORY = "vllm-project/vllm-ascend"
@@ -140,7 +141,7 @@ class FailedJobRerunTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(source, "github_client", client_factory),
-            patch.object(collection, "get_github_token", AsyncMock(return_value="test-token")),
+            patch.object(collection, "get_github_credential", AsyncMock(return_value=GitHubCredential("actions", "test-token"))),
             patch.object(collection, "_update_snapshot", AsyncMock(return_value=True)) as claim,
         ):
             self.assertEqual(await collection.rerun_failed_jobs(db, RUN_ID, "test"), "unknown")

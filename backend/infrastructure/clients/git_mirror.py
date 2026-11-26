@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
 import threading
 from pathlib import Path
+
+from infrastructure.clients.github_http import github_git_environment
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class GitMirrorRepository:
 
     @staticmethod
     def _env() -> dict[str, str]:
-        return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        return github_git_environment()
 
     def _run(
         self,

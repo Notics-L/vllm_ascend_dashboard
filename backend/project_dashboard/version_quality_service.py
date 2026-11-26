@@ -6,7 +6,6 @@
 """
 import html
 import logging
-import os
 import re
 import time
 from datetime import UTC, datetime, timedelta
@@ -21,6 +20,7 @@ from infrastructure.clients.github_cache import get_github_cache
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.clients.llm_client import LLMClient, LLMResult
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_credential
 from infrastructure.persistence.models import CIResult, ProjectDashboardConfig
 from infrastructure.persistence.models.daily_summary import LLMProviderConfig
 from infrastructure.storage.version_quality_file_store import VersionQualityFileStore
@@ -307,13 +307,13 @@ class VersionQualityService:
     async def _collect_github_data(self) -> dict:
         """通过 GitHub API 采集 issues/PRs/repo stats"""
         result: dict[str, Any] = {}
-        token = os.environ.get("GITHUB_TOKEN", "") or settings.GITHUB_TOKEN
-        if not token:
+        credential = global_github_credential(prefer_environment=True)
+        if not credential:
             logger.warning("VersionQualityService: GITHUB_TOKEN not set, skipping GitHub API data")
             return result
 
         client = GitHubClient(
-            token=token,
+            credential=credential,
             owner=settings.GITHUB_OWNER,
             repo=settings.GITHUB_REPO,
         )

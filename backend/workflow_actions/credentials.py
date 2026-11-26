@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import GitHubCredential
 from infrastructure.persistence.models import ProjectDashboardConfig
 
 CREDENTIAL_CONFIG_KEY = "workflow_actions_github_token"
@@ -80,13 +81,13 @@ async def save_github_token(db: AsyncSession, token: str, username: str) -> None
     await db.commit()
 
 
-async def get_github_token(db: AsyncSession) -> str:
+async def get_github_credential(db: AsyncSession) -> GitHubCredential:
     row = await _get_row(db)
     config = dict(row.config_value) if row and row.config_value else {}
     ciphertext = config.get("token_encrypted")
     if not isinstance(ciphertext, str) or not ciphertext:
         raise ValueError("未配置 Actions 专用 GitHub Token")
-    return decrypt_token(ciphertext)
+    return GitHubCredential("actions", decrypt_token(ciphertext))
 
 
 async def clear_github_token(db: AsyncSession, username: str) -> None:

@@ -28,7 +28,7 @@ class PRDiagnosisService:
     def _get_github_client(self):
         if self._github_client is None:
             from infrastructure.clients.github_client import GitHubClient
-            self._github_client = GitHubClient(token=settings.GITHUB_TOKEN)
+            self._github_client = GitHubClient()
         return self._github_client
 
     async def diagnose(self, pr_number: int) -> dict:

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.clients.github_client import GitHubClient
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.persistence.models import (
     ImageBuildAlert,
     ImageBuildMonitorTarget,
@@ -400,11 +401,10 @@ class ImageBuildMonitorService:
             for group in groups
             if str(group.status or "").lower() in FAILED_STATUSES
         ]
-        if failed or not allow_remote or not run.github_run_id or not settings.GITHUB_TOKEN:
+        if failed or not allow_remote or not run.github_run_id or not global_github_configured():
             return failed
 
         client = GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=wf.repo_owner,
             repo=wf.repo_name,
         )
@@ -784,7 +784,6 @@ class ImageBuildMonitorService:
     async def _sync_recent_runs(self, wf: ReleaseWorkflow, days_back: int = 2) -> int:
         """通过真实 GitHub API 拉取目标 workflow 最近运行并落库。"""
         client = GitHubClient(
-            token=settings.GITHUB_TOKEN,
             owner=wf.repo_owner,
             repo=wf.repo_name,
         )

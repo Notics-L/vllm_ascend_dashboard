@@ -25,7 +25,7 @@ from contracts.schemas.test_board import (
     TestOverviewResponse,
 )
 from infrastructure.clients.github_client import GitHubClient
-from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.models import User
 from infrastructure.persistence.models.test_board import TestCase
@@ -44,10 +44,8 @@ async def get_db():
 
 def get_github():
     return (
-        GitHubClient(
-            token=settings.GITHUB_TOKEN, owner=settings.GITHUB_OWNER, repo=settings.GITHUB_REPO
-        )
-        if settings.GITHUB_TOKEN
+        GitHubClient()
+        if global_github_configured()
         else None
     )
 

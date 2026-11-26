@@ -39,6 +39,7 @@ from infrastructure.clients.github_client import (
     GitHubRateLimitError,
 )
 from infrastructure.core.config import settings
+from infrastructure.core.github_credentials import global_github_configured
 from infrastructure.db.base import SessionLocal as AsyncSessionLocal
 from infrastructure.persistence.models import (
     Contributor,
@@ -1439,8 +1440,7 @@ async def sync_contributors(
     """执行贡献者数据同步的主入口（多仓库，并行）。"""
     import asyncio
 
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         logger.warning("GITHUB_TOKEN is not configured, skipping contributor sync")
         return SyncResult(errors=["GITHUB_TOKEN not configured"])
 
@@ -1470,7 +1470,7 @@ async def sync_contributors(
         logger.info("=== Starting sync for repo: %s ===", repo_key)
         result = SyncResult(errors=[f"Repo {repo_key}: skipped"])
         try:
-            async with GitHubClient(token=token, owner=owner, repo=repo) as github_client:
+            async with GitHubClient(owner=owner, repo=repo) as github_client:
                 github_client.cancel_check_func = cancel_check_func
                 async with AsyncSessionLocal() as db:
                     async def repo_progress(pct: int, msg: str):
@@ -1680,8 +1680,7 @@ async def backfill_daily_data(
       (checkpoint_kind='daily_backfill')，cancel / 限流 / 崩溃后可断点续跑
     """
 
-    token = settings.GITHUB_TOKEN
-    if not token:
+    if not global_github_configured():
         logger.warning("GITHUB_TOKEN is not configured, skipping daily backfill")
         return SyncResult(errors=["GITHUB_TOKEN not configured"])
 
@@ -1790,7 +1789,7 @@ async def backfill_daily_data(
     async def _backfill_single(owner: str, repo: str) -> SyncResult:
         repo_key = f"{owner}/{repo}"
         result = SyncResult()
-        async with GitHubClient(token=token, owner=owner, repo=repo) as github:
+        async with GitHubClient(owner=owner, repo=repo) as github:
             async with AsyncSessionLocal() as db:
                 collector = ContributorSyncCollector(
                     github, db, progress_callback=None, cancel_check_func=cancel_check_func,

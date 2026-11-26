@@ -1,8 +1,6 @@
 """上游测试结果采集。
 
-数据来自公共 GitHub 仓库 ``vllm-ascend/upstream-test``，仓库里只有 CSV 文件，
-因此不需要 GitHub token（匿名读取 raw 内容即可）。匿名速率限制只影响 API 调用，
-raw.githubusercontent.com 不占用 API 配额。
+公共 CSV 使用匿名请求。CI 和文件树统计通过受审计的 GitHub 客户端读取。
 
 仓库结构::
 
@@ -26,12 +24,15 @@ from typing import Any
 
 import httpx
 
+from infrastructure.clients.github_http import GitHubAsyncClient
+from infrastructure.core.github_credentials import GitHubCredential, global_github_credential
+
 logger = logging.getLogger(__name__)
 
 SOURCE_REPO = "vllm-ascend/upstream-test"
 SOURCE_BRANCH = "main"
 RAW_BASE = f"https://raw.githubusercontent.com/{SOURCE_REPO}/{SOURCE_BRANCH}"
-API_BASE = f"https://api.github.com/repos/{SOURCE_REPO}"
+AUDIT_SOURCE = "upstream_test"
 
 # E2E-upstream workflow（上游用例的 CI 执行入口）
 DEFAULT_CI_OWNER = "vllm-project"
@@ -220,6 +221,20 @@ def _failure_reasons(rows: list[dict[str, Any]], limit: int = 8) -> list[dict[st
     return [{"reason": reason, "count": count} for reason, count in ordered[:limit]]
 
 
+class UpstreamTestUnavailable(RuntimeError):
+    """A collection error safe to show in the dashboard."""
+
+
+def _request_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"GitHub 返回 HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "GitHub 请求超时"
+    if isinstance(exc, httpx.RequestError):
+        return "GitHub 请求失败"
+    return "无法处理 GitHub 数据"
+
+
 class UpstreamTestCollector:
     """从 upstream-test 仓库抓取并汇总上游测试结果。"""
 
@@ -231,8 +246,10 @@ class UpstreamTestCollector:
         self._timeout = timeout
         self._transport = transport
 
-    async def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
+    def _client(self, credential: GitHubCredential) -> GitHubAsyncClient:
+        return GitHubAsyncClient(
+            audit_source=AUDIT_SOURCE,
+            credential=credential,
             timeout=self._timeout,
             transport=self._transport,
             headers={"Accept": "application/vnd.github+json"},
@@ -245,7 +262,6 @@ class UpstreamTestCollector:
         url: str,
         *,
         params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
         attempts: int = 5,
     ) -> httpx.Response:
         """带重试的 GET。
@@ -256,7 +272,7 @@ class UpstreamTestCollector:
         last_exc: Exception | None = None
         for attempt in range(attempts):
             try:
-                response = await client.get(url, params=params, headers=headers)
+                response = await client.get(url, params=params)
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError:
@@ -271,7 +287,7 @@ class UpstreamTestCollector:
 
     async def _list_dir(self, client: httpx.AsyncClient, path: str) -> list[str]:
         response = await self._get(
-            client, f"{API_BASE}/contents/{path}", params={"ref": SOURCE_BRANCH}
+            client, f"/repos/{SOURCE_REPO}/contents/{path}", params={"ref": SOURCE_BRANCH}
         )
         payload = response.json()
         if not isinstance(payload, list):
@@ -287,7 +303,6 @@ class UpstreamTestCollector:
         client: httpx.AsyncClient,
         *,
         version: str | None,
-        token: str = "",
         owner: str = UPSTREAM_TEST_OWNER,
         repo: str = UPSTREAM_TEST_REPO,
     ) -> dict[str, Any]:
@@ -302,24 +317,19 @@ class UpstreamTestCollector:
         用 Git Trees API 一次性递归取全量文件列表（v0.33.0 约 9600 个条目，未截断），
         比逐个目录遍历省请求。该接口消耗 API 额度，失败只降级为"未统计"。
         """
-        headers = {"Accept": "application/vnd.github+json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
         refs = [ref for ref in (version, UPSTREAM_TEST_DEFAULT_REF) if ref]
         last_error: str | None = None
         for ref in refs:
             try:
                 response = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}",
+                    f"/repos/{owner}/{repo}/git/trees/{ref}",
                     params={"recursive": "1"},
-                    headers=headers,
                 )
                 response.raise_for_status()
                 payload = response.json()
             except Exception as exc:  # noqa: BLE001 - 总用例数是辅助指标
-                last_error = f"{ref}: {exc}"
-                logger.warning("Failed to count upstream tests at %s: %s", ref, exc)
+                last_error = _request_error(exc)
+                logger.warning("Failed to count upstream tests: %s", last_error)
                 continue
 
             tree = payload.get("tree") or []
@@ -352,7 +362,6 @@ class UpstreamTestCollector:
         self,
         client: httpx.AsyncClient,
         *,
-        token: str = "",
         owner: str = DEFAULT_CI_OWNER,
         repo: str = DEFAULT_CI_REPO,
         workflow_id_override: int | None = None,
@@ -362,10 +371,6 @@ class UpstreamTestCollector:
         未配置 token 时 GitHub API 匿名额度有限，失败不影响主体数据，只返回
         ``available=False``。
         """
-        headers = {"Accept": "application/vnd.github+json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
         # 仓库 workflow 数量远超一页（40000+ runs），全局 runs 列表里几乎
         # 看不到 E2E-upstream。按 workflow id 查询最稳，id 来自仓库
         # .github/workflows/e2e-upstream.yaml，可用环境变量覆盖。
@@ -373,9 +378,8 @@ class UpstreamTestCollector:
         if workflow_id is None:
             try:
                 listing = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/actions/workflows",
+                    f"/repos/{owner}/{repo}/actions/workflows",
                     params={"per_page": 100},
-                    headers=headers,
                 )
                 listing.raise_for_status()
                 for item in (listing.json() or {}).get("workflows") or []:
@@ -383,22 +387,24 @@ class UpstreamTestCollector:
                         workflow_id = item.get("id")
                         break
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to resolve workflow id: %s", exc)
+                reason = _request_error(exc)
+                logger.warning("Failed to resolve workflow id: %s", reason)
+                return {"available": False, "reason": reason}
 
         if workflow_id is None:
             return {"available": False, "reason": "未找到 E2E-upstream workflow id"}
 
         try:
             runs_resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+                f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
                 params={"per_page": 50},
-                headers=headers,
             )
             runs_resp.raise_for_status()
             runs = (runs_resp.json() or {}).get("workflow_runs") or []
         except Exception as exc:  # noqa: BLE001 - CI 数据是附属信息
-            logger.warning("Failed to list E2E-upstream runs: %s", exc)
-            return {"available": False, "reason": str(exc), "workflow_id": workflow_id}
+            reason = _request_error(exc)
+            logger.warning("Failed to list E2E-upstream runs: %s", reason)
+            return {"available": False, "reason": reason, "workflow_id": workflow_id}
 
         workflow_name = "E2E-upstream"
         workflow_path = f".github/workflows/{DEFAULT_CI_WORKFLOW_FILE}"
@@ -502,7 +508,6 @@ class UpstreamTestCollector:
     async def collect(
         self,
         *,
-        ci_token: str = "",
         ci_owner: str = DEFAULT_CI_OWNER,
         ci_repo: str = DEFAULT_CI_REPO,
         ci_workflow_id: int | None = None,
@@ -518,11 +523,12 @@ class UpstreamTestCollector:
             try:
                 return await coro
             except Exception as exc:  # noqa: BLE001 - 单源降级
-                logger.warning("Upstream test source %s failed: %s", label, exc)
-                warnings.append(f"{label}: {exc}")
+                reason = _request_error(exc)
+                logger.warning("Upstream test source %s failed: %s", label, reason)
+                warnings.append(f"{label}: {reason}")
                 return default
 
-        async with await self._client() as client:
+        async with self._client(global_github_credential("")) as client:
             weekly_names = await safe(self._list_dir(client, "weekly"), "weekly 目录", [])
             local_names = await safe(self._list_dir(client, "local"), "local 目录", [])
 
@@ -564,10 +570,10 @@ class UpstreamTestCollector:
                     continue
                 issues.extend(parse_issue_csv(raw, state))
 
+        async with self._client(global_github_credential()) as client:
             ci_summary = await safe(
                 self.fetch_ci_summary(
                     client,
-                    token=ci_token,
                     owner=ci_owner,
                     repo=ci_repo,
                     workflow_id_override=ci_workflow_id,
@@ -576,19 +582,17 @@ class UpstreamTestCollector:
                 {"available": False, "reason": "获取失败"},
             )
 
-            # 必须在 client 关闭前调用：这里要复用同一个 httpx client
             upstream_tests = await safe(
                 self.count_upstream_tests(
                     client,
                     version=version_file[:-4] if version_file else None,
-                    token=ci_token,
                 ),
                 "上游总用例数",
                 {"available": False, "count": None, "reason": "获取失败"},
             )
 
         if not weekly_cases and not version_cases and not issues:
-            raise RuntimeError(
+            raise UpstreamTestUnavailable(
                 "上游测试数据全部获取失败" + (f"：{'; '.join(warnings)}" if warnings else "")
             )
 

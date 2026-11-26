@@ -15,7 +15,6 @@ from contracts.schemas import (
     ModelSyncConfigUpdate,
 )
 from infrastructure.clients.github_client import GitHubClient
-from infrastructure.core.config import settings
 from infrastructure.persistence.models import ModelSyncConfig
 from model_sync.model_sync_service import ModelSyncService
 
@@ -165,7 +164,7 @@ async def trigger_sync(
         )
 
     # 创建 GitHub 客户端和同步服务
-    github_client = GitHubClient(settings.GITHUB_TOKEN)
+    github_client = GitHubClient()
     sync_service = ModelSyncService(db, github_client)
 
     try:
@@ -187,7 +186,7 @@ async def sync_all_configs(
     current_user: CurrentAdminUser
 ):
     """同步所有启用的配置"""
-    github_client = GitHubClient(settings.GITHUB_TOKEN)
+    github_client = GitHubClient()
     sync_service = ModelSyncService(db, github_client)
 
     try:

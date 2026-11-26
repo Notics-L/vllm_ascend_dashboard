@@ -128,3 +128,5 @@ async def persist_github_runtime_config(
             row.config_value = config
 
         await db.commit()
+        if token:
+            settings.GITHUB_TOKEN = token

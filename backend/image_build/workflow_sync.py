@@ -21,7 +21,7 @@ from infrastructure.clients.github_http import GitHubAsyncClient
 from infrastructure.db.base import SessionLocal
 from infrastructure.db.mysql_lock import mysql_named_lock
 from infrastructure.persistence.models import ImageBuildWorkflowDefinition
-from workflow_actions.credentials import get_github_token
+from workflow_actions.credentials import get_github_credential
 
 WORKFLOW_PATH = ".github/workflows/schedule_nightly_image_build_with_base.yaml"
 
@@ -252,18 +252,16 @@ class ImageBuildWorkflowSync:
             async with SessionLocal() as db:
                 repository = await get_image_build_repository(db)
                 try:
-                    token = await get_github_token(db)
+                    credential = await get_github_credential(db)
                 except ValueError as exc:
                     raise WorkflowSyncCredentialError(str(exc)) from exc
 
             async with GitHubAsyncClient(
                 audit_source="image_build_workflow_sync",
-                credential_source="actions",
-                base_url="https://api.github.com",
+                credential=credential,
                 timeout=httpx.Timeout(15, connect=5),
                 headers={
                     "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {token}",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
             ) as client:
