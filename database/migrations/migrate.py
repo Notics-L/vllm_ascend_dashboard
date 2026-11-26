@@ -180,7 +180,7 @@ async def migrate() -> None:
             f"User count changed during migration: {users_before} -> {users_after}"
         )
     logger.info(
-        "Migration completed; users=%d model_fo=%s permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s notifications=%s",
+        "Migration completed; users=%d model_fo=%s permissions=%s test_board=%s contributor_board=%s enhancements=%s settings=%s commit_count=%s pr_efficiency=%s repo_name=%s sync_checkpoint=%s sync_checkpoint_kind=%s sync_records=%s build_plan_reasoning=%s build_plan_files_changed=%s scoring_version=%s ai_report=%s contributor_refactor=%s release_task=%s release_groups=%s release_tp_url=%s image_build_monitor=%s upstream_test=%s notifications=%s",
         users_after,
         model_fo_result,
         permission_result,
@@ -203,6 +203,7 @@ async def migrate() -> None:
         release_groups_result,
         release_tp_url_result,
         image_build_monitor_result,
+        upstream_test_result,
         notifications_result,
     )
 

@@ -97,6 +97,7 @@ packages = [
     "support_matrix",
     "test_board",
     "tooling",
+    "upstream_test",
     "workflow_actions",
 ]
 
