@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,7 +10,8 @@ from zipfile import ZipFile
 
 import httpx
 
-from image_build import collection, collection_source as source
+from image_build import collection
+from image_build import collection_source as source
 
 RUN_ID = 45670572975
 REPOSITORY = "vllm-project/vllm-ascend"
@@ -157,6 +158,6 @@ class FailedJobRerunTests(unittest.IsolatedAsyncioTestCase):
                 github_status=status, conclusion=conclusion,
                 ended_at=NOW if status == "completed" else None, run_attempt=1, pending_attempt=None,
             )
-            db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (row, None))))
+            db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda row=row: (row, None))))
             with self.subTest(status=status), self.assertRaises(collection.RerunConflict):
                 await collection.rerun_failed_jobs(db, RUN_ID, "test")

@@ -1,4 +1,4 @@
-# Production Dockerfile for vLLM Ascend Dashboard Backend
+﻿# Production Dockerfile for vLLM Ascend Dashboard Backend
 # Multi-stage build for optimized image size
 
 # Stage 1: Install dependencies

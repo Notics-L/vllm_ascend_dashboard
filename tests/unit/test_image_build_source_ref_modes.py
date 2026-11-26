@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from api.v1 import image_build
 from api.v1.image_build import TriggerTaskPayload, _validate_trigger_task, trigger_task
 from daily_pipeline.source_recommendation import SourceRecommendation
-from infrastructure.persistence.models import ImageBuildWorkflowDefinition
 from image_build import trigger
+from infrastructure.persistence.models import ImageBuildWorkflowDefinition
 
 
 @pytest.mark.asyncio

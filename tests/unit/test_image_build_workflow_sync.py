@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+
 from image_build import workflow_sync
 
 TEST_REPOSITORY = "example/builds"

@@ -10,8 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from daily_pipeline import dispatch
-from daily_pipeline import recommendation_events
+from daily_pipeline import dispatch, recommendation_events
 from daily_pipeline import source_recommendation as daily
 from infrastructure.persistence.models import (
     DailyPipelineCollectionNode,
