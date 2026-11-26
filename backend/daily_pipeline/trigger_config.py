@@ -9,7 +9,11 @@ from daily_pipeline.cron import schedule_trigger
 from infrastructure.clients.daily_pipeline_config import check_trigger_permission
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, update_schedule
 from infrastructure.core.security import decrypt_api_key, encrypt_api_key
-from infrastructure.persistence.daily_pipeline_schedules import read_schedule, save_schedule
+from infrastructure.persistence.daily_pipeline_schedules import (
+    delete_schedule,
+    read_schedule,
+    save_schedule,
+)
 from infrastructure.persistence.daily_pipeline_settings import (
     has_setting,
     read_settings,
@@ -42,14 +46,18 @@ async def check_trigger_connection(db: AsyncSession, token: str | None):
     return {"verified": verified, "detail": detail}
 
 
-async def save_trigger_config(db: AsyncSession, cron: str, token: str | None):
+async def save_trigger_config(db: AsyncSession, cron: str | None, token: str | None):
+    cron = (cron or "").strip()
     try:
-        schedule = await read_schedule(db, TRIGGER_TASK)
-        timezone = schedule[1] if schedule else DEFAULT_TIMEZONE
-        schedule_trigger(cron, timezone)
+        if cron:
+            schedule = await read_schedule(db, TRIGGER_TASK)
+            timezone = schedule[1] if schedule else DEFAULT_TIMEZONE
+            schedule_trigger(cron, timezone)
+            await save_schedule(db, TRIGGER_TASK, cron, timezone)
+        else:
+            await delete_schedule(db, TRIGGER_TASK)
         if token:
             await set_setting(db, "github_token", encrypt_api_key(token))
-        await save_schedule(db, TRIGGER_TASK, cron, timezone)
         await db.commit()
     except Exception as exc:
         # Database exceptions can contain the encrypted Token in SQL parameters.

@@ -134,8 +134,8 @@ class TriggerTokenInput(BaseModel):
     githubToken: SecretStr | None = Field(default=None, max_length=4096)
 
 
-class TriggerConfigInput(ScheduleInput, TriggerTokenInput):
-    pass
+class TriggerConfigInput(TriggerTokenInput):
+    cron: Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)] | None
 
 
 @router.post("/trigger-config/test-connection")
