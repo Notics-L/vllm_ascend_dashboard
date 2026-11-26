@@ -10,6 +10,7 @@ ENV_FILE="${DASHBOARD_ENV_FILE:-/etc/vllm-ascend-dashboard/production.env}"
 BACKUP_DIR="${DASHBOARD_BACKUP_DIR:-$PROJECT_ROOT/backups}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 MAX_WAIT=120
+DATABASE_WRITERS=(backend scheduler collector daily-catalog image-build-scheduler)
 DO_PULL=true
 DRY_RUN=false
 RECOVER_FAILED_MIGRATION=false
@@ -213,13 +214,13 @@ wait_for_schema_lock_drain() {
 
 stop_database_writers() {
     step "Stop database writers"
-    compose stop daily-catalog backend scheduler collector || die "failed to stop database writer services"
-    ok "backend, scheduler, collector, and Daily scheduler stopped"
+    compose stop "${DATABASE_WRITERS[@]}" || die "failed to stop database writer services"
+    ok "database writer services stopped"
 }
 
 database_writer_ips() {
     local service container
-    for service in backend scheduler collector daily-catalog; do
+    for service in "${DATABASE_WRITERS[@]}"; do
         container="$(service_container_any "$service")"
         [[ -n "$container" ]] || continue
         docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' "$container"
@@ -312,7 +313,7 @@ recover_failed_migration() {
     (( post_users >= backup_users && post_tables >= backup_tables )) \
         || die "restored database validation failed: users=$post_users/$backup_users tables=$post_tables/$backup_tables"
 
-    compose up -d mysql litellm backend frontend scheduler collector daily-catalog
+    compose up -d mysql litellm frontend "${DATABASE_WRITERS[@]}"
     wait_for_health || die "database restored but services are unhealthy"
     ok "recovery complete: users=$post_users tables=$post_tables"
     get_user_list | sed 's/^/  /'
@@ -455,14 +456,14 @@ fi
 
 step "6/9 Start updated containers"
 if $FAST; then
-    start_services=(backend frontend scheduler collector daily-catalog)
+    start_services=(frontend "${DATABASE_WRITERS[@]}")
     # Most fast deployments leave the proxy untouched.  A changed LiteLLM
     # runtime wrapper/config mount must be recreated once to take effect.
     if $litellm_runtime_changed; then
         start_services=(litellm "${start_services[@]}")
     fi
 else
-    start_services=(mysql litellm backend frontend scheduler collector daily-catalog)
+    start_services=(mysql litellm frontend "${DATABASE_WRITERS[@]}")
 fi
 if ! compose up -d "${start_services[@]}"; then
     die "container startup failed; database was not restored automatically"
@@ -475,6 +476,11 @@ fi
 curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/api/v1/daily-report/latest" >/dev/null 2>&1 \
     && warn "daily report endpoint unexpectedly allowed anonymous access" || true
 ok "frontend, backend, and Daily scheduler containers are healthy"
+if service_is_healthy image-build-scheduler; then
+    ok "image build scheduler is healthy"
+else
+    warn "image build scheduler is not healthy yet; check its container status and logs independently"
+fi
 
 step "8/9 Login and database preservation"
 login_payload="$(DEPLOY_ADMIN_USERNAME="$DEPLOY_ADMIN_USERNAME" DEPLOY_ADMIN_PASSWORD="$DEPLOY_ADMIN_PASSWORD" python3 -c 'import json,os; print(json.dumps({"username":os.environ["DEPLOY_ADMIN_USERNAME"],"password":os.environ["DEPLOY_ADMIN_PASSWORD"]}))')"

@@ -52,6 +52,8 @@ import LogCenter from './pages/LogCenter'
 import ShareReport from './pages/ShareReport'
 import ReleaseManagement from './components/release/ReleaseManagement'
 import BuildRunDetail from './pages/BuildRunDetail'
+import ImageBuild from './pages/ImageBuild'
+import { ImageBuildCollectionDetail } from './pages/ImageBuildCollection'
 import ImageBuildMonitor from './pages/ImageBuildMonitor'
 import UpstreamTest from './pages/UpstreamTest'
 import UpstreamVersionDetail from './pages/upstream-test/VersionDetail'
@@ -230,6 +232,8 @@ function App() {
               <Route index element={<Dashboard />} />
               <Route path="ci" element={<CIBoard />} />
               <Route path="workflow-actions" element={<WorkflowActions />} />
+              <Route path="image-build" element={<ImageBuild />} />
+              <Route path="image-build/collection/runs/:runId" element={<ImageBuildCollectionDetail />} />
               <Route path="image-build-monitor" element={<ImageBuildMonitor />} />
               <Route path="daily-pipeline">
                 <Route index element={<Navigate to="overview" replace />} />

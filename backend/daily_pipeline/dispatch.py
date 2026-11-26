@@ -8,9 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daily_pipeline.cases import HARDWARE, case_view
 from daily_pipeline.history import history_detail
+from daily_pipeline.recommendation_events import note_recommendation_round
+from daily_pipeline.source_recommendation import begin_recommendation_round
 from infrastructure.clients.daily_pipeline_config import dispatch_daily_workflow
 from infrastructure.clients.daily_pipeline_scheduler import SchedulerUpdateError, start_collection
 from infrastructure.core.security import decrypt_api_key
+from infrastructure.db.base import SessionLocal
 from infrastructure.persistence.daily_pipeline_cases import DailyCaseRepository
 from infrastructure.persistence.daily_pipeline_collection import DailyCollectionRepository
 from infrastructure.persistence.daily_pipeline_history import DailyTriggerHistoryRepository
@@ -26,7 +29,9 @@ WORKFLOW = "schedule_daily_test.yaml"
 
 async def trigger_daily_pipeline(
     db: AsyncSession, *, event: Literal["手动触发", "定时触发"] = "手动触发", cron: str | None = None,
+    include_in_recommendation: bool = True,
 ):
+    include_in_recommendation = event == "定时触发" or include_in_recommendation
     settings = await read_settings(db, "repository", "source_branch", "github_token")
     repository = settings.get("repository") or ""
     branch = settings.get("source_branch") or ""
@@ -96,6 +101,8 @@ async def trigger_daily_pipeline(
         )
         if run_id is not None:
             await DailyCollectionRepository(db).ensure_root(run_id, WORKFLOW, commit=False)
+            if include_in_recommendation:
+                note_recommendation_round(db, row)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -115,4 +122,13 @@ async def trigger_daily_pipeline(
             # Keep the successful dispatch and its unfinished root persisted.
             # Re-register through recollect or recover it on scheduler startup.
             logger.warning("Daily collection registration failed; run remains pending for recovery or manual retry run_id=%s", run_id)
+    if run_id is not None and include_in_recommendation:
+        try:
+            async with SessionLocal.begin() as recommendation_db:
+                await begin_recommendation_round(recommendation_db, row)
+        except Exception:
+            logger.exception(
+                "Could not initialize Daily recommendation round; refresh will retry history_id=%s run_id=%s",
+                row.id, run_id,
+            )
     return history_detail(row)

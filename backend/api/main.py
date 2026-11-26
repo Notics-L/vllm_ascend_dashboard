@@ -37,6 +37,7 @@ from api.v1 import (
     daily_report,
     daily_summary,
     github_operations,
+    image_build,
     image_build_monitor,
     issue_diagnosis,
     job_owners,
@@ -61,6 +62,7 @@ from api.v1 import (
     workflows,
 )
 from daily_pipeline.logging import setup_daily_file_logging
+from daily_pipeline.recommendation_events import watch_daily_recommendations
 from infrastructure.core.config import settings
 from infrastructure.core.github_audit import github_audit_writer
 from infrastructure.core.logging import setup_db_logging
@@ -440,7 +442,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Stale task recovery failed (non-fatal): %s", e)
 
-    async with github_audit_writer("api"):
+    async with github_audit_writer("api"), watch_daily_recommendations():
         yield
 
     logger.info("Shutting down application...")
@@ -530,6 +532,7 @@ def create_app() -> FastAPI:
     # 注册路由
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["认证"])
     app.include_router(ci.router, prefix="/api/v1/ci", tags=["CI 数据"])
+    app.include_router(image_build.router, prefix="/api/v1/image-build", tags=["镜像构建"])
     app.include_router(
         image_build_monitor.router,
         prefix="/api/v1/image-build-monitor",

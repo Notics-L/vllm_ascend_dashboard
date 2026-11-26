@@ -1,0 +1,74 @@
+@startuml
+!pragma layout smetana
+title 镜像构建与 Daily 推荐 · UML 组件图
+
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam componentStyle uml2
+skinparam packageStyle rectangle
+skinparam ArrowColor #475569
+skinparam componentBorderColor #64748B
+skinparam componentBackgroundColor #FFFFFF
+
+package "看板前端" #F8FAFC {
+  component "镜像菜单" as Menu
+  component "镜像构建页面\n工作流触发 / 数据采集" as UI
+  component "镜像监控页面" as Monitor
+  component "Daily 手动触发页面" as DailyUI
+
+  Menu ..> UI : 构建
+  Menu ..> Monitor : 监控
+}
+
+package "镜像构建后端" #EFF6FF {
+  component "镜像构建 API\n定义同步 / 任务管理 / 触发记录\n采集列表、详情、刷新与重跑" as Api
+  component "镜像构建调度进程\nLeader 租约与健康检查" as Scheduler
+  component "Workflow 同步\n枚举仓库分支，解析 YAML inputs" as Sync
+  component "任务校验与触发\nCron 冲突检查 / source_ref / 参数快照" as Trigger
+  component "运行采集与失败重跑\nRun 状态、构建矩阵、发布汇总\n按同一 Run ID 跟踪新轮次" as Collect
+
+  database "镜像构建表 · MySQL\nimage_build_config\nimage_build_scheduled_tasks\nimage_build_workflow_definitions\nimage_build_trigger_tasks\nimage_build_trigger_records\nimage_build_collection_runs" as BuildDB
+
+  Api ..> Sync : 手动同步
+  Api ..> Trigger : 保存或手动触发
+  Api ..> Collect : 查询、刷新或重跑
+  Scheduler ..> Sync : 按表中间隔同步
+  Scheduler ..> Collect : 发现已提交 Run，继续采集
+  Sync ..> BuildDB : 读仓库配置，更新定义
+  Trigger ..> BuildDB : 存任务、参数快照与 Run ID
+  Collect ..> BuildDB : 读触发记录，保存采集与重跑状态
+}
+
+package "Daily 后端" #ECFDF5 {
+  component "Daily 触发与用例跟踪\n定时触发默认参与\n手动触发可选参与" as DailyFlow
+  component "Daily 源码推荐\n提交后处理本轮基准、回退候选及过期状态\n提供 HTTP 查询与后端函数" as Recommendation
+  database "Daily 数据 · MySQL\ndaily_pipeline_config\n触发历史、采集与用例跟踪" as DailyDB
+
+  DailyFlow ..> Recommendation : 触发记录 / 问题定位 / 流程结束
+  Recommendation ..> DailyDB : 读已提交状态，写推荐配置
+}
+
+component "Actions 凭据与提交服务" as Actions #FFF7ED
+component "初始化、迁移与部署\n建表、默认值、权限与容器生命周期" as Deploy #F1F5F9
+cloud "社区 GitHub\n仓库分支 / Workflow / Actions Run、Jobs 与 Artifacts" as GitHub
+
+UI ..> Api : 工作流触发与采集
+UI ..> Recommendation : HTTP 预览推荐节点
+DailyUI ..> DailyFlow : 触发，选择是否参与推荐
+Trigger ..> Recommendation : 按仓库与源码分支查询 SHA
+Sync ..> Actions : 取 Actions Token
+Trigger ..> Actions : dispatch，取 Run ID
+Collect ..> Actions : 取 Actions Token
+Actions ..> GitHub : workflow_dispatch
+Sync ..> GitHub : 分支、HEAD 与目标 YAML
+Collect ..> GitHub : 读取 Run、Jobs、发布汇总\n提交失败 Job 重跑
+Recommendation ..> GitHub : 用 Daily 凭据读取源码主线
+Deploy ..> BuildDB : 创建表并初始化配置
+Deploy ..> Scheduler : 启停和健康检查
+
+legend bottom
+  构建任务的 Cron 已支持保存和同源码分支的冲突校验。构建提交当前由手动入口发起。
+  Workflow 同步与运行采集由镜像构建独立进程负责。Daily 推荐由 Daily 维护。
+endlegend
+@enduml

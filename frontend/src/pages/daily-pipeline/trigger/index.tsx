@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Button, Form, Input, Space, Spin, message } from 'antd'
+import { Button, ConfigProvider, Form, Input, Modal, Space, Spin, message } from 'antd'
 import { isAxiosError } from 'axios'
 import { ApiOutlined, PlayCircleOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons'
 import { useDailyCases, useDailySchedulePreview, useDailyTriggerConfig, useSaveDailyTriggerConfig, useTestDailyTriggerConnection, useTriggerDailyPipeline } from '../../../hooks/useDailyPipeline'
@@ -21,6 +21,7 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
   const triggerPipeline = useTriggerDailyPipeline()
   const [form] = Form.useForm<DailyTriggerConfigInput>()
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [triggerConfirmOpen, setTriggerConfirmOpen] = useState(false)
   const draftCron = Form.useWatch('cron', form) as string | undefined
   const preview = useDailySchedulePreview(draftCron, active)
   const hasCron = Boolean(draftCron?.trim())
@@ -65,6 +66,7 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
   })
   const opening = useDailyTabOpening(active)
   const loading = active && (opening || isFetching || casesQuery.isFetching || refresh.pending || saveConfig.isPending)
+  const triggerDisabled = !active || loading || saveConfig.isPending || testConnection.isPending || triggerPipeline.isPending
   const controls = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (controls.current) controls.current.inert = !active || loading
@@ -82,10 +84,11 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
         ? error.response?.data?.detail || '保存失败，请重试' : '保存失败，请重试')
     }
   }
-  const handleTrigger = async () => {
-    if (triggerPipeline.isPending || saveConfig.isPending || testConnection.isPending || loading || !active) return
+  const handleTrigger = async (includeInRecommendation: boolean) => {
+    if (triggerDisabled) return
+    setTriggerConfirmOpen(false)
     try {
-      const result = await triggerPipeline.mutateAsync()
+      const result = await triggerPipeline.mutateAsync(includeInRecommendation)
       if (result.result === '触发成功') message.success('触发成功')
       else message.error(result.logs[result.logs.length - 1]?.message || '触发失败')
     } catch (error) {
@@ -142,8 +145,8 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
               variant="solid"
               icon={<PlayCircleOutlined />}
               loading={triggerPipeline.isPending}
-              disabled={saveConfig.isPending || testConnection.isPending}
-              onClick={() => void handleTrigger()}
+              disabled={triggerDisabled}
+              onClick={() => setTriggerConfirmOpen(true)}
             >手动触发</Button>
           </div>
           <div className="daily-trigger-history-entry">
@@ -178,6 +181,23 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
           <Spin />
         </div>}
       </div>
+      <ConfigProvider wave={{ disabled: true }}>
+        <Modal
+          title="手动触发 Daily"
+          open={triggerConfirmOpen}
+          onCancel={() => setTriggerConfirmOpen(false)}
+          transitionName=""
+          maskTransitionName=""
+          footer={
+            <Space className="daily-cases-actions" size={8}>
+              <Button size="small" disabled={triggerDisabled} onClick={() => void handleTrigger(false)}>否，仅触发</Button>
+              <Button size="small" type="primary" disabled={triggerDisabled} onClick={() => void handleTrigger(true)}>是，加入推荐</Button>
+            </Space>
+          }
+        >
+          此次触发是否加入到推荐系统？
+        </Modal>
+      </ConfigProvider>
       <DailyTriggerHistory open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </>
   )

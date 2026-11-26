@@ -252,6 +252,36 @@ services:
     profiles:
       - full
 
+  image-build-scheduler:
+    image: ${DASHBOARD_BACKEND_IMAGE:?set DASHBOARD_BACKEND_IMAGE to a CI-published immutable image}
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${DASHBOARD_RUNTIME_ENV_FILE:-../../../.env.production}
+    environment:
+      DATABASE_URL: mysql+aiomysql://${SCHEDULER_DB_USER:-scheduler_svc}:${SCHEDULER_DB_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-vllm_dashboard}
+      DB_POOL_SIZE: 2
+      DB_MAX_OVERFLOW: 0
+      ENVIRONMENT: production
+    command: python -m image_build.scheduler
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - dashboard-network
+    healthcheck:
+      test: ["CMD", "python", "-m", "image_build.scheduler", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    profiles: ["full"]
+
   # ── Collector（Phase A 拆分后独立运行，可多实例）──
   collector:
     image: ${DASHBOARD_BACKEND_IMAGE:?set DASHBOARD_BACKEND_IMAGE to a CI-published immutable image}

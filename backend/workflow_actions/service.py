@@ -73,16 +73,16 @@ def parse_workflow_inputs(source: str) -> dict[str, Any]:
     return inputs
 
 
-def _redact(value: Any, key: str = "") -> Any:
+def redact_workflow_data(value: Any, key: str = "") -> Any:
     if _SENSITIVE_KEY_RE.search(key):
         return "******"
     if isinstance(value, dict):
         return {
-            str(item_key): _redact(item_value, str(item_key))
+            str(item_key): redact_workflow_data(item_value, str(item_key))
             for item_key, item_value in value.items()
         }
     if isinstance(value, list):
-        return [_redact(item) for item in value]
+        return [redact_workflow_data(item) for item in value]
     if isinstance(value, str):
         return _TOKEN_VALUE_RE.sub("******", value)
     return value
@@ -147,7 +147,7 @@ def _format_output(status_code: int | None, body: Any, error: str = "") -> str:
             return f"GitHub 返回：{status_code}，请求已提交。"
         return f"GitHub 返回：{status_code}，请求失败。"
     if isinstance(body, (dict, list)):
-        content = json.dumps(_redact(body), ensure_ascii=False, indent=2)
+        content = json.dumps(redact_workflow_data(body), ensure_ascii=False, indent=2)
     else:
         content = _redact_text(str(body))
     return f"GitHub 返回：{status_code}\n{content}"
@@ -237,6 +237,38 @@ def _result(
     return result
 
 
+async def dispatch_workflow(
+    token: str,
+    *,
+    repository: str,
+    workflow_path: str,
+    ref: str,
+    inputs: dict[str, Any],
+    return_run_details: bool = False,
+    retry_delays: tuple[float, ...] = (),
+) -> dict[str, Any]:
+    workflow_file = quote(workflow_path.rsplit("/", 1)[-1], safe="")
+    endpoint = f"/repos/{repository}/actions/workflows/{workflow_file}/dispatches"
+    payload: dict[str, Any] = {"ref": ref, "inputs": inputs}
+    if return_run_details:
+        payload["return_run_details"] = True
+    if retry_delays:
+        status_code, body, error = await _github_request(
+            token, "POST", endpoint, payload, retry_delays=retry_delays,
+        )
+    else:
+        status_code, body, error = await _github_request(token, "POST", endpoint, payload)
+    result = _result(status_code, body, error)
+    if status_code is not None and 500 <= status_code < 600:
+        result["output"] += f"\n{_UNCERTAIN_SUBMISSION}。"
+        result["submission_status"] = "unknown"
+    if return_run_details and result["success"] and isinstance(body, dict):
+        run_id = body.get("workflow_run_id")
+        if type(run_id) is int and run_id > 0:
+            result["run_id"] = run_id
+    return result
+
+
 async def execute_workflow_action(
     db: AsyncSession,
     user: User,
@@ -273,23 +305,18 @@ async def execute_workflow_action(
     except ValueError as exc:
         return _result(None, None, str(exc))
 
-    repository = f"/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}"
+    repository = f"{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}"
     if request.action == "dispatch":
-        workflow_file = quote(request.workflow_path.rsplit("/", 1)[-1], safe="")
-        endpoint = f"{repository}/actions/workflows/{workflow_file}/dispatches"
-        payload = {"ref": request.ref, "inputs": inputs}
-        if retry_delays:
-            status_code, body, error = await _github_request(
-                token, "POST", endpoint, payload, retry_delays=retry_delays
-            )
-        else:
-            status_code, body, error = await _github_request(token, "POST", endpoint, payload)
-        result = _result(status_code, body, error)
-        if status_code is not None and 500 <= status_code < 600:
-            result["output"] += f"\n{_UNCERTAIN_SUBMISSION}。"
-            result["submission_status"] = "unknown"
-        return result
+        return await dispatch_workflow(
+            token,
+            repository=repository,
+            workflow_path=request.workflow_path,
+            ref=request.ref,
+            inputs=inputs,
+            retry_delays=retry_delays,
+        )
 
+    repository = f"/repos/{repository}"
     run_result = await _github_request(token, "GET", f"{repository}/actions/runs/{request.run_id}")
     status_code, run, error = run_result
     if error or status_code != 200:

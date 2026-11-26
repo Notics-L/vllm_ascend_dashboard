@@ -108,10 +108,10 @@ async def _build_import_preview(db: DbSession, payload: UserImportRequest) -> Us
         renamed = False
         final_username = base
 
-        def mark_invalid(reason: str) -> None:
+        def mark_invalid(reason: str, row_messages: list[str] = messages) -> None:
             nonlocal status_value
             status_value = "invalid"
-            messages.append(reason)
+            row_messages.append(reason)
 
         if not base:
             mark_invalid("用户名为空或按规则处理后为空")

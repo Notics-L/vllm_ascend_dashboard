@@ -66,6 +66,16 @@ export interface DailyTriggerHistoryPage {
   total: number
 }
 
+export interface DailySourceRecommendation {
+  commit_sha: string
+  committed_at: string | null
+  branch: string
+  repository: string | null
+  pr_number: number | null
+  problem_pr_number: number | null
+  trigger_history_id: number
+}
+
 export type DailyExecutionResult = '排队中' | '执行中' | '成功' | '失败' | '已取消' | '已跳过' | '未获取'
 
 export interface DailyCollectionRun {

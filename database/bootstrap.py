@@ -41,6 +41,16 @@ from database.migrations.daily_pipeline_retryable_nodes import run as migrate_da
 from database.migrations.daily_pipeline_scheduled_tasks import run as migrate_daily_schedules
 from database.migrations.daily_pipeline_tracking import run as migrate_daily_tracking
 from database.migrations.daily_pipeline_trigger_history import run as migrate_daily_trigger_history
+from database.migrations.image_build_collection import run as migrate_image_build_collection
+from database.migrations.image_build_config import run as migrate_image_build_config
+from database.migrations.image_build_repository import run as migrate_image_build_repository
+from database.migrations.image_build_scheduled_tasks import run as migrate_image_build_schedules
+from database.migrations.image_build_trigger_record_details import (
+    run as migrate_image_build_trigger_record_details,
+)
+from database.migrations.image_build_trigger_records import run as migrate_image_build_trigger_records
+from database.migrations.image_build_trigger_tasks import run as migrate_image_build_trigger_tasks
+from database.migrations.image_build_source_ref_mode import run as migrate_image_build_source_ref_mode
 from database.migrations.notifications import (
     ensure_notification_contacts,
 )
@@ -132,6 +142,14 @@ async def mark_version_applied(version: str, description: str = "") -> None:
 
 async def run_upgrades() -> None:
     await migrate_daily_schedules()
+    await migrate_image_build_schedules()
+    await migrate_image_build_trigger_tasks()
+    await migrate_image_build_source_ref_mode()
+    await migrate_image_build_trigger_records()
+    await migrate_image_build_trigger_record_details()
+    await migrate_image_build_collection()
+    await migrate_image_build_config()
+    await migrate_image_build_repository()
     await seed_daily_pipeline_config()
     await migrate_daily_trigger_history()
     await migrate_daily_collection()

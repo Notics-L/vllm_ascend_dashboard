@@ -123,6 +123,10 @@
   color: #fff !important;
 }
 
+.ant-menu-submenu-inline.ant-menu-submenu-open > .ant-menu-submenu-title > .app-submenu-chevron {
+  transform: translateY(-50%) rotate(90deg);
+}
+
 .app-menu .ant-menu-sub.ant-menu-inline {
   background: transparent !important;
 }

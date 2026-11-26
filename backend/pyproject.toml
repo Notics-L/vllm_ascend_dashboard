@@ -81,6 +81,7 @@ packages = [
     "contracts",
     "contributor_board",
     "failure_analysis",
+    "image_build",
     "image_build_monitor",
     "infrastructure",
     "log_center",
@@ -96,6 +97,7 @@ packages = [
     "support_matrix",
     "test_board",
     "tooling",
+    "upstream_test",
     "workflow_actions",
 ]
 
