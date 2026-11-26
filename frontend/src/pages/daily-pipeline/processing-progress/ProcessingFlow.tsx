@@ -4,6 +4,7 @@ import { Badge, Button, Descriptions, Drawer, List, Space, Spin, Typography } fr
 import type { DailyFailedCaseDetail, DailyProcessingStage, DailyVersionFlow } from '../../../types/dailyPipeline'
 import { formatCollectionTime } from '../collection/collectionDisplay'
 import { processingTimelinePaths } from './processingTimelinePaths'
+import CaseRerunAction from './CaseRerunAction'
 import ManualProcessingAction from './ManualProcessingAction'
 import RollbackProcessingAction from './RollbackProcessingAction'
 import VersionCompatibilityFlow from './VersionCompatibilityFlow'
@@ -52,6 +53,8 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
   ].filter((stage) => stage.status !== 'pending' || stage.id === currentId), [flow.stages, version, currentId])
   const selectedStage = stages.find((stage) => stage.id === selectedId)
     ?? flow.archivedStages?.find((stage) => stage.id === selectedId)
+  const classification = stages.find((stage) => stage.stageCode === 'classify')
+    ?? stages.find((stage) => stage.stageCode === 'locating')
   const timelineRef = useRef<HTMLDivElement>(null)
   const [connections, setConnections] = useState<string[]>([])
   useEffect(() => {
@@ -138,6 +141,8 @@ function ProcessingFlow({ flow, allowManual = false, loading = false }: { flow: 
         {(selectedStage.stageCode === 'version_resolution' || selectedStage.stageCode === 'version_build') && version
           ? <VersionCompatibilityFlow flow={version} allowManual={allowManual && selectedStage.id === currentId} />
           : allowManual && <ManualProcessingAction key={selectedStage.id} stage={selectedStage} />}
+        {allowManual && flow.caseRerun && selectedStage === classification && selectedStage.status === 'completed'
+          && <CaseRerunAction rerun={flow.caseRerun} />}
         {allowManual && selectedStage.canRollback && <RollbackProcessingAction
           key={selectedStage.id} stage={selectedStage} failureId={version?.failureId}
           sharedMemberCount={selectedStage.stageCode === 'failure_notification' ? 0 : version?.memberCount ?? flow.sharedMemberCount ?? 0}

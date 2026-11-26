@@ -46,6 +46,11 @@ async def run() -> None:
             tables=[DailyPipelineCollectionRun.__table__, DailyPipelineCollectionNode.__table__],
             checkfirst=True,
         )
+        run_columns = await conn.run_sync(
+            lambda sync: inspect(sync).get_columns("daily_pipeline_collection_runs"),
+        )
+        if not any(column["name"] == "pending_reruns" for column in run_columns):
+            await conn.execute(text("ALTER TABLE daily_pipeline_collection_runs ADD COLUMN pending_reruns JSON NULL"))
         node_columns = await conn.run_sync(
             lambda sync: inspect(sync).get_columns("daily_pipeline_collection_nodes"),
         )

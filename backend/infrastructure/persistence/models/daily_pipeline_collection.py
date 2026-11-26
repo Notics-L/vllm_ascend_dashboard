@@ -1,5 +1,6 @@
 """Persist each Daily execution and its workflow/job tree."""
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     Column,
@@ -34,6 +35,7 @@ class DailyPipelineCollectionRun(Base):
     started_at = Column(mysql.DATETIME(fsp=6), nullable=True)
     finished_at = Column(mysql.DATETIME(fsp=6), nullable=True)
     last_collected_at = Column(mysql.DATETIME(fsp=6), nullable=True)
+    pending_reruns = Column(JSON(none_as_null=True), nullable=True)
     issue_number = Column(BigInteger, nullable=True)
     issue_state = Column(String(16), nullable=True)
 
