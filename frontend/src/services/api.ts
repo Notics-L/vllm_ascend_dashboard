@@ -68,6 +68,18 @@ export function credentialsRejected(error: unknown): boolean {
   return error.response?.status === 401 || error.response?.status === 403
 }
 
+/**
+ * 服务端暂时不可用：数据库重启、网关 502/503/504、请求超时或网络中断。
+ *
+ * 这类错误与"登录凭据"无关，绝不能清除 token 或跳转登录页；页面应当自动重试。
+ */
+export function serviceUnavailable(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false
+  // 无响应：网络中断、超时、后端进程未就绪
+  if (!error.response) return true
+  return [502, 503, 504].includes(error.response.status)
+}
+
 // 响应拦截器 - 处理错误和 token 刷新
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
