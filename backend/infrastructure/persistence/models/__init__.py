@@ -101,6 +101,13 @@ from infrastructure.persistence.models.release_management import (
     ReleaseThirdPartyVersion,
     ReleaseWorkflow,
 )
+
+# 上游测试模型（同样必须在 Base 创建之后导入）
+from infrastructure.persistence.models.upstream_test import (
+    UpstreamTestCaseResult,
+    UpstreamTestIssue,
+    UpstreamTestSnapshot,
+)
 from infrastructure.persistence.models.workflow_actions import (
     WorkflowActionLog,
     WorkflowActionPermission,
@@ -117,7 +124,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), default="user", index=True)  # user, admin, super_admin
-    email = Column(String(100), unique=True, nullable=False)  # unique=True 已自带索引
+    email = Column(String(100), unique=True, nullable=True)  # 可选邮箱；MySQL 唯一索引允许多个 NULL
     phone = Column(String(32), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP, default=lambda: datetime.now(UTC))

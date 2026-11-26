@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,10 @@ async def read_schedule(db: AsyncSession, task_key: str) -> tuple[str, str] | No
 async def save_schedule(db: AsyncSession, task_key: str, cron: str, timezone: str) -> None:
     stmt = insert(Task).values(task_key=task_key, cron_expression=cron, timezone=timezone)
     await db.execute(stmt.on_duplicate_key_update(cron_expression=stmt.inserted.cron_expression))
+
+
+async def delete_schedule(db: AsyncSession, task_key: str) -> None:
+    await db.execute(delete(Task).where(Task.task_key == task_key))
 
 
 async def enabled_schedule(db: AsyncSession, task_key: str) -> tuple[str, str] | None:

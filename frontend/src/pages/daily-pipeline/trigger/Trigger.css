@@ -72,7 +72,11 @@
   max-width: 100%;
 }
 
-.daily-trigger-form .daily-trigger-cron-control > .ant-input {
+.daily-trigger-form .daily-trigger-cron-control .ant-input {
+  width: 100%;
+}
+
+.daily-trigger-form .daily-trigger-cron-control > .ant-input-affix-wrapper {
   flex: 1;
   min-width: 0;
 }

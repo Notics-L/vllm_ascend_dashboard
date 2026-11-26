@@ -10,6 +10,7 @@ import {
   Descriptions,
   Drawer,
   Modal,
+  Progress,
   Row,
   Select,
   Space,
@@ -36,7 +37,7 @@ import {
   LinkOutlined,
 } from '@ant-design/icons'
 import {
-  Bar, BarChart, CartesianGrid, Cell,
+  Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis,
 } from 'recharts'
 
@@ -154,6 +155,7 @@ function CIDailyComprehensiveReport() {
   const { data: report, isLoading, isError, error, refetch } = useComprehensiveReport(applied)
 
   const [rawLogsReport, setRawLogsReport] = useState<ComprehensiveReport | null>(null)
+  const [distModalKey, setDistModalKey] = useState<string | null>(null)
   const activeReport: ComprehensiveReport | undefined = rawLogsReport ?? report
 
   const applyFilters = () => {
@@ -572,12 +574,28 @@ function CIDailyComprehensiveReport() {
     'failure_by_model',
     'analysis_status',
   ]
-  const distributionCharts = chartKeys.filter((k) => {
-    const dist: Record<string, number> | undefined = k === 'analysis_status'
+  const DIST_TITLES: Record<string, string> = {
+    failure_by_category: '问题范畴',
+    failure_by_branch: '分支',
+    failure_by_hardware: '硬件',
+    failure_by_model: '模型/用例',
+    analysis_status: 'AI 分析状态',
+  }
+  const distEntries = (key: string): Array<[string, number]> => {
+    const dist: Record<string, number> | undefined = key === 'analysis_status'
       ? summary?.analysis_distribution
-      : (summary as Record<string, number | Record<string, number> | undefined> | undefined)?.[k] as Record<string, number> | undefined
-    return dist && Object.keys(dist).length > 0
-  })
+      : (summary as Record<string, number | Record<string, number> | undefined> | undefined)?.[key] as Record<string, number> | undefined
+    return Object.entries(dist ?? {})
+      .map(([name, value]) => [name, Number(value)] as [string, number])
+      .filter(([, value]) => value > 0)
+      .sort((a, b) => b[1] - a[1])
+  }
+  const distributionCharts = chartKeys.filter((k) => distEntries(k).length > 0)
+  const chartTotal = (key: string) => distEntries(key).reduce((sum, [, value]) => sum + value, 0)
+  const truncateLabel = (name: string) => {
+    const last = name.split('/').pop() || name
+    return last.length > 20 ? last.slice(0, 18) + '…' : last
+  }
 
 
 
@@ -812,59 +830,145 @@ function CIDailyComprehensiveReport() {
         )}
       </Card>
 
-      {/* 失败维度分布图表（Recharts 交互式） */}
+      {/* 失败维度分布图表（环形图 + 模型 Top 10 + 详情弹窗） */}
       {distributionCharts.length > 0 && (
         <Card size="small" title="失败维度分布" style={{ marginBottom: 20 }}>
           <Row gutter={[16, 16]}>
-            {distributionCharts.map((key) => {
-              const dist: Record<string, number> = key === 'analysis_status'
-                ? (summary?.analysis_distribution ?? {})
-                : ((summary as unknown as Record<string, Record<string, number> | undefined>)?.[key] ?? {})
-              // 模型名截断：取最后一段 + 最长 18 字符
-              const truncateName = (name: string) => {
-                if (key !== 'failure_by_model' && key !== 'failure_by_category') return name
-                const last = name.split('/').pop() || name
-                return last.length > 18 ? last.slice(0, 16) + '…' : last
-              }
-              const data = Object.entries(dist).map(([name, value], i) => ({
-                name: truncateName(name),
-                fullName: name,
-                value,
-                fill: CHART_PALETTE[i % CHART_PALETTE.length],
-              }))
-              // 固定高度，数据多时内部滚动
-              const isModel = key === 'failure_by_model'
-              const maxH = isModel ? 320 : 280
-              const minH = 180
-              const chartH = Math.min(maxH, Math.max(minH, data.length * 28 + 40))
-              const titleMap: Record<string, string> = { failure_by_category: '问题范畴', failure_by_branch: '分支', failure_by_hardware: '硬件', failure_by_model: '模型/用例', analysis_status: 'AI 分析状态' }
-              return (
-                <Col xs={24} md={12} key={key}>
-                  <div style={{ height: chartH, overflowY: isModel ? 'auto' : 'hidden', overflowX: 'hidden' }}>
-                    <ResponsiveContainer width="100%" height={chartH}>
-                      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, left: 4, bottom: 4 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <YAxis type="category" dataKey="name" width={isModel ? 130 : 110} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-                        <RechartsTooltip
-                          formatter={(v: number, _n, entry) => [`${v} 次`, (entry?.payload as any)?.fullName || '']}
-                          labelFormatter={() => ''}
-                        />
-                        <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={16}>
-                          {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div style={{ textAlign: 'center', fontWeight: 500, marginTop: 4 }}>
-                    {titleMap[key] || key}
-                  </div>
-                </Col>
-              )
-            })}
+            {['failure_by_category', 'failure_by_branch', 'failure_by_hardware', 'analysis_status']
+              .filter((key) => distributionCharts.includes(key))
+              .map((key) => {
+                const entries = distEntries(key)
+                const total = chartTotal(key)
+                const data = entries.map(([name, value], i) => ({
+                  name,
+                  value,
+                  fill: CHART_PALETTE[i % CHART_PALETTE.length],
+                }))
+                return (
+                  <Col xs={24} sm={12} md={6} key={key}>
+                    <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 12px 10px', height: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <Text strong>{DIST_TITLES[key]}</Text>
+                        <Button type="link" size="small" onClick={() => setDistModalKey(key)}>详情</Button>
+                      </div>
+                      <div style={{ position: 'relative', height: 150 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={data} dataKey="value" nameKey="name" innerRadius={40} outerRadius={60} paddingAngle={2} stroke="none">
+                              {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
+                            </Pie>
+                            <RechartsTooltip
+                              formatter={(v: number, _n, entry) => [
+                                `${v} 次 (${total ? ((Number(v) / total) * 100).toFixed(1) : 0}%)`,
+                                (entry?.payload as any)?.name || '',
+                              ]}
+                              labelFormatter={() => ''}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                          <div style={{ fontSize: 22, fontWeight: 700, color: '#1f2937' }}>{total}</div>
+                          <div style={{ fontSize: 11, color: '#8c8c8c' }}>失败总数</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {data.slice(0, 3).map((d) => (
+                          <div key={d.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, minWidth: 0 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: 2, background: d.fill, flex: 'none' }} />
+                            <span title={d.name} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#595959' }}>
+                              {truncateLabel(d.name)}
+                            </span>
+                            <span style={{ color: '#1f2937', fontWeight: 500 }}>{d.value}</span>
+                          </div>
+                        ))}
+                        {data.length > 3 && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>还有 {data.length - 3} 项，点击详情查看</Text>
+                        )}
+                      </div>
+                    </div>
+                  </Col>
+                )
+              })}
           </Row>
+
+          {distributionCharts.includes('failure_by_model') && (() => {
+            const entries = distEntries('failure_by_model')
+            const total = chartTotal('failure_by_model')
+            const top = entries.slice(0, 10)
+            const restValue = entries.slice(10).reduce((sum, [, value]) => sum + value, 0)
+            const data = [
+              ...top.map(([name, value]) => ({ name: truncateLabel(name), fullName: name, value })),
+              ...(restValue > 0 ? [{ name: '其他', fullName: '其他', value: restValue }] : []),
+            ]
+            return (
+              <div style={{ marginTop: 16, border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div>
+                    <Text strong>模型/用例</Text>
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>共 {entries.length} 项，展示 Top 10</Text>
+                  </div>
+                  <Button size="small" onClick={() => setDistModalKey('failure_by_model')}>查看全部</Button>
+                </div>
+                <div style={{ height: 300 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, left: 8, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                      <RechartsTooltip
+                        formatter={(v: number, _n, entry) => [
+                          `${v} 次 (${total ? ((Number(v) / total) * 100).toFixed(1) : 0}%)`,
+                          (entry?.payload as any)?.fullName || '',
+                        ]}
+                        labelFormatter={() => ''}
+                      />
+                      <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={14}>
+                        {data.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )
+          })()}
         </Card>
       )}
+
+      <Modal
+        title={`失败维度详情 — ${distModalKey ? (DIST_TITLES[distModalKey] || distModalKey) : ''}`}
+        open={!!distModalKey}
+        onCancel={() => setDistModalKey(null)}
+        footer={<Button onClick={() => setDistModalKey(null)}>关闭</Button>}
+        width={720}
+        destroyOnClose
+      >
+        {distModalKey && (() => {
+          const entries = distEntries(distModalKey)
+          const total = chartTotal(distModalKey)
+          return (
+            <Table
+              rowKey="name"
+              size="small"
+              dataSource={entries.map(([name, value], i) => ({ name, value, color: CHART_PALETTE[i % CHART_PALETTE.length] }))}
+              pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 项` }}
+              columns={[
+                { title: '维度', dataIndex: 'name', ellipsis: { showTitle: true } },
+                { title: '失败次数', dataIndex: 'value', width: 100, align: 'right' as const },
+                {
+                  title: '占比', key: 'percent', width: 220,
+                  render: (_, row) => (
+                    <Progress
+                      percent={total ? Number(((row.value / total) * 100).toFixed(1)) : 0}
+                      size="small"
+                      strokeColor={row.color}
+                    />
+                  ),
+                },
+              ]}
+            />
+          )
+        })()}
+      </Modal>
 
       {/* 次级：整体运行 */}
       <Card size="small" title="整体运行（次级信息）" style={{ marginBottom: 20 }}>

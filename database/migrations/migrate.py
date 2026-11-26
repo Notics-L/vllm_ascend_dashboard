@@ -52,16 +52,18 @@ from database.migrations.image_build_config import run as migrate_image_build_co
 from database.migrations.image_build_monitor import run as migrate_image_build_monitor
 from database.migrations.image_build_repository import run as migrate_image_build_repository
 from database.migrations.image_build_scheduled_tasks import run as migrate_image_build_schedules
+from database.migrations.image_build_source_ref_mode import run as migrate_image_build_source_ref_mode
 from database.migrations.image_build_trigger_record_details import (
     run as migrate_image_build_trigger_record_details,
 )
 from database.migrations.image_build_trigger_records import run as migrate_image_build_trigger_records
 from database.migrations.image_build_trigger_tasks import run as migrate_image_build_trigger_tasks
-from database.migrations.image_build_source_ref_mode import run as migrate_image_build_source_ref_mode
 from database.migrations.image_build_workflows import run as migrate_image_build_workflows
+from database.migrations.upstream_test import run as migrate_upstream_test
 from database.migrations.model_fo_mapping_seed import run as migrate_model_fo_mapping_seed
 from database.migrations.mysql_schema import migrate as migrate_mysql_schema
 from database.migrations.notifications import run as migrate_notifications
+from database.migrations.users_email_optional import run as migrate_users_email_optional
 from database.migrations.npu_occupancy import run as migrate_npu_occupancy
 from database.migrations.npu_occupancy_current_snapshot import (
     run as migrate_npu_occupancy_current_snapshot,
@@ -167,9 +169,11 @@ async def migrate() -> None:
     await migrate_image_build_collection()
     await migrate_image_build_config()
     await migrate_image_build_repository()
+    upstream_test_result = await migrate_upstream_test()
     await migrate_workflow_actions()
     await migrate_workflow_action_schedules()
     notifications_result = await migrate_notifications()
+    await migrate_users_email_optional()
     users_after = await _user_count()
     if users_after != users_before:
         raise RuntimeError(

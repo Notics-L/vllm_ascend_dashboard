@@ -24,6 +24,7 @@ import {
   CodeOutlined,
   ContainerOutlined,
   DashboardOutlined,
+  DeploymentUnitOutlined,
   ExperimentOutlined,
   GithubOutlined,
   LeftOutlined,
@@ -94,6 +95,7 @@ const primaryNavigation: NavigationItem[] = [
     children: [
       { key: '/test-board', icon: <DashboardOutlined />, label: '测试质量' },
       { key: '/models', icon: <ExperimentOutlined />, label: '模型验证' },
+      { key: '/upstream-test', icon: <DeploymentUnitOutlined />, label: '上游测试' },
       { key: '/code-metrics', icon: <CodeOutlined />, label: '代码健康' },
     ],
   },
@@ -126,6 +128,7 @@ const adminNavigation: NavigationItem = {
 const routeMeta = [
   { prefix: '/issue-diagnosis', title: 'AI 问题定位', section: '资源与响应' },
   { prefix: '/code-metrics', title: '代码健康', section: '质量与模型' },
+  { prefix: '/upstream-test', title: '上游测试', section: '质量与模型' },
   { prefix: '/pr-pipeline', title: 'PR 流水线', section: '研发交付' },
   { prefix: '/test-board', title: '测试质量', section: '质量与模型' },
   { prefix: '/resources', title: '算力资源', section: '资源与响应' },

@@ -48,7 +48,9 @@ from contracts.schemas import (
     NightlyTestCaseCreate,
     NightlyTestCaseResponse,
     NightlyTestCaseUpdate,
+    WorkflowCaseStats,
     WorkflowLatestResult,
+    WorkflowStatusRun,
 )
 from infrastructure.core.config import settings
 from infrastructure.persistence.models import (
@@ -60,6 +62,8 @@ from infrastructure.persistence.models import (
     JobOwner,
     ModelFoMaster,
     NightlyTestCase,
+    ReleaseBuildRun,
+    ReleaseWorkflow,
     WorkflowConfig,
 )
 from infrastructure.persistence.run_attempts import (
@@ -1105,6 +1109,269 @@ async def list_runs(
         return response
 
     return [_to_run_response(run) for run in runs]
+
+
+_WORKFLOW_INFRA_JOB_KEYWORDS = (
+    "build",
+    "parse",
+    "setup",
+    "merge",
+    "export",
+    "generate",
+    "remove",
+    "clear",
+)
+
+
+def _workflow_run_payload(run: CIResult) -> dict[str, Any]:
+    return _json_object(run.data)
+
+
+def _workflow_run_created_at(run: CIResult) -> datetime | None:
+    payload = _workflow_run_payload(run)
+    raw_created = payload.get("created_at") or payload.get("run_started_at")
+    if isinstance(raw_created, str) and raw_created:
+        try:
+            return datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return run.started_at or run.created_at
+
+
+def _workflow_run_display_name(run: CIResult) -> str:
+    payload = _workflow_run_payload(run)
+    name = payload.get("name")
+    return str(name) if name else run.workflow_name
+
+
+def _workflow_run_pr_number(run: CIResult, display_name: str) -> int | None:
+    payload = _workflow_run_payload(run)
+    pull_requests = payload.get("pull_requests")
+    if isinstance(pull_requests, list):
+        for item in pull_requests:
+            if isinstance(item, dict) and item.get("number"):
+                try:
+                    return int(item["number"])
+                except (TypeError, ValueError):
+                    continue
+    match = re.search(r"\(PR\)\s*#?(\d+)", display_name, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _workflow_run_category(run: CIResult, display_name: str) -> str:
+    lowered = display_name.lower()
+    if "(pr)" in lowered or run.event == "pull_request":
+        return "PR"
+    if "(daily)" in lowered or "schedule daily" in lowered:
+        return "Daily"
+    if display_name.startswith("Image") or "image build" in lowered:
+        return "Image"
+    if display_name.startswith("Nightly-"):
+        return "scheduled"
+    if display_name.startswith("Weekly"):
+        return "Weekly"
+    if "build" in lowered:
+        return "Image"
+    return "Other"
+
+
+def _workflow_case_stats(jobs: list[Any]) -> WorkflowCaseStats | None:
+    test_jobs = [
+        job for job in jobs
+        if not any(keyword in str(job.job_name or "").lower() for keyword in _WORKFLOW_INFRA_JOB_KEYWORDS)
+    ]
+    if not test_jobs:
+        return None
+
+    success = 0
+    failure = 0
+    in_progress = 0
+    skipped = 0
+    for job in test_jobs:
+        conclusion = job.conclusion
+        if conclusion == "success":
+            success += 1
+        elif conclusion in {"skipped", "neutral"}:
+            skipped += 1
+        elif job.status != "completed":
+            in_progress += 1
+        else:
+            failure += 1
+
+    return WorkflowCaseStats(
+        total=len(test_jobs),
+        success=success,
+        failure=failure,
+        in_progress=in_progress,
+        skipped=skipped,
+    )
+
+
+def _github_run_url(run_id: int) -> str | None:
+    if not settings.GITHUB_OWNER or not settings.GITHUB_REPO:
+        return None
+    return f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/actions/runs/{run_id}"
+
+
+def _github_pr_url(pr_number: int | None) -> str | None:
+    if pr_number is None or not settings.GITHUB_OWNER or not settings.GITHUB_REPO:
+        return None
+    return f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/pull/{pr_number}"
+
+
+def _build_workflow_status_run(
+    run: CIResult,
+    *,
+    display_name: str,
+    cases: WorkflowCaseStats | None,
+) -> WorkflowStatusRun:
+    category = _workflow_run_category(run, display_name)
+    pr_number = _workflow_run_pr_number(run, display_name)
+    return WorkflowStatusRun(
+        run_id=run.run_id,
+        workflow_name=run.workflow_name,
+        display_name=display_name,
+        category=category,
+        pr_number=pr_number,
+        pr_url=_github_pr_url(pr_number),
+        status=run.status,
+        conclusion=run.conclusion,
+        created_at=_workflow_run_created_at(run),
+        html_url=_github_run_url(run.run_id),
+        cases=cases,
+    )
+
+
+@router.get("/workflow-status", response_model=list[WorkflowStatusRun])
+async def list_workflow_status_runs(
+    db: DbSession,
+    _: CurrentUser,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    limit: int = Query(1000, ge=1, le=5000),
+):
+    """Workflow Status 统一列表：CI Run + 镜像构建 Run。"""
+    stmt = select(CIResult)
+    belonging_time = func.coalesce(CIResult.started_at, CIResult.created_at)
+    if start_time:
+        stmt = stmt.where(belonging_time >= start_time)
+    if end_time:
+        stmt = stmt.where(belonging_time <= end_time)
+    stmt = stmt.order_by(CIResult.started_at.desc(), CIResult.id.desc()).limit(limit)
+    ci_runs = list((await db.execute(stmt)).scalars().all())
+
+    run_ids = [run.run_id for run in ci_runs]
+    jobs_by_run: dict[int, list[CIJob]] = {run_id: [] for run_id in run_ids}
+    if run_ids:
+        job_rows = (await db.execute(
+            select(CIJob).where(CIJob.run_id.in_(run_ids))
+        )).scalars().all()
+        attempt_by_run = {run.run_id: extract_run_attempt(run.data) for run in ci_runs}
+        for job in job_rows:
+            if is_current_run_attempt(job.data, attempt_by_run.get(job.run_id)):
+                jobs_by_run.setdefault(job.run_id, []).append(job)
+
+    items: dict[int, WorkflowStatusRun] = {}
+    for run in ci_runs:
+        display_name = _workflow_run_display_name(run)
+        items[run.run_id] = _build_workflow_status_run(
+            run,
+            display_name=display_name,
+            cases=_workflow_case_stats(jobs_by_run.get(run.run_id, [])),
+        )
+
+    image_stmt = (
+        select(ReleaseBuildRun, ReleaseWorkflow)
+        .join(ReleaseWorkflow, ReleaseWorkflow.id == ReleaseBuildRun.workflow_id)
+        .where(ReleaseWorkflow.enabled.is_(True))
+    )
+    if start_time:
+        image_stmt = image_stmt.where(ReleaseBuildRun.created_at_remote >= start_time)
+    if end_time:
+        image_stmt = image_stmt.where(ReleaseBuildRun.created_at_remote <= end_time)
+    image_stmt = image_stmt.order_by(ReleaseBuildRun.created_at_remote.desc()).limit(limit)
+    image_rows = (await db.execute(image_stmt)).all()
+    for run, workflow in image_rows:
+        if run.github_run_id in items:
+            continue
+        status_value = run.status or ""
+        if status_value in {"success", "failure", "cancelled", "skipped", "neutral", "timed_out"}:
+            normalized_status = "completed"
+            conclusion = status_value
+        else:
+            normalized_status = status_value or "in_progress"
+            conclusion = None
+        items[run.github_run_id] = WorkflowStatusRun(
+            run_id=run.github_run_id,
+            workflow_name=workflow.workflow_name,
+            display_name=workflow.workflow_name,
+            category="Image",
+            status=normalized_status,
+            conclusion=conclusion,
+            created_at=run.created_at_remote or run.created_at,
+            html_url=_github_run_url(run.github_run_id),
+            cases=None,
+        )
+
+    return sorted(
+        items.values(),
+        key=lambda item: item.created_at.timestamp() if item.created_at else 0,
+        reverse=True,
+    )[:limit]
+
+
+@router.get("/runs/{run_id}/live-status", response_model=WorkflowStatusRun)
+async def get_run_live_status(
+    run_id: int,
+    db: DbSession,
+    _: CurrentUser,
+):
+    """实时刷新单个 CI Run 的状态、结论与用例统计。"""
+    from infrastructure.clients.github_client import GitHubClient
+
+    run = (await db.execute(select(CIResult).where(CIResult.run_id == run_id))).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Run {run_id} 不存在")
+
+    client = GitHubClient(
+        token=settings.GITHUB_TOKEN,
+        owner=settings.GITHUB_OWNER,
+        repo=settings.GITHUB_REPO,
+    )
+    try:
+        live_run = await client.get_workflow_run(run_id)
+        live_jobs = await client.get_job_list(run_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"GitHub 刷新失败: {exc}") from exc
+    finally:
+        await client.close()
+
+    run.status = live_run.get("status") or run.status
+    run.conclusion = live_run.get("conclusion")
+    completed_at = live_run.get("updated_at") or live_run.get("completed_at")
+    if isinstance(completed_at, str) and completed_at:
+        try:
+            run.completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    await db.commit()
+
+    display_name = str(live_run.get("name") or _workflow_run_display_name(run))
+    live_job_rows = [
+        type("_LiveJob", (), {
+            "job_name": job.get("name"),
+            "status": job.get("status"),
+            "conclusion": job.get("conclusion"),
+        })()
+        for job in live_jobs
+    ]
+    return _build_workflow_status_run(
+        run,
+        display_name=display_name,
+        cases=_workflow_case_stats(live_job_rows),
+    )
 
 
 @router.get("/workflows/latest", response_model=list[WorkflowLatestResult])

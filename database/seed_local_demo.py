@@ -443,8 +443,18 @@ async def seed_models(
                     {"throughput": {"target": 80}, "ttft_ms": {"target": 150}}
                 ),
                 "pass_threshold": json_text({"pass_rate": 0.95, "latency_p95_ms": 250}),
+                # Must match ModelConfigResponse.startup_commands:
+                # {version: {scenario: {hardware: command}}}.
                 "startup_commands": json_text(
-                    {"mix": f"vllm serve {spec['name']} --max-model-len 8192"}
+                    {
+                        "default": {
+                            "standard": {
+                                "A2": (
+                                    f"vllm serve {spec['name']} --max-model-len 8192"
+                                )
+                            }
+                        }
+                    }
                 ),
                 "official_doc_url": "https://docs.vllm.ai/",
                 "updated_at": now,

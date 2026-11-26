@@ -138,6 +138,12 @@ export async function shareDailyProcessingFlow(values: { failureIds: string[]; t
   return (await api.post<{ flowId: string }>('/daily-pipeline/failed-cases/processing-flow/share', values)).data
 }
 
+export async function unshareDailyProcessingFlow(failureId: string) {
+  return (await api.post<{ unshared: boolean }>(
+    `/daily-pipeline/failed-cases/${encodeURIComponent(failureId)}/processing-flow/unshare`,
+  )).data
+}
+
 export async function updateDailyVersionFlow({ failureId, values }: {
   failureId: string
   values: import('../types/dailyPipeline').DailyVersionFlowInput

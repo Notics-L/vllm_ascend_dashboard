@@ -33,6 +33,30 @@ export interface CIResult {
   github_html_url?: string
 }
 
+export type WorkflowStatusCategory = 'PR' | 'Daily' | 'scheduled' | 'Weekly' | 'Image' | 'Other'
+
+export interface WorkflowCaseStats {
+  total: number
+  success: number
+  failure: number
+  in_progress: number
+  skipped: number
+}
+
+export interface WorkflowStatusRun {
+  run_id: number
+  workflow_name: string
+  display_name: string
+  category: WorkflowStatusCategory
+  pr_number: number | null
+  pr_url: string | null
+  status: string
+  conclusion: string | null
+  created_at: string | null
+  html_url: string | null
+  cases: WorkflowCaseStats | null
+}
+
 export interface CIJob {
   id: number
   job_id: number
@@ -238,6 +262,26 @@ export const getRuns = async (params?: {
   limit?: number
 }): Promise<CIResult[]> => {
   const response = await api.get<CIResult[]>('/ci/runs', { params })
+  return response.data
+}
+
+/**
+ * 获取 Workflow Status 统一列表（CI Run + 镜像构建 Run）
+ */
+export const getWorkflowStatusRuns = async (params?: {
+  start_time?: string
+  end_time?: string
+  limit?: number
+}): Promise<WorkflowStatusRun[]> => {
+  const response = await api.get<WorkflowStatusRun[]>('/ci/workflow-status', { params })
+  return response.data
+}
+
+/**
+ * 实时刷新单个 CI Run 的状态与用例统计
+ */
+export const refreshWorkflowRun = async (runId: number): Promise<WorkflowStatusRun> => {
+  const response = await api.get<WorkflowStatusRun>(`/ci/runs/${runId}/live-status`)
   return response.data
 }
 

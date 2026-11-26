@@ -144,7 +144,7 @@ async def test_valid_build_link_propagates_result_only_to_members(
     )
     client.run.return_value = {
         "path": ".github/workflows/build.yaml@main",
-        "created_at": "2026-11-19T04:01:00Z",
+        "created_at": "2026-11-19T03:59:00Z",
         "status": "in_progress",
     }
     await module.submit_version_action(
@@ -199,23 +199,11 @@ def test_only_configured_build_workflow_counts():
             "https://github.com/another/repo/actions/runs/123", TARGET["repository"]
         )
     with pytest.raises(ValueError, match="工作流"):
-        module.verify_build_run({"path": ".github/workflows/tests.yaml"}, TARGET, NOW)
+        module.verify_build_run({"path": ".github/workflows/tests.yaml"}, TARGET)
 
 
-def test_build_started_too_early_shows_both_times_in_beijing_time():
-    run = {"path": ".github/workflows/build.yaml", "created_at": "2026-11-16T10:12:31Z"}
-    ready_at = datetime(2026, 11, 19, 0, 51, 43)
-    with pytest.raises(ValueError) as error:
-        module.verify_build_run(run, TARGET, ready_at)
-    assert str(error.value).startswith("构建时间早于本次配套恢复确认或 PR 合入时间。")
-    assert "2026-11-16 18:12:31" in str(error.value)
-    assert "2026-11-19 08:51:43" in str(error.value)
-    assert "北京时间" in str(error.value)
-
-
-def test_build_missing_creation_time_explains_the_missing_github_field():
-    with pytest.raises(ValueError, match="没有返回该构建 Run 的创建时间"):
-        module.verify_build_run({"path": ".github/workflows/build.yaml"}, TARGET, NOW)
+def test_build_validation_accepts_a_run_without_creation_time():
+    module.verify_build_run({"path": ".github/workflows/build.yaml"}, TARGET)
 
 
 @pytest.mark.asyncio

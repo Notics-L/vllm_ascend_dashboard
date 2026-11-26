@@ -56,6 +56,7 @@ from api.v1 import (
     stats,
     system_config,
     test_board,
+    upstream_test,
     users,
     workflow_actions,
     workflows,
@@ -454,6 +455,49 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error disposing database engine: {e}", exc_info=True)
 
 
+def _is_database_unavailable(exc: BaseException) -> bool:
+    """判断异常是否属于"数据库暂时连不上"。
+
+    MySQL 重启或网络瞬断时 SQLAlchemy 会抛出 ``OperationalError``（常伴随
+    ``InterfaceError``）、连接池的 ``TimeoutError``，以及 asyncmy/aiomysql 的
+    底层连接异常。这些都属于可恢复的基础设施故障，应当映射为 503 而不是 500。
+    """
+    try:
+        from sqlalchemy.exc import InterfaceError, OperationalError
+    except Exception:  # pragma: no cover - SQLAlchemy 一定可用
+        return False
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (OperationalError, InterfaceError)):
+            text = str(current).lower()
+            # 连接被服务端断开 / 重建中：2006 gone away、2013 lost connection、
+            # 2003 can't connect、连接池超时
+            if any(
+                marker in text
+                for marker in (
+                    "can't connect",
+                    "gone away",
+                    "lost connection",
+                    "connection refused",
+                    "connectionreset",
+                    "too many connections",
+                    "pool",
+                )
+            ):
+                return True
+            # 无法从文本判断时，OperationalError 本身也视为基础设施故障
+            return True
+        # asyncmy / aiomysql 原生连接异常
+        module = type(current).__module__ or ""
+        if module.startswith(("pymysql", "asyncmy", "aiomysql", "MySQLdb")):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def create_app() -> FastAPI:
     """创建 FastAPI 应用实例"""
 
@@ -522,6 +566,7 @@ def create_app() -> FastAPI:
     app.include_router(contributor_board.router, prefix="/api/v1/contributor-board", tags=["贡献者看板"])
     app.include_router(contributor_scoring.router, prefix="/api/v1/contributor-board/scoring", tags=["贡献者评分/权重版本"])
     app.include_router(release_management.router, prefix="/api/v1", tags=["发布件管理"])
+    app.include_router(upstream_test.router, prefix="/api/v1/upstream-test", tags=["上游测试"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["通知中心"])
 
     @app.get("/health")
@@ -570,6 +615,18 @@ def create_app() -> FastAPI:
         if isinstance(exc, (NameError, TypeError, AttributeError, KeyError)):
             detail = f"{type(exc).__name__}: {exc}" if settings.DEBUG else StatusCode.INTERNAL.default_msg
             return _respond(StatusCode.INTERNAL, detail)
+
+        # 数据库不可用 → 503
+        # 连接池拿不到连接（MySQL 重启、网络中断）属于可恢复的基础设施故障，
+        # 不能报 500：前端据此区分"凭据失效"和"服务暂时不可用"，才会自动重试
+        # 而不是把用户钉死在错误页上。
+        if _is_database_unavailable(exc):
+            logger.warning(
+                "Database unavailable on %s %s: %s", request.method, request.url.path, exc
+            )
+            return _respond(
+                StatusCode.SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试"
+            )
 
         # 超时/连接 → 503
         if isinstance(exc, (TimeoutError, ConnectionError, OSError)):

@@ -40,7 +40,12 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
       return
     }
     try {
-      const result = await testConnection.mutateAsync(form.getFieldValue('githubToken')?.trim() || undefined)
+      const token = form.getFieldValue('githubToken')?.trim() || undefined
+      if (!token && !data?.githubTokenConfigured) {
+        form.setFields([{ name: 'githubToken', errors: ['请输入 GitHub Token'] }])
+        return
+      }
+      const result = await testConnection.mutateAsync(token)
       if (result.verified) message.success(result.detail)
       else message.warning(result.detail)
     } catch (error) {
@@ -69,7 +74,7 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
   const handleSave = async ({ cron, githubToken }: DailyTriggerConfigInput) => {
     try {
       const saved = await saveConfig.mutateAsync({
-        cron,
+        cron: cron?.trim() ?? '',
         ...(githubToken?.trim() ? { githubToken: githubToken.trim() } : {}),
       })
       form.setFieldsValue({ cron: saved.cron ?? '', githubToken: '' })
@@ -111,7 +116,7 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
             <Form.Item
               name="githubToken"
               label="GitHub Token"
-              rules={[{ required: !data?.githubTokenConfigured, whitespace: true, message: '请输入 GitHub Token' }]}
+              rules={[{ required: hasCron && !data?.githubTokenConfigured, whitespace: true, message: '请输入 GitHub Token' }]}
             >
               <Input.Password
                 autoComplete="new-password"
@@ -130,9 +135,8 @@ function DailyTriggerSettings({ active }: { active: boolean }) {
                   <span>（北京时间）</span>
                 </div>
               ) : undefined}
-              rules={[{ required: true, whitespace: true, message: '请输入 Cron 表达式' }]}
             >
-              <CronExpressionInput placeholder="请输入 Cron 表达式" maxLength={120} />
+              <CronExpressionInput allowClear placeholder="留空并保存可取消定时触发" maxLength={120} />
             </Form.Item>
           </Form>
           <div className="daily-cases-actions daily-trigger-manual-action">

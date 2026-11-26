@@ -17,6 +17,7 @@ import DailyFailureTracking from './DailyFailureTracking'
 import NightlyTestCaseConfig from './NightlyTestCaseConfig'
 import CIDailyComprehensiveReport from './CIDailyComprehensiveReport'
 import WorkflowTestExecutionTable from '../components/WorkflowTestExecutionTable'
+import WorkflowStatusPanel from '../components/WorkflowStatusPanel'
 import CIBuildDurationChart from '../components/CIBuildDurationChart'
 import CIBuildTimeRange, { type CIBuildTimeRangeValue } from '../components/CIBuildTimeRange'
 import { toBuildStatsSummary } from '../utils/ciBuildStats'
@@ -24,7 +25,7 @@ import './CIBoard.css'
 
 const { Text, Title } = Typography
 
-const CI_BOARD_TABS = ['workflow', 'job', 'daily-failure', 'daily-report', 'test-case-config'] as const
+const CI_BOARD_TABS = ['workflow-status', 'workflow', 'job', 'daily-failure', 'daily-report', 'test-case-config'] as const
 type CIBoardTab = typeof CI_BOARD_TABS[number]
 const CI_BOARD_TAB_STORAGE_KEY = 'ci-board-active-tab'
 
@@ -46,7 +47,7 @@ function CIBoard() {
       ? window.localStorage.getItem(CI_BOARD_TAB_STORAGE_KEY)
       : null
     const tab = requestedTab || storedTab
-    return isCIBoardTab(tab) ? tab : 'workflow'
+    return isCIBoardTab(tab) ? tab : 'workflow-status'
   })
 
   useEffect(() => {
@@ -105,6 +106,16 @@ function CIBoard() {
           if (isCIBoardTab(tab)) setActiveTab(tab)
         }}
         items={[
+          {
+            key: 'workflow-status',
+            label: (
+              <Space>
+                <GithubOutlined />
+                <span>Workflow Status</span>
+              </Space>
+            ),
+            children: <WorkflowStatusPanel />,
+          },
           {
             key: 'workflow',
             label: (

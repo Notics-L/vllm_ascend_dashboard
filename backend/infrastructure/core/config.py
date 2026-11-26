@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     # not repeatedly parse the same persisted JSON snapshot.
     NPU_OCCUPANCY_RECORDS_CACHE_TTL_SECONDS: int = 60
 
+    # 上游测试（vllm-ascend/upstream-test）配置。
+    # 上游用例结果来自该公共仓库的 CSV，无需 token；CI 执行情况来自
+    # vllm-project/vllm-ascend 的 E2E-upstream workflow，需要 API 调用。
+    UPSTREAM_TEST_ENABLED: bool = True
+    UPSTREAM_TEST_SYNC_HOUR: int = 7
+    UPSTREAM_TEST_SYNC_MINUTE: int = 30
+    UPSTREAM_TEST_CI_OWNER: str = "vllm-project"
+    UPSTREAM_TEST_CI_REPO: str = "vllm-ascend"
+    UPSTREAM_TEST_CI_WORKFLOW_ID: int | None = 317272094
+
     # CORS 配置
     # 生产环境应明确指定允许的域名，不要使用 "*"
     CORS_ORIGINS: list[str] = [

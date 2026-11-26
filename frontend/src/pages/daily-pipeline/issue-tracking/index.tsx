@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Badge, Button, Modal, Select, Space, Tabs, message } from 'antd'
+import { Badge, Button, Modal, Popconfirm, Select, Space, Tabs, message } from 'antd'
 import { CheckOutlined } from '@ant-design/icons'
 import { isAxiosError } from 'axios'
 import { ProTable } from '@ant-design/pro-components'
@@ -27,7 +27,11 @@ const selectField = (values: string[], placeholder: string) => ({
   mode: 'multiple' as const, options: filterOptions(values), placeholder, allowClear: true, style: { width: '100%' },
 })
 
-function buildColumns(data: DailyFailedCase[]): ProColumns<DailyFailedCase>[] {
+function buildColumns(
+  data: DailyFailedCase[],
+  onUnshare?: (id: string) => Promise<void>,
+  unsharingId?: string,
+): ProColumns<DailyFailedCase>[] {
   return [
     { title: 'Run ID', dataIndex: 'runId', width: 125, valueType: 'text', order: 7,
       fieldProps: { placeholder: '请输入 Run ID', allowClear: true, style: { width: '100%' } },
@@ -61,11 +65,24 @@ function buildColumns(data: DailyFailedCase[]): ProColumns<DailyFailedCase>[] {
       } },
     { title: '链接', dataIndex: 'githubUrl', width: 76, search: false,
       render: (_, row) => collectionGithubLink(row.githubUrl) },
-    { title: '处理进展', dataIndex: 'processingProgress', key: 'processingProgress', width: 120, valueType: 'select', order: 3,
+    { title: '处理进展', dataIndex: 'processingProgress', key: 'processingProgress', width: 188, valueType: 'select', order: 3,
       fieldProps: selectField(data.map((row) => row.processingProgress), '全部进展'),
-      render: (_, row) => <Link className="daily-collection-history-link" to={'/daily-pipeline/issue-tracking/cases/' + encodeURIComponent(row.id) + '/progress'}>
-        {(row.processFlowSize ?? row.versionFlowSize ?? 1) > 1 ? '查看共用流程' : '查看'}
-      </Link> },
+      render: (_, row) => {
+        const shared = (row.processFlowSize ?? row.versionFlowSize ?? 1) > 1
+        const canUnshare = onUnshare && shared && row.issue?.state === 'open'
+          && ['待处理', '处理中', '未解决'].includes(row.processingProgress)
+        return <Space size="small">
+          <Link className="daily-collection-history-link" to={'/daily-pipeline/issue-tracking/cases/' + encodeURIComponent(row.id) + '/progress'}>
+            {shared ? '查看共用流程' : '查看'}
+          </Link>
+          {canUnshare && <Popconfirm title="取消该用例的共用流程？"
+            description="该用例将从问题分类重新开始，其余用例继续原流程。"
+            okText="确认" cancelText="取消" onConfirm={() => onUnshare(row.id)}>
+            <Button type="link" size="small" danger className="daily-collection-link"
+              disabled={Boolean(unsharingId)} loading={unsharingId === row.id}>取消共用</Button>
+          </Popconfirm>}
+        </Space>
+      } },
   ]
 }
 
@@ -77,7 +94,7 @@ function DailyPipelineIssueTracking() {
   const opening = useDailyTabOpening(showFailures)
   const { data = [], isFetching, refetch } = failedCases
   const { data: user } = useCurrentUser()
-  const { share } = useDailyVersionFlowMutations()
+  const { share, unshare } = useDailyVersionFlowMutations()
   const canShare = user?.role === 'admin' || user?.role === 'super_admin'
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [shareOpen, setShareOpen] = useState(false)
@@ -95,6 +112,16 @@ function DailyPipelineIssueTracking() {
       setShareOpen(false)
       setSelectedIds([])
       setTarget(undefined)
+    }
+  }
+  const cancelSharing = async (id: string) => {
+    try {
+      await unshare.mutateAsync(id)
+      setSelectedIds((current) => current.filter((item) => item !== id))
+      void message.success('已取消共用')
+    } catch (error) {
+      const detail = isAxiosError(error) ? error.response?.data?.detail : null
+      void message.error(typeof detail === 'string' ? detail : '取消共用失败，请稍后重试')
     }
   }
   useDailyQueryError(failedCases, '失败用例加载失败', showFailures)
@@ -135,9 +162,9 @@ function DailyPipelineIssueTracking() {
       }}
       onSubmit={(values) => { setFilters(values); setCurrentPage(1) }}
       onReset={() => { setFilters({}); setCurrentPage(1) }}
-      columns={buildColumns(data)} dataSource={filteredCases}
+      columns={buildColumns(data, canShare ? cancelSharing : undefined, unshare.isPending ? unshare.variables : undefined)} dataSource={filteredCases}
       {...dailyTableRefresh(refetch, showFailures && (opening || isFetching), { current: currentPage, onChange: setCurrentPage, defaultPageSize: 10, pageSizeOptions: ['10', '20', '50'], showSizeChanger: true })}
-      scroll={{ x: 1176 }}
+      scroll={{ x: 1244 }}
     />
     <Modal title="共用处理流程" open={shareOpen} okText="确认共用" cancelText="取消"
       okButtonProps={{ disabled: !target || selectedIds.length < 2, size: 'small', icon: <CheckOutlined /> }}
@@ -146,7 +173,9 @@ function DailyPipelineIssueTracking() {
       onOk={confirmShare} onCancel={() => { if (!share.isPending) setShareOpen(false) }}>
       <Select aria-label="保留的流程" placeholder="选择要保留的用例流程"
         value={target} onChange={setTarget} style={{ width: '100%' }}
-        options={selectedCases.map((row) => ({ value: row.id, label: `${failedCaseDisplayName(row)} · #${row.id}` }))} />
+        options={selectedCases.map((row) => ({
+          value: row.id, label: `${failedCaseDisplayName(row)} · ${row.problemCategory ?? '未分类'} · #${row.id}`,
+        }))} />
     </Modal>
       </> },
       { key: 'issues', label: 'issue', forceRender: true, children: <IssueTable active={activeTab === 'issues'} /> },
