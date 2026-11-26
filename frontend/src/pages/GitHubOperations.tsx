@@ -53,7 +53,12 @@ const sources: Record<string, string> = {
   failure_analysis: 'CI 失败分析',
   agent: 'AI 问题定位',
 }
-const processes: Record<string, string> = { api: 'API', scheduler: '调度器', collector: '采集器' }
+const processes: Record<string, string> = {
+  api: 'API',
+  scheduler: '调度器',
+  collector: '采集器',
+  daily_scheduler: 'Daily 调度器',
+}
 const credentialSources: Record<GitHubCredentialSource, string> = {
   global: '全局 Token',
   daily: 'Daily 专用 Token',
