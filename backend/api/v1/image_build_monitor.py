@@ -28,6 +28,9 @@ class TargetPayload(BaseModel):
     notify_on_failure: bool = True
     notify_on_missing: bool = True
     notify_on_stuck: bool = True
+    notify_window_enabled: bool = True
+    notify_window_start: str = "20:00"
+    notify_window_end: str = "08:00"
     stuck_threshold_minutes: int = Field(default=180, ge=5, le=2880)
     cooldown_minutes: int = Field(default=60, ge=5, le=10080)
 
@@ -35,6 +38,19 @@ class TargetPayload(BaseModel):
 class TestEmailPayload(BaseModel):
     recipients: list[str] = Field(min_length=1)
     target_id: int | None = None
+
+
+def _normalize_hhmm(value: str | None, default: str) -> str:
+    """校验并标准化 HH:MM，非法输入回退到默认值。"""
+    raw = (value or "").strip()
+    try:
+        hour, minute = raw.split(":", 1)
+        h, m = int(hour), int(minute)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return f"{h:02d}:{m:02d}"
+    except (ValueError, TypeError):
+        pass
+    return default
 
 
 def _apply_payload(target: ImageBuildMonitorTarget, payload: TargetPayload) -> None:
@@ -47,6 +63,9 @@ def _apply_payload(target: ImageBuildMonitorTarget, payload: TargetPayload) -> N
     target.notify_on_failure = payload.notify_on_failure
     target.notify_on_missing = payload.notify_on_missing
     target.notify_on_stuck = payload.notify_on_stuck
+    target.notify_window_enabled = payload.notify_window_enabled
+    target.notify_window_start = _normalize_hhmm(payload.notify_window_start, "20:00")
+    target.notify_window_end = _normalize_hhmm(payload.notify_window_end, "08:00")
     target.stuck_threshold_minutes = payload.stuck_threshold_minutes
     target.cooldown_minutes = payload.cooldown_minutes
 
@@ -172,9 +191,34 @@ async def get_target_runs(
     target_id: int,
     db: DbSession,
     _: CurrentUser,
-    limit: int = Query(default=20, ge=1, le=100),
+    branch: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
-    return {"items": await ImageBuildMonitorService(db).get_target_runs(target_id, limit)}
+    return await ImageBuildMonitorService(db).list_target_runs(
+        target_id, branch=branch, page=page, page_size=page_size
+    )
+
+
+@router.post("/targets/{target_id}/refresh")
+async def refresh_target(
+    target_id: int,
+    db: DbSession,
+    _: CurrentAdminUser,
+    branch: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    service = ImageBuildMonitorService(db)
+    result = await service.refresh_target_runs(target_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="监控目标不存在")
+    return {
+        "synced_runs": result,
+        **await service.list_target_runs(
+            target_id, branch=branch, page=page, page_size=page_size
+        ),
+    }
 
 
 @router.get("/alerts")
@@ -184,6 +228,8 @@ async def list_alerts(
     status: str | None = Query(default=None),
     alert_type: str | None = Query(default=None),
     release_workflow_id: int | None = Query(default=None),
+    start_time: str | None = Query(default=None),
+    end_time: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -191,6 +237,8 @@ async def list_alerts(
         status=status,
         alert_type=alert_type,
         release_workflow_id=release_workflow_id,
+        start_time=start_time,
+        end_time=end_time,
         page=page,
         page_size=page_size,
     )
@@ -247,3 +295,16 @@ async def send_test_email(
     if not recipients:
         raise HTTPException(status_code=400, detail="请至少填写一个收件邮箱")
     return await ImageBuildMonitorService(db).send_test_email(recipients, payload.target_id)
+
+
+class PreviewEmailPayload(BaseModel):
+    target_id: int | None = None
+
+
+@router.post("/test-email/preview")
+async def preview_test_email(
+    payload: PreviewEmailPayload,
+    db: DbSession,
+    _: CurrentAdminUser,
+) -> dict[str, Any]:
+    return await ImageBuildMonitorService(db).preview_test_email(payload.target_id)

@@ -17,6 +17,9 @@ export interface MonitorTarget {
   notify_on_failure: boolean
   notify_on_missing: boolean
   notify_on_stuck: boolean
+  notify_window_enabled: boolean
+  notify_window_start: string
+  notify_window_end: string
   stuck_threshold_minutes: number
   cooldown_minutes: number
   last_checked_at: string | null
@@ -139,6 +142,9 @@ export interface TargetPayload {
   notify_on_failure?: boolean
   notify_on_missing?: boolean
   notify_on_stuck?: boolean
+  notify_window_enabled?: boolean
+  notify_window_start?: string
+  notify_window_end?: string
   stuck_threshold_minutes?: number
   cooldown_minutes?: number
 }
@@ -154,6 +160,7 @@ export interface TargetRun {
   completed_at: string | null
   wall_duration: number | null
   num_jobs: number
+  job_summary?: Record<string, number>
   url: string | null
 }
 
@@ -199,17 +206,53 @@ export const deleteTarget = async (id: number): Promise<void> => {
   await api.delete(`/image-build-monitor/targets/${id}`)
 }
 
-export const getTargetRuns = async (id: number, limit = 20): Promise<TargetRun[]> => {
-  const { data } = await api.get<{ items: TargetRun[] }>(`/image-build-monitor/targets/${id}/runs`, {
-    params: { limit },
+export interface TargetRunsPage {
+  items: TargetRun[]
+  total: number
+  page: number
+  page_size: number
+  branches: string[]
+}
+
+export interface TargetRunsQuery {
+  branch?: string
+  page?: number
+  page_size?: number
+}
+
+export const getTargetRuns = async (
+  id: number,
+  params: TargetRunsQuery = {},
+): Promise<TargetRunsPage> => {
+  const { data } = await api.get<TargetRunsPage>(`/image-build-monitor/targets/${id}/runs`, {
+    params: { page: params.page ?? 1, page_size: params.page_size ?? 20, branch: params.branch },
   })
-  return data.items
+  return data
+}
+
+export const refreshTargetRuns = async (
+  id: number,
+  params: TargetRunsQuery = {},
+): Promise<TargetRunsPage & { synced_runs: number }> => {
+  const { data } = await api.post(`/image-build-monitor/targets/${id}/refresh`, undefined, {
+    params: { page: params.page ?? 1, page_size: params.page_size ?? 20, branch: params.branch },
+  })
+  return data
+}
+
+export const previewTestEmail = async (payload: {
+  target_id?: number
+}): Promise<{ subject: string; html: string; window: string }> => {
+  const { data } = await api.post('/image-build-monitor/test-email/preview', payload)
+  return data
 }
 
 export const listAlerts = async (params?: {
   status?: string
   alert_type?: string
   release_workflow_id?: number
+  start_time?: string
+  end_time?: string
   page?: number
   page_size?: number
 }): Promise<{ total: number; page: number; page_size: number; items: MonitorAlert[] }> => {

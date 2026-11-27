@@ -113,6 +113,9 @@ async def run() -> dict[str, int]:
             for column, ddl in (
                 ("last_check_success_at", "DATETIME DEFAULT NULL"),
                 ("last_check_error", "TEXT DEFAULT NULL"),
+                ("notify_window_enabled", "TINYINT(1) NOT NULL DEFAULT 1"),
+                ("notify_window_start", "VARCHAR(5) NOT NULL DEFAULT '20:00'"),
+                ("notify_window_end", "VARCHAR(5) NOT NULL DEFAULT '08:00'"),
             ):
                 if not await _column_exists(db, "image_build_monitor_targets", column):
                     await db.execute(

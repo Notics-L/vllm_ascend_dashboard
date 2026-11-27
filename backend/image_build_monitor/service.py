@@ -30,7 +30,8 @@ from notifications.service import NotificationDispatcher
 
 logger = logging.getLogger(__name__)
 
-FAILED_STATUSES = {"failure", "timed_out", "startup_failure", "cancelled"}
+FAILED_STATUSES = {"failure", "timed_out", "startup_failure"}
+CANCELLED_STATUSES = {"cancelled"}
 ACTIVE_STATUSES = {"queued", "in_progress", "waiting", "requested", "pending"}
 SUCCESS_STATUSES = {"success", "completed"}
 
@@ -101,6 +102,52 @@ def _previous_fire_time(cron: str, tz_name: str, now: datetime) -> datetime | No
     except Exception as exc:
         logger.warning("Failed to compute previous fire time for cron '%s': %s", cron, exc)
         return None
+
+
+def _parse_hhmm(value: str | None, default: str) -> int:
+    """将 HH:MM 解析为当天分钟数，非法时返回默认值。"""
+    raw = (value or default).strip()
+    try:
+        hour, minute = raw.split(":", 1)
+        h, m = int(hour), int(minute)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except (ValueError, TypeError):
+        pass
+    h, m = default.split(":", 1)
+    return int(h) * 60 + int(m)
+
+
+def _in_monitor_window(value: datetime | None, target: Any) -> bool:
+    """判断时间是否落在监控时间窗口内（支持跨天，如 20:00-08:00）。"""
+    if value is None:
+        return False
+    enabled = getattr(target, "notify_window_enabled", True)
+    if enabled is not None and not bool(enabled):
+        return True
+    tz_name = getattr(target, "timezone", None) or "Asia/Shanghai"
+    try:
+        local = _as_utc(value).astimezone(ZoneInfo(tz_name))
+    except Exception:  # noqa: BLE001
+        local = _as_utc(value)
+    minutes = local.hour * 60 + local.minute
+    start = _parse_hhmm(getattr(target, "notify_window_start", None), "20:00")
+    end = _parse_hhmm(getattr(target, "notify_window_end", None), "08:00")
+    if start == end:
+        return True
+    if start < end:
+        return start <= minutes < end
+    return minutes >= start or minutes < end
+
+
+def _window_label(target: Any) -> str:
+    enabled = getattr(target, "notify_window_enabled", True)
+    if enabled is not None and not bool(enabled):
+        return "全天"
+    start = getattr(target, "notify_window_start", None) or "20:00"
+    end = getattr(target, "notify_window_end", None) or "08:00"
+    tz_name = getattr(target, "timezone", None) or "Asia/Shanghai"
+    return f"{start}-{end} ({tz_name})"
 
 
 class ImageBuildMonitorService:
@@ -200,6 +247,11 @@ class ImageBuildMonitorService:
             "notify_on_failure": target.notify_on_failure,
             "notify_on_missing": target.notify_on_missing,
             "notify_on_stuck": target.notify_on_stuck,
+            "notify_window_enabled": bool(
+                getattr(target, "notify_window_enabled", True) is not False
+            ),
+            "notify_window_start": getattr(target, "notify_window_start", None) or "20:00",
+            "notify_window_end": getattr(target, "notify_window_end", None) or "08:00",
             "stuck_threshold_minutes": target.stuck_threshold_minutes,
             "cooldown_minutes": target.cooldown_minutes,
             "last_checked_at": _iso(target.last_checked_at),
@@ -223,37 +275,110 @@ class ImageBuildMonitorService:
             ),
         }
 
-    async def get_target_runs(self, target_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    async def list_target_runs(
+        self,
+        target_id: int,
+        *,
+        branch: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
         target = await self.db.get(ImageBuildMonitorTarget, target_id)
         if not target:
-            return []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "branches": []}
         wf = await self.db.get(ReleaseWorkflow, target.release_workflow_id)
         if not wf:
-            return []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "branches": []}
+
+        branches = [
+            str(value)
+            for value in (
+                await self.db.execute(
+                    select(ReleaseBuildRun.branch)
+                    .where(
+                        ReleaseBuildRun.workflow_id == wf.id,
+                        ReleaseBuildRun.branch.is_not(None),
+                        ReleaseBuildRun.branch != "",
+                    )
+                    .distinct()
+                    .order_by(ReleaseBuildRun.branch)
+                )
+            ).scalars().all()
+        ]
+        conditions = [ReleaseBuildRun.workflow_id == wf.id]
+        if branch:
+            conditions.append(ReleaseBuildRun.branch == branch)
+        total = int(
+            (
+                await self.db.execute(
+                    select(func.count(ReleaseBuildRun.id)).where(*conditions)
+                )
+            ).scalar_one()
+        )
         runs = (
             await self.db.execute(
                 select(ReleaseBuildRun)
-                .where(ReleaseBuildRun.workflow_id == wf.id)
+                .where(*conditions)
                 .order_by(ReleaseBuildRun.created_at_remote.desc())
-                .limit(limit)
+                .offset(max(page - 1, 0) * page_size)
+                .limit(page_size)
             )
         ).scalars().all()
-        return [
-            {
-                "id": run.id,
-                "github_run_id": run.github_run_id,
-                "status": run.status,
-                "event": run.event,
-                "branch": run.branch,
-                "commit_sha": run.commit_sha,
-                "created_at": _iso(run.created_at_remote),
-                "completed_at": _iso(run.completed_at_remote),
-                "wall_duration": run.wall_duration,
-                "num_jobs": run.num_jobs,
-                "url": _run_url(wf, run),
-            }
-            for run in runs
-        ]
+        return {
+            "items": [self._serialize_target_run(wf, run) for run in runs],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "branches": branches,
+        }
+
+    async def get_target_runs(self, target_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        result = await self.list_target_runs(target_id, page=1, page_size=limit)
+        return result["items"]
+
+    @staticmethod
+    def _serialize_target_run(wf: ReleaseWorkflow, run: ReleaseBuildRun) -> dict[str, Any]:
+        return {
+            "id": run.id,
+            "github_run_id": run.github_run_id,
+            "status": run.status,
+            "event": run.event,
+            "branch": run.branch,
+            "commit_sha": run.commit_sha,
+            "created_at": _iso(run.created_at_remote),
+            "completed_at": _iso(run.completed_at_remote),
+            "wall_duration": run.wall_duration,
+            "num_jobs": run.num_jobs,
+            "job_summary": ImageBuildMonitorService._parse_job_summary(
+                run.conclusion_summary
+            ),
+            "url": _run_url(wf, run),
+        }
+
+    async def refresh_target_runs(self, target_id: int) -> int | None:
+        """实时从 GitHub 拉取该目标最近运行并写入本地，返回同步条数。"""
+        target = await self.db.get(ImageBuildMonitorTarget, target_id)
+        if not target:
+            return None
+        wf = await self.db.get(ReleaseWorkflow, target.release_workflow_id)
+        if not wf:
+            return None
+        synced = await self._sync_recent_runs(wf)
+        target.last_checked_at = datetime.now(UTC)
+        target.last_check_success_at = datetime.now(UTC)
+        target.last_check_error = None
+        await self.db.commit()
+        return synced
+
+    @staticmethod
+    def _parse_job_summary(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     # ------------------------------------------------------------------
     # Alert queries
@@ -265,6 +390,8 @@ class ImageBuildMonitorService:
         status: str | None = None,
         alert_type: str | None = None,
         release_workflow_id: int | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
@@ -278,6 +405,12 @@ class ImageBuildMonitorService:
             conditions.append(ImageBuildAlert.alert_type == alert_type)
         if release_workflow_id:
             conditions.append(ImageBuildAlert.release_workflow_id == release_workflow_id)
+        start_dt = _parse_gh_dt(start_time)
+        if start_dt:
+            conditions.append(ImageBuildAlert.first_detected_at >= start_dt)
+        end_dt = _parse_gh_dt(end_time)
+        if end_dt:
+            conditions.append(ImageBuildAlert.first_detected_at <= end_dt)
 
         total = int(
             (
@@ -893,6 +1026,8 @@ class ImageBuildMonitorService:
                 created_at = _as_utc(run.created_at_remote)
                 if status not in FAILED_STATUSES or not created_at or created_at < failure_since:
                     continue
+                if not _in_monitor_window(created_at, target):
+                    continue
                 key = f"failure:{wf.id}:{run.github_run_id}"
                 existing = open_by_key.get(key)
                 if existing:
@@ -937,6 +1072,8 @@ class ImageBuildMonitorService:
                 created_at = _as_utc(run.created_at_remote)
                 if status not in ACTIVE_STATUSES or not created_at or created_at > stuck_before:
                     continue
+                if not _in_monitor_window(created_at, target):
+                    continue
                 key = f"stuck:{wf.id}:{run.github_run_id}"
                 existing = open_by_key.get(key)
                 if existing:
@@ -975,14 +1112,9 @@ class ImageBuildMonitorService:
         has_scheduled_run = False
         if target.notify_on_missing and target.schedule_cron:
             prev_fire = _previous_fire_time(target.schedule_cron, target.timezone, now)
-            if prev_fire:
+            if prev_fire and _in_monitor_window(prev_fire, target):
                 grace_end = prev_fire + timedelta(minutes=max(int(target.grace_minutes or 30), 0))
-                has_scheduled_run = any(
-                    (run.event or "").lower() == "schedule"
-                    and _as_utc(run.created_at_remote) is not None
-                    and _as_utc(run.created_at_remote) >= prev_fire - timedelta(minutes=5)
-                    for run in runs
-                )
+                has_scheduled_run = self._schedule_fulfilled(runs, prev_fire)
                 if now >= grace_end and not has_scheduled_run:
                     key = f"missing:{wf.id}:{prev_fire.isoformat()}"
                     existing = open_by_key.get(key)
@@ -1085,12 +1217,7 @@ class ImageBuildMonitorService:
                         expected_dt = _as_utc(datetime.fromisoformat(expected))
                     except ValueError:
                         expected_dt = None
-                    if expected_dt and any(
-                        (run.event or "").lower() == "schedule"
-                        and _as_utc(run.created_at_remote) is not None
-                        and _as_utc(run.created_at_remote) >= expected_dt
-                        for run in runs
-                    ):
+                    if expected_dt and self._schedule_fulfilled(runs, expected_dt):
                         self._resolve(alert, now)
                         resolved += 1
 
@@ -1129,6 +1256,34 @@ class ImageBuildMonitorService:
             bucket.append(alert)
 
     @staticmethod
+    def _schedule_fulfilled(runs: list[ReleaseBuildRun], expected: datetime) -> bool:
+        """定时任务是否已完成。
+
+        被取消的定时运行不算完成；但如果取消后有人工重新触发的新运行，
+        则视为调度已被后续运行接管，避免误报“定时未触发”。
+        """
+        scheduled = [
+            run
+            for run in runs
+            if (run.event or "").lower() == "schedule"
+            and _as_utc(run.created_at_remote) is not None
+            and _as_utc(run.created_at_remote) >= expected - timedelta(minutes=5)
+        ]
+        if not scheduled:
+            return False
+        if any((run.status or "").lower() not in CANCELLED_STATUSES for run in scheduled):
+            return True
+        latest = max(scheduled, key=lambda run: _as_utc(run.created_at_remote))
+        latest_at = _as_utc(latest.created_at_remote)
+        return any(
+            (run.status or "").lower() not in CANCELLED_STATUSES
+            and _as_utc(run.created_at_remote) is not None
+            and latest_at is not None
+            and _as_utc(run.created_at_remote) > latest_at
+            for run in runs
+        )
+
+    @staticmethod
     def _resolve(alert: ImageBuildAlert, now: datetime) -> None:
         alert.status = "resolved"
         alert.resolved_at = now
@@ -1140,6 +1295,198 @@ class ImageBuildMonitorService:
             f"run #{run.github_run_id} 构建失败（状态 {run.status}，分支 {run.branch or '-'}，"
             f"event {run.event or '-'}）。Job 汇总：{summary or '-'}"
         )
+
+    async def build_alert_email(
+        self,
+        target: ImageBuildMonitorTarget,
+        wf: ReleaseWorkflow,
+        alerts: list[ImageBuildAlert],
+    ) -> tuple[str, str]:
+        type_zh = {"failure": "构建失败", "missing": "定时未触发", "stuck": "构建卡住"}
+        subject = (
+            f"[vLLM Ascend 镜像构建告警] {wf.repo_name}/{wf.workflow_name} - "
+            + "/".join(sorted({type_zh.get(a.alert_type, a.alert_type) for a in alerts}))
+        )
+        type_color = {"failure": "#cf1322", "missing": "#c41d7f", "stuck": "#d46b08"}
+        window_label = _window_label(target)
+
+        rows_data: list[dict[str, Any]] = []
+        aggregate = {"total": 0, "success": 0, "failure": 0, "skipped": 0, "other": 0}
+        for index, alert in enumerate(alerts):
+            run = await self._run_for_alert(alert) if alert.github_run_id else None
+            summary = self._parse_job_summary(run.conclusion_summary) if run else {}
+            failed_jobs: list[dict[str, Any]] = []
+            if alert.alert_type == "failure" and run is not None:
+                failed_jobs = await self._failed_jobs_for_run(
+                    wf, run, allow_remote=index < 3
+                )
+            if run is not None and alert.alert_type == "failure":
+                for key in aggregate:
+                    try:
+                        aggregate[key] += int(summary.get(key) or 0)
+                    except (TypeError, ValueError):
+                        continue
+
+            if alert.alert_type == "failure":
+                if failed_jobs:
+                    error_parts = []
+                    for job in failed_jobs[:8]:
+                        steps = "、".join(
+                            str(step.get("name") or "-")
+                            for step in (job.get("failed_steps") or [])
+                        )
+                        part = f"{job.get('name') or '未命名 Job'}[{job.get('status') or '-'}]"
+                        if steps:
+                            part += f" 失败步骤：{steps}"
+                        error_parts.append(part)
+                    if len(failed_jobs) > 8:
+                        error_parts.append(f"…其余 {len(failed_jobs) - 8} 个失败 Job")
+                    error_text = "；".join(error_parts)
+                else:
+                    error_text = alert.message or alert.title
+            else:
+                error_text = alert.message or alert.title
+
+            sort_dt = (
+                _as_utc(run.created_at_remote) if run is not None else None
+            ) or _as_utc(alert.first_detected_at)
+            if run is None and alert.alert_type == "missing":
+                expected_raw = (alert.details or {}).get("expected_fire_at")
+                try:
+                    expected_dt = _as_utc(datetime.fromisoformat(expected_raw))
+                except (TypeError, ValueError):
+                    expected_dt = None
+                if expected_dt:
+                    sort_dt = expected_dt
+            rows_data.append(
+                {
+                    "alert": alert,
+                    "run": run,
+                    "summary": summary,
+                    "error_text": error_text,
+                    "sort_dt": sort_dt,
+                    "started_at": sort_dt,
+                }
+            )
+
+        rows_data.sort(
+            key=lambda item: item["sort_dt"]
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        type_counts = {
+            key: sum(1 for alert in alerts if alert.alert_type == key)
+            for key in ("failure", "missing", "stuck")
+        }
+        html = await self._render_alert_email(
+            target, wf, rows_data, type_counts, aggregate, window_label
+        )
+        return subject, html
+
+    async def _render_alert_email(
+        self,
+        target: ImageBuildMonitorTarget,
+        wf: ReleaseWorkflow,
+        rows_data: list[dict[str, Any]],
+        type_counts: dict[str, int],
+        aggregate: dict[str, int],
+        window_label: str,
+    ) -> str:
+        type_zh = {"failure": "构建失败", "missing": "定时未触发", "stuck": "构建卡住"}
+        type_color = {"failure": "#cf1322", "missing": "#c41d7f", "stuck": "#d46b08"}
+
+        def stat_badge(summary: dict[str, Any], icon: str, label: str, key: str, color: str) -> str:
+            try:
+                value = int(summary.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            return (
+                f'<span title="{label}" style="display:inline-block;white-space:nowrap;'
+                f'margin-right:7px;color:{color};font-weight:600;">{icon} {value}</span>'
+            )
+
+        table_rows: list[str] = []
+        for item in rows_data:
+            alert = item["alert"]
+            summary = item["summary"]
+            run = item["run"]
+            type_label = type_zh.get(alert.alert_type, alert.alert_type)
+            color = type_color.get(alert.alert_type, "#666")
+            started = html_lib.escape(
+                item["started_at"]
+                .astimezone(ZoneInfo(target.timezone or "Asia/Shanghai"))
+                .strftime("%Y-%m-%d %H:%M")
+                if item["started_at"]
+                else "-"
+            )
+            branch = html_lib.escape(alert.branch or (run.branch if run else None) or "-")
+            event = html_lib.escape(alert.event or (run.event if run else None) or "-")
+            error_html = html_lib.escape(item["error_text"] or "-")
+            run_url = html_lib.escape(alert.run_url or "")
+            link_html = (
+                f'<a href="{run_url}" style="color:#1677ff;white-space:nowrap;">查看 Run</a>'
+                if run_url
+                else '<span style="color:#999;">-</span>'
+            )
+            job_html = (
+                stat_badge(summary, "📦", "总 Job", "total", "#595959")
+                + stat_badge(summary, "✅", "成功", "success", "#389e0d")
+                + stat_badge(summary, "❌", "失败", "failure", "#cf1322")
+                + stat_badge(summary, "⏭", "跳过", "skipped", "#8c8c8c")
+                + stat_badge(summary, "➖", "其他", "other", "#d46b08")
+            )
+            table_rows.append(
+                f'<tr style="border-top:1px solid #f0f0f0;">'
+                f'<td style="padding:8px 10px;white-space:nowrap;vertical-align:top;">{started}</td>'
+                f'<td style="padding:8px 10px;white-space:nowrap;vertical-align:top;"><span style="color:{color};font-weight:600;">{type_label}</span></td>'
+                f'<td style="padding:8px 10px;white-space:nowrap;vertical-align:top;">{branch}<br><span style="color:#999;font-size:11px;">{event}</span></td>'
+                f'<td style="padding:8px 10px;vertical-align:top;color:#555;max-width:320px;word-break:break-word;">{error_html}</td>'
+                f'<td style="padding:8px 10px;white-space:nowrap;vertical-align:top;font-size:12px;">{job_html}</td>'
+                f'<td style="padding:8px 10px;white-space:nowrap;vertical-align:top;">{link_html}</td>'
+                f"</tr>"
+            )
+
+        aggregate_html = (
+            f'<span title="总 Job" style="margin-right:10px;">📦 总 {aggregate["total"]}</span>'
+            f'<span title="成功" style="margin-right:10px;color:#389e0d;">✅ {aggregate["success"]}</span>'
+            f'<span title="失败" style="margin-right:10px;color:#cf1322;">❌ {aggregate["failure"]}</span>'
+            f'<span title="跳过" style="margin-right:10px;color:#8c8c8c;">⏭ {aggregate["skipped"]}</span>'
+            f'<span title="其他" style="color:#d46b08;">➖ {aggregate["other"]}</span>'
+        )
+        alert_total = sum(type_counts.values())
+
+        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="font-family:Arial,sans-serif;padding:20px;color:#222;background:#fafafa;">
+<div style="max-width:980px;margin:0 auto;">
+<h2 style="color:#cf1322;margin-bottom:6px;">⚠ 镜像构建异常告警</h2>
+<p style="margin:0 0 10px;color:#555;">仓库：<strong>{html_lib.escape(wf.repo_owner)}/{html_lib.escape(wf.repo_name)}</strong>　Workflow：<strong>{html_lib.escape(wf.workflow_name)}</strong>　统计区间：<strong>{html_lib.escape(window_label)}</strong></p>
+<div style="background:#fff1f0;border:1px solid #ffccc7;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#555;">
+  共 <strong style="color:#cf1322;">{alert_total}</strong> 条异常：
+  构建失败 <strong>{type_counts["failure"]}</strong>，
+  定时未触发 <strong>{type_counts["missing"]}</strong>，
+  构建卡住 <strong>{type_counts["stuck"]}</strong>。
+  <div style="margin-top:6px;color:#888;">失败运行 Job 合计：{aggregate_html}</div>
+</div>
+<table style="width:100%;border-collapse:collapse;background:#fff;font-size:12px;border:1px solid #f0f0f0;">
+  <thead>
+    <tr style="background:#fafafa;color:#888;text-align:left;">
+      <th style="padding:8px 10px;font-weight:600;">启动时间（倒序）</th>
+      <th style="padding:8px 10px;font-weight:600;">类型</th>
+      <th style="padding:8px 10px;font-weight:600;">分支 / Event</th>
+      <th style="padding:8px 10px;font-weight:600;">错误概况</th>
+      <th style="padding:8px 10px;font-weight:600;">Job 统计</th>
+      <th style="padding:8px 10px;font-weight:600;">链接</th>
+    </tr>
+  </thead>
+  <tbody>
+    {''.join(table_rows)}
+  </tbody>
+</table>
+<p style="color:#999;font-size:12px;margin-top:14px;">按启动时间倒序排列；同一次运行仅汇总为一行，可在 GitHub Run 中查看完整日志。vLLM Ascend Dashboard 镜像构建监控自动发送</p>
+</div>
+</body></html>"""
+        return html
 
     async def _send_alerts_email(
         self,
@@ -1170,111 +1517,7 @@ class ImageBuildMonitorService:
                 )
             return 0
 
-        type_zh = {"failure": "构建失败", "missing": "定时未触发", "stuck": "构建卡住"}
-        subject = (
-            f"[vLLM Ascend 镜像构建告警] {wf.repo_name}/{wf.workflow_name} - "
-            + "/".join(sorted({type_zh.get(a.alert_type, a.alert_type) for a in alerts}))
-        )
-        type_color = {"failure": "#cf1322", "missing": "#c41d7f", "stuck": "#d46b08"}
-        cards: list[str] = []
-        for index, alert in enumerate(alerts):
-            type_label = type_zh.get(alert.alert_type, alert.alert_type)
-            color = type_color.get(alert.alert_type, "#666")
-            run_url = html_lib.escape(alert.run_url or "")
-            run_link = f'<a href="{run_url}">{run_url}</a>' if run_url else "-"
-            branch = html_lib.escape(alert.branch or "-")
-            event = html_lib.escape(alert.event or "-")
-            title = html_lib.escape(alert.title)
-            message = html_lib.escape(alert.message or "-")
-            first_seen = html_lib.escape(_iso(alert.first_detected_at) or "-")
-
-            failure_block = ""
-            if alert.alert_type == "failure":
-                run = await self._run_for_alert(alert)
-                summary: dict[str, Any] = {}
-                failed_jobs: list[dict[str, Any]] = []
-                if run is not None:
-                    try:
-                        summary = json.loads(run.conclusion_summary or "{}")
-                    except (TypeError, ValueError):
-                        summary = {}
-                    failed_jobs = await self._failed_jobs_for_run(
-                        wf, run, allow_remote=index < 3
-                    )
-                summary_cells = "".join(
-                    f'<td style="padding:6px 10px;border:1px solid #eee;">'
-                    f'<div style="color:#888;font-size:11px;">{label}</div>'
-                    f'<div style="font-weight:600;font-size:15px;">{summary.get(key, 0)}</div>'
-                    f"</td>"
-                    for key, label in (("total", "总 Job"), ("success", "成功"), ("failure", "失败"), ("skipped", "跳过"), ("other", "其他"))
-                )
-                if summary:
-                    failure_block += (
-                        '<table style="border-collapse:collapse;margin:10px 0;font-size:12px;">'
-                        f"<tr>{summary_cells}</tr></table>"
-                    )
-                if failed_jobs:
-                    items = []
-                    for job in failed_jobs:
-                        job_name = html_lib.escape(job.get("name") or "未命名 Job")
-                        job_status = html_lib.escape(str(job.get("status") or "-"))
-                        job_url = html_lib.escape(job.get("url") or "")
-                        name_html = (
-                            f'<a href="{job_url}" style="color:#1677ff;font-weight:600;">{job_name}</a>'
-                            if job_url
-                            else f'<span style="font-weight:600;">{job_name}</span>'
-                        )
-                        steps = job.get("failed_steps") or []
-                        step_html = ""
-                        if steps:
-                            step_names = "、".join(
-                                html_lib.escape(str(step.get("name") or "-")) for step in steps
-                            )
-                            step_html = (
-                                f'<div style="color:#cf1322;margin-top:3px;">失败步骤：{step_names}</div>'
-                            )
-                        items.append(
-                            f'<li style="margin-bottom:8px;">{name_html} '
-                            f'<span style="color:#cf1322;font-size:12px;">[{job_status}]</span>'
-                            f"{step_html}</li>"
-                        )
-                    failure_block += (
-                        f'<div style="margin-top:8px;font-size:13px;">'
-                        f'<div style="color:#555;font-weight:600;margin-bottom:4px;">失败 Job（{len(failed_jobs)}）</div>'
-                        f'<ul style="margin:0;padding-left:20px;">{"".join(items)}</ul></div>'
-                    )
-                elif not summary:
-                    failure_block += (
-                        '<div style="color:#888;font-size:12px;margin-top:8px;">'
-                        "暂无 Job 明细，可点击下方 Run 链接到 GitHub 查看。</div>"
-                    )
-
-            cards.append(
-                f"""
-                <div style="border:1px solid #f0f0f0;border-left:4px solid {color};border-radius:6px;padding:14px 16px;margin-bottom:14px;">
-                  <div style="font-size:13px;color:{color};font-weight:600;margin-bottom:6px;">{type_label}</div>
-                  <div style="font-size:15px;font-weight:600;margin-bottom:8px;">{title}</div>
-                  <table style="font-size:12px;color:#555;margin-bottom:6px;">
-                    <tr><td style="padding-right:18px;">分支：<strong>{branch}</strong></td>
-                        <td style="padding-right:18px;">Event：<strong>{event}</strong></td>
-                        <td>首次发现：<strong>{first_seen}</strong></td></tr>
-                  </table>
-                  <div style="font-size:12px;color:#555;margin-bottom:4px;">Run：{run_link}</div>
-                  {failure_block}
-                  <div style="font-size:12px;color:#888;margin-top:8px;word-break:break-all;">{message}</div>
-                </div>
-                """
-            )
-
-        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="font-family:Arial,sans-serif;padding:20px;color:#222;background:#fafafa;">
-<div style="max-width:860px;margin:0 auto;">
-<h2 style="color:#cf1322;margin-bottom:6px;">⚠ 镜像构建异常告警</h2>
-<p style="margin:0 0 16px;color:#555;">仓库：<strong>{html_lib.escape(wf.repo_owner)}/{html_lib.escape(wf.repo_name)}</strong>　Workflow：<strong>{html_lib.escape(wf.workflow_name)}</strong>　共 <strong>{len(alerts)}</strong> 条告警</p>
-{''.join(cards)}
-<p style="color:#999;font-size:12px;margin-top:18px;">vLLM Ascend Dashboard 镜像构建监控自动发送</p>
-</div>
-</body></html>"""
+        subject, html = await self.build_alert_email(target, wf, alerts)
 
         severity = "critical" if any(a.severity == "critical" for a in alerts) else "warning"
         sms_text = (
@@ -1319,3 +1562,146 @@ class ImageBuildMonitorService:
             return len(alerts)
         logger.warning("Image build alert email failed for workflow %s: %s", wf.id, error)
         return 0
+
+    async def preview_test_email(self, target_id: int | None = None) -> dict[str, Any]:
+        """构建一封示例告警邮件 HTML，不发送、不落库，用于前端预览样式。"""
+        target = await self.db.get(ImageBuildMonitorTarget, target_id) if target_id else None
+        wf = (
+            await self.db.get(ReleaseWorkflow, target.release_workflow_id)
+            if target
+            else None
+        )
+        if wf is None:
+            wf = (
+                await self.db.execute(
+                    select(ReleaseWorkflow)
+                    .where(
+                        (ReleaseWorkflow.workflow_name.ilike("%image%"))
+                        | (ReleaseWorkflow.workflow_path.ilike("%image%"))
+                    )
+                    .order_by(ReleaseWorkflow.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if wf is None:
+            wf = (await self.db.execute(select(ReleaseWorkflow).limit(1))).scalar_one_or_none()
+        if wf is None:
+            wf = ReleaseWorkflow(
+                repo_owner=settings.GITHUB_OWNER,
+                repo_name=settings.GITHUB_REPO,
+                workflow_name="Image Build Monitor Preview",
+                workflow_path=".github/workflows/schedule_image_build_and_push.yaml",
+                workflow_id=0,
+            )
+        if target is None:
+            target = ImageBuildMonitorTarget(
+                release_workflow_id=wf.id or 0,
+                notify_emails=[],
+                cooldown_minutes=60,
+                timezone="Asia/Shanghai",
+                notify_window_enabled=True,
+                notify_window_start="20:00",
+                notify_window_end="08:00",
+            )
+
+        now = datetime.now(UTC)
+
+        def make_alert(
+            alert_type: str,
+            title: str,
+            message: str,
+            run_id: int | None,
+            branch: str,
+            event: str,
+            severity: str = "critical",
+            details: dict[str, Any] | None = None,
+        ) -> ImageBuildAlert:
+            return ImageBuildAlert(
+                target_id=target.id or 0,
+                release_workflow_id=wf.id or 0,
+                github_run_id=run_id,
+                alert_type=alert_type,
+                severity=severity,
+                status="open",
+                title=title,
+                message=message,
+                run_url=(
+                    f"https://github.com/{wf.repo_owner}/{wf.repo_name}/actions/runs/{run_id}"
+                    if run_id
+                    else None
+                ),
+                branch=branch,
+                event=event,
+                dedupe_key=f"preview:{alert_type}:{run_id or alert_type}",
+                first_detected_at=now,
+                last_detected_at=now,
+                details=details or {},
+            )
+
+        failure = make_alert(
+            "failure",
+            f"镜像构建失败：{wf.workflow_name}",
+            "run #45732960642 构建失败（分支 main，event workflow_dispatch）。",
+            45732960642,
+            "main",
+            "workflow_dispatch",
+        )
+        missing = make_alert(
+            "missing",
+            f"定时镜像构建未启动：{wf.workflow_name}",
+            "期望触发时间已超过容忍窗口，未发现 event=schedule 的运行记录。",
+            None,
+            "",
+            "schedule",
+            details={"expected_fire_at": now.isoformat(), "grace_minutes": 30},
+        )
+        stuck = make_alert(
+            "stuck",
+            f"镜像构建长时间未完成：{wf.workflow_name}",
+            "run #45728000001 已持续 210 分钟（状态 in_progress），超过阈值 180 分钟。",
+            45728000001,
+            "releases/v0.32.0rc",
+            "schedule",
+            severity="warning",
+        )
+        failure_summary = {"total": 40, "success": 31, "failure": 7, "skipped": 0, "other": 2}
+        rows_data = [
+            {
+                "alert": failure,
+                "run": None,
+                "summary": failure_summary,
+                "error_text": (
+                    "a2-openeuler[failure] 失败步骤：Build and push；"
+                    "a5-openeuler[failure] 失败步骤：Build and push；"
+                    "collect-build-info[failure] 失败步骤：Assemble info"
+                ),
+                "sort_dt": now,
+                "started_at": now,
+            },
+            {
+                "alert": stuck,
+                "run": None,
+                "summary": {},
+                "error_text": stuck.message,
+                "sort_dt": now - timedelta(hours=2),
+                "started_at": now - timedelta(hours=2),
+            },
+            {
+                "alert": missing,
+                "run": None,
+                "summary": {},
+                "error_text": missing.message,
+                "sort_dt": now - timedelta(hours=5),
+                "started_at": now - timedelta(hours=5),
+            },
+        ]
+        type_counts = {"failure": 1, "missing": 1, "stuck": 1}
+        aggregate = dict(failure_summary)
+        html = await self._render_alert_email(
+            target, wf, rows_data, type_counts, aggregate, _window_label(target)
+        )
+        subject = (
+            f"[vLLM Ascend 镜像构建告警] {wf.repo_name}/{wf.workflow_name} - "
+            "构建失败/定时未触发/构建卡住（预览）"
+        )
+        return {"subject": subject, "html": html, "window": _window_label(target)}

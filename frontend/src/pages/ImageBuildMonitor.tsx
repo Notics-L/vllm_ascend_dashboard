@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Descriptions,
   Drawer,
   Form,
@@ -29,6 +30,8 @@ import {
 } from 'antd'
 import {
   BellOutlined,
+  CheckCircleOutlined,
+  CheckOutlined,
   DeleteOutlined,
   EditOutlined,
   HistoryOutlined,
@@ -38,6 +41,7 @@ import {
   PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 
 import {
@@ -51,7 +55,9 @@ import {
   listAlerts,
   listCandidates,
   listTargets,
+  previewTestEmail,
   renotifyAlert,
+  refreshTargetRuns,
   resolveAlert,
   runCheck,
   sendTestEmail,
@@ -198,9 +204,18 @@ export default function ImageBuildMonitor() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<MonitorTarget | null>(null)
   const [runTarget, setRunTarget] = useState<MonitorTarget | null>(null)
+  const [runBranch, setRunBranch] = useState<string | undefined>()
+  const [runPage, setRunPage] = useState(1)
+  const [runPageSize, setRunPageSize] = useState(20)
+  const [preview, setPreview] = useState<{ subject: string; html: string } | null>(null)
   const [detailAlertId, setDetailAlertId] = useState<number | null>(null)
   const [alertStatus, setAlertStatus] = useState<string | undefined>('unresolved')
   const [alertType, setAlertType] = useState<string | undefined>()
+  const [alertPage, setAlertPage] = useState(1)
+  const [alertPageSize, setAlertPageSize] = useState(20)
+  const [alertDateRange, setAlertDateRange] = useState<
+    [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
+  >(null)
   const [cronOpen, setCronOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
   const [form] = Form.useForm()
@@ -227,18 +242,25 @@ export default function ImageBuildMonitor() {
     queryFn: listCandidates,
   })
   const alertsQuery = useQuery({
-    queryKey: ['image-build-monitor-alerts', alertStatus, alertType, days],
+    queryKey: ['image-build-monitor-alerts', alertStatus, alertType, alertPage, alertPageSize, alertDateRange],
     queryFn: () =>
       listAlerts({
         status: alertStatus,
         alert_type: alertType,
-        page: 1,
-        page_size: 50,
+        start_time: alertDateRange?.[0]?.startOf('day').toISOString(),
+        end_time: alertDateRange?.[1]?.endOf('day').toISOString(),
+        page: alertPage,
+        page_size: alertPageSize,
       }),
   })
   const runsQuery = useQuery({
-    queryKey: ['image-build-monitor-runs', runTarget?.id],
-    queryFn: () => getTargetRuns(runTarget!.id, 20),
+    queryKey: ['image-build-monitor-runs', runTarget?.id, runBranch, runPage, runPageSize],
+    queryFn: () =>
+      getTargetRuns(runTarget!.id, {
+        branch: runBranch,
+        page: runPage,
+        page_size: runPageSize,
+      }),
     enabled: !!runTarget,
   })
   const alertDetailQuery = useQuery({
@@ -328,6 +350,30 @@ export default function ImageBuildMonitor() {
     onError: (e: Error) => message.error(`删除失败：${e.message}`),
   })
 
+  const refreshRunsMutation = useMutation({
+    mutationFn: () =>
+      refreshTargetRuns(runTarget!.id, {
+        branch: runBranch,
+        page: runPage,
+        page_size: runPageSize,
+      }),
+    onSuccess: (res) => {
+      queryClient.setQueryData(
+        ['image-build-monitor-runs', runTarget?.id, runBranch, runPage, runPageSize],
+        res,
+      )
+      message.success(`已同步 ${res.synced_runs} 条最新运行记录`)
+      refreshAll()
+    },
+    onError: (e: Error) => message.error(`刷新失败：${e.message}`),
+  })
+
+  const previewMutation = useMutation({
+    mutationFn: (targetId?: number) => previewTestEmail({ target_id: targetId }),
+    onSuccess: (res) => setPreview({ subject: res.subject, html: res.html }),
+    onError: (e: Error) => message.error(`预览生成失败：${e.message}`),
+  })
+
   const overview = overviewQuery.data
   const targets = targetsQuery.data ?? []
   const alerts = alertsQuery.data?.items ?? []
@@ -394,14 +440,22 @@ export default function ImageBuildMonitor() {
       notify_on_failure: true,
       notify_on_missing: true,
       notify_on_stuck: true,
+      notify_window_enabled: true,
+      notify_window_start: '20:00',
+      notify_window_end: '08:00',
       stuck_threshold_minutes: 180,
       cooldown_minutes: 60,
     })
     setModalOpen(true)
   }
 
-  const openEdit = (row: MonitorTarget) => {
-    setEditing(row)
+  const openRuns = (row: MonitorTarget) => {
+    setRunBranch(undefined)
+    setRunPage(1)
+    setRunTarget(row)
+  }
+
+  const openEdit = (row: MonitorTarget) => {    setEditing(row)
     form.setFieldsValue({
       release_workflow_id: row.release_workflow_id,
       enabled: row.enabled,
@@ -413,6 +467,9 @@ export default function ImageBuildMonitor() {
       notify_on_failure: row.notify_on_failure,
       notify_on_missing: row.notify_on_missing,
       notify_on_stuck: row.notify_on_stuck,
+      notify_window_enabled: row.notify_window_enabled,
+      notify_window_start: row.notify_window_start,
+      notify_window_end: row.notify_window_end,
       stuck_threshold_minutes: row.stuck_threshold_minutes,
       cooldown_minutes: row.cooldown_minutes,
     })
@@ -475,6 +532,9 @@ export default function ImageBuildMonitor() {
         <div>
           <Tag color={r.schedule_cron ? 'blue' : 'default'}>{r.schedule_cron || '未配置'}</Tag>
           <div style={{ fontSize: 12, color: '#999' }}>容忍 {r.grace_minutes} 分钟 · {r.timezone}</div>
+          <div style={{ fontSize: 12, color: '#999' }}>
+            监控窗口：{r.notify_window_enabled ? `${r.notify_window_start}-${r.notify_window_end}` : '全天'}
+          </div>
         </div>
       ),
     },
@@ -534,7 +594,7 @@ export default function ImageBuildMonitor() {
       key: 'actions',
       render: (_, r) => (
         <Space size={4}>
-          <Button size="small" type="link" icon={<HistoryOutlined />} onClick={() => setRunTarget(r)}>
+          <Button size="small" type="link" icon={<HistoryOutlined />} onClick={() => openRuns(r)}>
             运行
           </Button>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
@@ -647,11 +707,18 @@ export default function ImageBuildMonitor() {
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 280,
       render: (_, r) => (
         <Space size={2}>
           {r.run_url && (
-            <Button size="small" type="link" icon={<LinkOutlined />} href={r.run_url} target="_blank">
+            <Button
+              size="small"
+              type="link"
+              style={{ color: '#1677ff' }}
+              icon={<LinkOutlined />}
+              href={r.run_url}
+              target="_blank"
+            >
               Run
             </Button>
           )}
@@ -660,6 +727,8 @@ export default function ImageBuildMonitor() {
               <Button
                 size="small"
                 type="link"
+                style={{ color: '#d48806' }}
+                icon={<CheckOutlined />}
                 onClick={() => actionMutation.mutate({ action: 'ack', id: r.id })}
               >
                 已知晓
@@ -670,6 +739,8 @@ export default function ImageBuildMonitor() {
             <Button
               size="small"
               type="link"
+              style={{ color: '#389e0d' }}
+              icon={<CheckCircleOutlined />}
               onClick={() => actionMutation.mutate({ action: 'resolve', id: r.id })}
             >
               恢复
@@ -678,6 +749,7 @@ export default function ImageBuildMonitor() {
           <Button
             size="small"
             type="link"
+            style={{ color: '#722ed1' }}
             icon={<BellOutlined />}
             onClick={() => actionMutation.mutate({ action: 'renotify', id: r.id })}
           >
@@ -813,13 +885,25 @@ export default function ImageBuildMonitor() {
         size="small"
         title={`告警列表（${alertsQuery.data?.total ?? 0}）`}
         extra={
-          <Space>
+          <Space wrap>
+            <DatePicker.RangePicker
+              value={alertDateRange}
+              onChange={(range) => {
+                setAlertDateRange(range as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)
+                setAlertPage(1)
+              }}
+              allowClear
+              placeholder={['开始日期', '结束日期']}
+            />
             <Select
               allowClear
               placeholder="告警类型"
               style={{ width: 140 }}
               value={alertType}
-              onChange={setAlertType}
+              onChange={(value) => {
+                setAlertType(value)
+                setAlertPage(1)
+              }}
               options={Object.entries(ALERT_TYPE_ZH).map(([value, label]) => ({ value, label }))}
             />
             <Select
@@ -827,7 +911,10 @@ export default function ImageBuildMonitor() {
               placeholder="状态"
               style={{ width: 120 }}
               value={alertStatus}
-              onChange={setAlertStatus}
+              onChange={(value) => {
+                setAlertStatus(value)
+                setAlertPage(1)
+              }}
               options={Object.entries(STATUS_ZH).map(([value, label]) => ({ value, label }))}
             />
             <Button size="small" icon={<ReloadOutlined />} onClick={() => alertsQuery.refetch()}>刷新</Button>
@@ -840,8 +927,19 @@ export default function ImageBuildMonitor() {
           loading={alertsQuery.isLoading}
           columns={alertColumns}
           dataSource={alerts}
-          pagination={false}
-          scroll={{ x: 1220 }}
+          pagination={{
+            current: alertPage,
+            pageSize: alertPageSize,
+            total: alertsQuery.data?.total ?? 0,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50, 100],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => {
+              setAlertPage(page)
+              setAlertPageSize(pageSize)
+            },
+          }}
+          scroll={{ x: 1260 }}
         />
       </Card>
 
@@ -992,6 +1090,40 @@ export default function ImageBuildMonitor() {
               </div>
             </Col>
           </Row>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 14px' }}>
+            <span style={{ width: 3, height: 14, borderRadius: 2, background: '#fa8c16' }} />
+            <Text strong>监控时间窗口</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              仅统计窗口内启动的运行，默认晚 20:00 至次日 08:00
+            </Text>
+          </div>
+          <Row gutter={12} align="middle">
+            <Col span={8}>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                <Form.Item name="notify_window_enabled" label="启用时间窗口" valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Switch />
+                </Form.Item>
+              </div>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="notify_window_start"
+                label="窗口开始"
+                rules={[{ pattern: /^([01]\d|2[0-3]):[0-5]\d$/, message: '格式 HH:MM' }]}
+              >
+                <Input placeholder="20:00" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="notify_window_end"
+                label="窗口结束"
+                rules={[{ pattern: /^([01]\d|2[0-3]):[0-5]\d$/, message: '格式 HH:MM' }]}
+              >
+                <Input placeholder="08:00" />
+              </Form.Item>
+            </Col>
+          </Row>
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col span={12}>
               <Form.Item
@@ -1021,7 +1153,17 @@ export default function ImageBuildMonitor() {
         }
         open={!!runTarget}
         onClose={() => setRunTarget(null)}
-        width={920}
+        width="min(1440px, calc(100vw - 32px))"
+        extra={
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={refreshRunsMutation.isPending}
+            onClick={() => refreshRunsMutation.mutate()}
+          >
+            立即刷新
+          </Button>
+        }
       >
         {runTarget && (
           <Descriptions
@@ -1047,60 +1189,183 @@ export default function ImageBuildMonitor() {
             </Descriptions.Item>
           </Descriptions>
         )}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+            marginBottom: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Space>
+            <Text type="secondary">分支</Text>
+            <Select
+              allowClear
+              showSearch
+              placeholder="全部分支"
+              style={{ width: 260 }}
+              value={runBranch}
+              onChange={(value) => {
+                setRunBranch(value)
+                setRunPage(1)
+              }}
+              options={(runsQuery.data?.branches ?? []).map((b) => ({
+                value: b,
+                label: b,
+              }))}
+            />
+          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            共 {runsQuery.data?.total ?? 0} 条运行记录，按创建时间倒序
+          </Text>
+        </div>
         <Table
           rowKey="id"
           size="small"
           loading={runsQuery.isLoading}
-          dataSource={runsQuery.data ?? []}
-          pagination={false}
-          scroll={{ x: 860 }}
+          dataSource={runsQuery.data?.items ?? []}
+          onRow={(r) => ({
+            style:
+              r.status === 'failure' ||
+              r.status === 'timed_out' ||
+              r.status === 'startup_failure'
+                ? { background: '#fff1f0' }
+                : undefined,
+          })}
+          pagination={{
+            current: runPage,
+            pageSize: runPageSize,
+            total: runsQuery.data?.total ?? 0,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50, 100],
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (page, pageSize) => {
+              setRunPage(page)
+              setRunPageSize(pageSize)
+            },
+          }}
+          scroll={{ x: 1240 }}
           columns={[
             {
               title: 'Run',
               key: 'run',
-              width: 190,
+              width: 180,
               render: (_, r) => (
-                <Space size={4} style={{ whiteSpace: 'nowrap' }}>
-                  <Text strong>#{r.github_run_id}</Text>
-                  {r.url && (
-                    <Button size="small" type="link" icon={<LinkOutlined />} href={r.url} target="_blank">
-                      GitHub
-                    </Button>
+                <div style={{ whiteSpace: 'nowrap' }}>
+                  <Space size={4}>
+                    <Text strong>#{r.github_run_id}</Text>
+                    {r.url && (
+                      <Button
+                        size="small"
+                        type="link"
+                        icon={<LinkOutlined />}
+                        href={r.url}
+                        target="_blank"
+                      >
+                        GitHub
+                      </Button>
+                    )}
+                  </Space>
+                  {r.commit_sha && (
+                    <div style={{ fontSize: 11, color: '#999' }}>
+                      {r.commit_sha.slice(0, 8)}
+                    </div>
                   )}
-                </Space>
+                </div>
               ),
             },
             {
               title: '状态',
               dataIndex: 'status',
-              width: 100,
-              render: (v: string) => <Tag color={RUN_STATUS_COLOR[v || ''] || 'default'}>{RUN_STATUS_ZH[v || ''] ?? v ?? '-'}</Tag>,
+              width: 90,
+              render: (v: string) => (
+                <Tag color={RUN_STATUS_COLOR[v || ''] || 'default'}>
+                  {RUN_STATUS_ZH[v || ''] ?? v ?? '-'}
+                </Tag>
+              ),
             },
             {
-              title: 'Event',
+              title: '事件',
               dataIndex: 'event',
-              width: 140,
-              ellipsis: true,
-              render: (v: string) => <Text style={{ whiteSpace: 'nowrap' }}>{v || '-'}</Text>,
+              width: 150,
+              render: (v: string) => (
+                <Tag color={v === 'schedule' ? 'blue' : 'default'}>{v || '-'}</Tag>
+              ),
             },
             {
               title: '分支',
               dataIndex: 'branch',
-              width: 220,
+              width: 190,
               ellipsis: { showTitle: true },
-              render: (v: string) => <Text style={{ whiteSpace: 'nowrap' }}>{v || '-'}</Text>,
+              render: (v: string) => (
+                <Tooltip title={v || '-'}>
+                  <Tag color={(v || '').startsWith('releases/') ? 'purple' : 'geekblue'}>
+                    {v || '-'}
+                  </Tag>
+                </Tooltip>
+              ),
             },
             {
               title: '创建时间',
               dataIndex: 'created_at',
-              width: 160,
-              render: (v: string) => <Text style={{ whiteSpace: 'nowrap' }}>{fmtTime(v)}</Text>,
+              width: 140,
+              render: (v: string) => (
+                <Text style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{fmtTime(v)}</Text>
+              ),
+            },
+            {
+              title: '完成时间',
+              dataIndex: 'completed_at',
+              width: 140,
+              render: (v: string) => (
+                <Text type="secondary" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                  {fmtTime(v)}
+                </Text>
+              ),
+            },
+            {
+              title: 'Job 统计',
+              key: 'job_summary',
+              width: 260,
+              render: (_, r) => {
+                const s = r.job_summary ?? {}
+                const chip = (icon: string, value: number | undefined, color: string, label: string) => (
+                  <Tooltip title={label}>
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        padding: '0 5px',
+                        borderRadius: 4,
+                        background: `${color}14`,
+                        color,
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {icon} {value ?? 0}
+                    </span>
+                  </Tooltip>
+                )
+                return (
+                  <Space size={6} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                    {chip('📦', s.total, '#595959', '总 Job')}
+                    {chip('✅', s.success, '#389e0d', '成功')}
+                    {chip('❌', s.failure, '#cf1322', '失败')}
+                    {chip('⏭', s.skipped, '#8c8c8c', '跳过')}
+                    {chip('➖', s.other, '#d46b08', '其他')}
+                  </Space>
+                )
+              },
             },
             {
               title: '耗时',
               dataIndex: 'wall_duration',
               width: 90,
-              render: (v: number) => <Text style={{ whiteSpace: 'nowrap' }}>{fmtDuration(v)}</Text>,
+              render: (v: number) => (
+                <Text style={{ whiteSpace: 'nowrap' }}>{fmtDuration(v)}</Text>
+              ),
             },
           ]}
         />
@@ -1365,6 +1630,41 @@ export default function ImageBuildMonitor() {
             />
           </Form.Item>
         </Form>
+        <Button
+          icon={<InfoCircleOutlined />}
+          loading={previewMutation.isPending}
+          onClick={() => previewMutation.mutate(emailForm.getFieldValue('target_id'))}
+        >
+          预览邮件样式（不发送）
+        </Button>
+      </Modal>
+
+      <Modal
+        title={preview?.subject || '邮件样式预览'}
+        open={!!preview}
+        onCancel={() => setPreview(null)}
+        footer={null}
+        width={1000}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="以下为示例数据渲染的邮件正文，实际发送时会替换为当前告警数据。"
+        />
+        <iframe
+          title="email-preview"
+          srcDoc={preview?.html || ''}
+          style={{
+            width: '100%',
+            height: 620,
+            border: '1px solid #f0f0f0',
+            borderRadius: 8,
+            background: '#fafafa',
+          }}
+          sandbox=""
+        />
       </Modal>
     </div>
   )
