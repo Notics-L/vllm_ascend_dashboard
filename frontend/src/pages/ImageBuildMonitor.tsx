@@ -30,10 +30,12 @@ import {
 } from 'antd'
 import {
   BellOutlined,
+  BulbOutlined,
   CheckCircleOutlined,
   CheckOutlined,
   DeleteOutlined,
   EditOutlined,
+  FireFilled,
   HistoryOutlined,
   InfoCircleOutlined,
   LinkOutlined,
@@ -42,6 +44,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SyncOutlined,
+  WarningFilled,
 } from '@ant-design/icons'
 
 import {
@@ -92,6 +95,24 @@ const STATUS_COLOR: Record<string, string> = {
   acknowledged: 'gold',
   resolved: 'green',
 }
+const SEVERITY_META: Record<
+  string,
+  { icon: ReactNode; color: string; label: string; desc: string }
+> = {
+  critical: {
+    icon: <FireFilled />,
+    color: '#cf1322',
+    label: '严重',
+    desc: '构建失败或定时未触发',
+  },
+  warning: {
+    icon: <WarningFilled />,
+    color: '#d46b08',
+    label: '警告',
+    desc: '构建长时间未完成（卡住）',
+  },
+}
+
 const RUN_STATUS_COLOR: Record<string, string> = {
   success: 'green',
   failure: 'red',
@@ -108,8 +129,7 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   action_required: 'orange',
 }
 
-const RUN_STATUS_ZH: Record<string, string> = {
-  success: '成功',
+const RUN_STATUS_ZH: Record<string, string> = {  success: '成功',
   failure: '失败',
   cancelled: '已取消',
   timed_out: '超时',
@@ -624,7 +644,22 @@ export default function ImageBuildMonitor() {
       title: '级别',
       dataIndex: 'severity',
       width: 80,
-      render: (v: string) => <Tag color={v === 'critical' ? 'red' : 'gold'}>{v}</Tag>,
+      align: 'center',
+      render: (v: string) => {
+        const meta = SEVERITY_META[v] ?? {
+          icon: <InfoCircleOutlined />,
+          color: '#8c8c8c',
+          label: v || '未知',
+          desc: '未识别的告警级别',
+        }
+        return (
+          <Tooltip title={`${meta.label}（${v || '-'}）：${meta.desc}`}>
+            <span className={`severity-icon severity-${SEVERITY_META[v] ? v : 'unknown'}`}>
+              {meta.icon}
+            </span>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '状态',
@@ -709,11 +744,12 @@ export default function ImageBuildMonitor() {
       key: 'actions',
       width: 280,
       render: (_, r) => (
-        <Space size={2}>
+        <Space size={2} className="image-build-alert-actions">
           {r.run_url && (
             <Button
               size="small"
               type="link"
+              className="alert-action-run"
               style={{ color: '#1677ff' }}
               icon={<LinkOutlined />}
               href={r.run_url}
@@ -723,22 +759,22 @@ export default function ImageBuildMonitor() {
             </Button>
           )}
           {r.status === 'open' && (
-            <Tooltip title="标记为已知晓：停止重复邮件提醒，但告警仍保留在列表，需处理完后点击「恢复」">
-              <Button
-                size="small"
-                type="link"
-                style={{ color: '#d48806' }}
-                icon={<CheckOutlined />}
-                onClick={() => actionMutation.mutate({ action: 'ack', id: r.id })}
-              >
-                已知晓
-              </Button>
-            </Tooltip>
+            <Button
+              size="small"
+              type="link"
+              className="alert-action-ack"
+              style={{ color: '#d48806' }}
+              icon={<CheckOutlined />}
+              onClick={() => actionMutation.mutate({ action: 'ack', id: r.id })}
+            >
+              已知晓
+            </Button>
           )}
           {r.status !== 'resolved' && (
             <Button
               size="small"
               type="link"
+              className="alert-action-resolve"
               style={{ color: '#389e0d' }}
               icon={<CheckCircleOutlined />}
               onClick={() => actionMutation.mutate({ action: 'resolve', id: r.id })}
@@ -749,6 +785,7 @@ export default function ImageBuildMonitor() {
           <Button
             size="small"
             type="link"
+            className="alert-action-renotify"
             style={{ color: '#722ed1' }}
             icon={<BellOutlined />}
             onClick={() => actionMutation.mutate({ action: 'renotify', id: r.id })}
@@ -762,6 +799,73 @@ export default function ImageBuildMonitor() {
 
   return (
     <div>
+      <style>{`
+        .help-tip-icon {
+          color: #faad14;
+          font-size: 15px;
+          cursor: help;
+          transition: color 0.2s ease, transform 0.2s ease, filter 0.2s ease;
+          filter: drop-shadow(0 1px 3px rgba(250, 173, 20, 0.35));
+        }
+        .help-tip-icon:hover {
+          color: #d48806;
+          transform: translateY(-1px) scale(1.12);
+          filter: drop-shadow(0 2px 6px rgba(250, 173, 20, 0.5));
+        }
+        .severity-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 16px;
+          line-height: 1;
+          cursor: help;
+          transition: transform 0.2s ease, filter 0.2s ease;
+        }
+        .severity-icon .anticon {
+          filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+        }
+        .severity-critical {
+          color: #e53935;
+          filter: drop-shadow(0 2px 5px rgba(207, 19, 34, 0.38));
+        }
+        .severity-warning {
+          color: #fa8c16;
+          filter: drop-shadow(0 2px 5px rgba(212, 107, 8, 0.34));
+        }
+        .severity-unknown {
+          color: #8c8c8c;
+          filter: drop-shadow(0 2px 5px rgba(140, 140, 140, 0.28));
+        }
+        .severity-icon:hover {
+          transform: translateY(-1px) scale(1.18);
+          filter: brightness(1.08) drop-shadow(0 3px 7px rgba(0, 0, 0, 0.26));
+        }
+        .image-build-alert-actions .ant-btn {
+          padding-inline: 6px;
+          border-radius: 6px;
+          transition: background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+        }
+        .image-build-alert-actions .ant-btn:hover {
+          text-decoration: none;
+          transform: translateY(-1px);
+        }
+        .image-build-alert-actions .alert-action-run:hover {
+          background: #e6f4ff;
+          box-shadow: 0 2px 6px rgba(22, 119, 255, 0.18);
+        }
+        .image-build-alert-actions .alert-action-ack:hover {
+          background: #fffbe6;
+          box-shadow: 0 2px 6px rgba(212, 136, 6, 0.2);
+        }
+        .image-build-alert-actions .alert-action-resolve:hover {
+          background: #f6ffed;
+          box-shadow: 0 2px 6px rgba(56, 158, 13, 0.2);
+        }
+        .image-build-alert-actions .alert-action-renotify:hover {
+          background: #f9f0ff;
+          box-shadow: 0 2px 6px rgba(114, 46, 209, 0.2);
+        }
+      `}</style>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>镜像构建监控</Typography.Title>
@@ -883,7 +987,37 @@ export default function ImageBuildMonitor() {
 
       <Card
         size="small"
-        title={`告警列表（${alertsQuery.data?.total ?? 0}）`}
+        title={
+          <Space size={6}>
+            <span>{`告警列表（${alertsQuery.data?.total ?? 0}）`}</span>
+            <Tooltip
+              placement="bottomLeft"
+              overlayStyle={{ maxWidth: 420 }}
+              title={
+                <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>告警操作说明</div>
+                  <div>
+                    <strong style={{ color: '#d48806' }}>已知晓</strong>
+                    ：停止重复邮件提醒，告警仍保留在列表；问题处理完成后请点击「恢复」关闭。
+                  </div>
+                  <div>
+                    <strong style={{ color: '#389e0d' }}>恢复</strong>
+                    ：确认问题已处理完成，关闭该告警。
+                  </div>
+                  <div>
+                    <strong style={{ color: '#722ed1' }}>重发</strong>
+                    ：重新发送该告警的邮件通知。
+                  </div>
+                  <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+                    <strong>级别</strong>：红色图标为严重（构建失败 / 定时未触发）；橙色图标为警告（构建长时间卡住）。
+                  </div>
+                </div>
+              }
+            >
+              <BulbOutlined className="help-tip-icon" />
+            </Tooltip>
+          </Space>
+        }
         extra={
           <Space wrap>
             <DatePicker.RangePicker
