@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import dayjs from 'dayjs'
 import {
   Alert,
@@ -35,6 +35,7 @@ import {
   ArrowDownOutlined,
   ExpandOutlined,
   LinkOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import {
   Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
@@ -43,13 +44,14 @@ import {
 
 import { FailureAnalysisDetailModal } from '../components/FailureAnalysisDetailModal'
 import { useAnalyzeFailedJob, useJobFailureAnalysis } from '../hooks/useFailureAnalysis'
-import { useComprehensiveReport } from '../hooks/useCI'
+import { useComprehensiveReport, useSyncProgress } from '../hooks/useCI'
 import {
   type ComprehensiveReportFailure,
   type ComprehensiveReport,
   downloadComprehensiveReport,
   collectComprehensiveRawLogs,
   autoAnalyzeComprehensiveReport,
+  triggerSync,
 } from '../services/ci'
 
 export const CONCLUSION_ZH: Record<string, string> = {
@@ -143,6 +145,8 @@ function CIDailyComprehensiveReport() {
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null)
   const [collectingLogs, setCollectingLogs] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncStartedAt, setSyncStartedAt] = useState(0)
   const [analysisModalJobId, setAnalysisModalJobId] = useState<number | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [logModalRow, setLogModalRow] = useState<ComprehensiveReportFailure | null>(null)
@@ -153,6 +157,22 @@ function CIDailyComprehensiveReport() {
   const [reanalyzingJobId, setReanalyzingJobId] = useState<number | null>(null)
 
   const { data: report, isLoading, isError, error, refetch } = useComprehensiveReport(applied)
+  const { data: syncProgress } = useSyncProgress(syncing)
+
+  useEffect(() => {
+    if (!syncing || !syncProgress) return
+    const status = (syncProgress.status || '').toLowerCase()
+    if (status === 'completed' || status === 'success') {
+      if (Date.now() - syncStartedAt < 8000) return
+      setSyncing(false)
+      setRawLogsReport(null)
+      setTimeout(() => refetch(), 800)
+      message.success('最新采集已完成，报告已刷新')
+    } else if (status === 'failed' || status === 'dead') {
+      setSyncing(false)
+      message.error(`采集失败：${syncProgress.error_message || '请稍后重试'}`)
+    }
+  }, [syncing, syncProgress, refetch, syncStartedAt])
 
   const [rawLogsReport, setRawLogsReport] = useState<ComprehensiveReport | null>(null)
   const [distModalKey, setDistModalKey] = useState<string | null>(null)
@@ -264,6 +284,23 @@ function CIDailyComprehensiveReport() {
       message.error(`抓取原始日志失败：${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setCollectingLogs(false)
+    }
+  }
+
+  const handleRefreshCollection = async () => {
+    setSyncing(true)
+    setSyncStartedAt(Date.now())
+    try {
+      const res = await triggerSync()
+      if (!res.success) {
+        setSyncing(false)
+        message.warning(res.message || '采集任务未入队，可能已有任务在执行')
+        return
+      }
+      message.success('已触发最新 CI 数据采集，完成后将自动刷新报告')
+    } catch (e) {
+      setSyncing(false)
+      message.error(`触发采集失败：${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -409,6 +446,16 @@ function CIDailyComprehensiveReport() {
         title: 'Job / 批次',
         dataIndex: 'job_name',
         ellipsis: { showTitle: true },
+        render: (v: string, r) => (
+          <Space size={4}>
+            <span>{v}</span>
+            {r.rerun_of_run_id ? (
+              <Tooltip title={`该失败已按最新重跑结果更新（原 run #${r.rerun_of_run_id}）`}>
+                <Tag color="cyan">已重跑</Tag>
+              </Tooltip>
+            ) : null}
+          </Space>
+        ),
       },
       {
         title: '模型',
@@ -631,6 +678,13 @@ function CIDailyComprehensiveReport() {
         </div>
         <Space>
           <Button icon={<DownloadOutlined />} disabled={!report} onClick={() => refetch()}>刷新</Button>
+          <Button
+            icon={<SyncOutlined />}
+            loading={syncing}
+            onClick={handleRefreshCollection}
+          >
+            更新采集
+          </Button>
           <Button
             icon={<CloudDownloadOutlined />}
             loading={collectingLogs}

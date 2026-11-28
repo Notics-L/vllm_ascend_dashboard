@@ -853,6 +853,8 @@ export interface ComprehensiveReportFailure {
   job_name: string
   run_id: number
   job_id: number | null
+  /** 若该行已按最新重跑结果更新，记录被替代的旧 run_id */
+  rerun_of_run_id?: number | null
   display_name: string | null
   test_model: string | null
   model_name?: string | null

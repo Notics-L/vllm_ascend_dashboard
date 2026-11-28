@@ -53,6 +53,8 @@ ERROR_LINE_MAX_LEN = 500
 SLOW_TOP_N = 10
 # Daily trend lookback (days before the window end date).
 TREND_LOOKBACK_DAYS = 14
+# 同一测试在此时长内再次运行，视为对上一次运行的「重跑」。
+RERUN_WINDOW = timedelta(hours=12)
 
 # Conclusions that count as "failed".
 FAILED_CONCLUSIONS = {"failure", "cancelled", "timed_out", "startup_failure"}
@@ -417,15 +419,47 @@ class CIDailyReportBuilder:
         failed_run_ids = [r.run_id for r in runs if _classify_conclusion(r.conclusion) == "failed"]
         jobs = await self._query_jobs(start, end, failed_run_ids)
         failure_records = await self._query_failure_records(request)
-        case_runs = await self._query_case_runs(start, end)
+
+        # Re-run awareness: a newer attempt of the same workflow/job replaces
+        # the earlier failed attempt. The newest successful attempt removes the
+        # stale failure row entirely.
+        run_by_id = {r.run_id: r for r in runs}
+        rerun_keys = {
+            (rec.workflow_name, rec.job_name, rec.source_branch or "main")
+            for rec in failure_records
+        }
+        for job in jobs:
+            run = run_by_id.get(job.run_id)
+            rerun_keys.add((job.workflow_name, job.job_name, (run.branch if run else "main") or "main"))
+        rerun_map = await self._query_rerun_jobs(rerun_keys, start)
+        rerun_jobs = [job for values in rerun_map.values() for job in values]
+        rerun_run_ids = {job.run_id for job in rerun_jobs} - set(run_by_id)
+        extra_runs: list[CIResult] = []
+        if rerun_run_ids:
+            extra_runs = list(
+                (await self.db.execute(
+                    select(CIResult).where(CIResult.run_id.in_(list(rerun_run_ids)))
+                )).scalars().all()
+            )
+        all_runs = runs + extra_runs
+        job_ids = {j.job_id for j in jobs if j.job_id}
+        jobs = jobs + [j for j in rerun_jobs if j.job_id not in job_ids]
         analyses = await self._query_analyses({j.job_id for j in jobs if j.job_id})
+
+        case_runs = await self._query_case_runs(start, end)
 
         # Case-level detail (test run -> test case) for the "which case failed" view.
         case_detail_by_run_job = await self._case_detail_map(case_runs)
 
         runs_data = [self._run_to_dict(r) for r in runs]
         failures_data = await self._build_failures(
-            failure_records, runs, jobs, analyses, case_detail_by_run_job, request
+            failure_records,
+            all_runs,
+            jobs,
+            analyses,
+            case_detail_by_run_job,
+            request,
+            rerun_map,
         )
         summary = self._build_summary(runs_data, failures_data, case_runs)
 
@@ -537,6 +571,91 @@ class CIDailyReportBuilder:
         stmt = select(JobFailureAnalysis).where(JobFailureAnalysis.job_id.in_(list(job_ids)))
         result = await self.db.execute(stmt)
         return {a.job_id: a for a in result.scalars().all() if a.job_id}
+
+    async def _query_rerun_jobs(
+        self,
+        keys: set[tuple[str, str, str]],
+        start: datetime,
+    ) -> dict[tuple[str, str, str], list[CIJob]]:
+        """Load recent jobs that may be manual/scheduled re-runs of failures.
+
+        A GitHub re-run can either keep the same ``run_id`` (new attempt) or
+        create a brand-new run. In both cases the newer job has the same
+        workflow/job/branch identity, so the latest one decides the row.
+        """
+        if not keys:
+            return {}
+        wf_names = {k[0] for k in keys if k[0]}
+        job_names = {k[1] for k in keys if k[1]}
+        if not wf_names or not job_names:
+            return {}
+        now_naive = datetime.now(UTC).replace(tzinfo=None)
+        stmt = (
+            select(CIJob, CIResult.branch)
+            .join(CIResult, CIResult.run_id == CIJob.run_id)
+            .where(
+                CIJob.workflow_name.in_(list(wf_names)),
+                CIJob.job_name.in_(list(job_names)),
+                CIJob.started_at >= start - timedelta(days=2),
+                CIJob.started_at <= now_naive,
+            )
+        )
+        grouped: dict[tuple[str, str, str], list[CIJob]] = {}
+        for job, branch in (await self.db.execute(stmt)).all():
+            key = (job.workflow_name, job.job_name, branch or "main")
+            if key not in keys:
+                continue
+            grouped.setdefault(key, []).append(job)
+        for values in grouped.values():
+            values.sort(
+                key=lambda job: _to_utc(job.started_at or job.completed_at)
+                or datetime.min
+            )
+        return grouped
+
+    @staticmethod
+    def _job_started(job: CIJob) -> datetime | None:
+        return _to_utc(job.started_at or job.completed_at)
+
+    def _latest_rerun_for_record(
+        self,
+        record: DailyFailureRecord,
+        rerun_map: dict[tuple[str, str, str], list[CIJob]],
+    ) -> CIJob | None:
+        base = _to_utc(record.started_at or record.completed_at)
+        if base is None:
+            return None
+        candidates = rerun_map.get(
+            (record.workflow_name, record.job_name, record.source_branch or "main"),
+            [],
+        )
+        newer = [
+            job
+            for job in candidates
+            if job.job_id != record.job_id
+            and (started := self._job_started(job)) is not None
+            and base < started <= base + RERUN_WINDOW
+        ]
+        return max(newer, key=self._job_started) if newer else None
+
+    def _latest_rerun_for_job(
+        self,
+        job: CIJob,
+        branch: str,
+        rerun_map: dict[tuple[str, str, str], list[CIJob]],
+    ) -> CIJob | None:
+        base = self._job_started(job)
+        if base is None:
+            return None
+        candidates = rerun_map.get((job.workflow_name, job.job_name, branch or "main"), [])
+        newer = [
+            candidate
+            for candidate in candidates
+            if candidate.job_id != job.job_id
+            and (started := self._job_started(candidate)) is not None
+            and base < started <= base + RERUN_WINDOW
+        ]
+        return max(newer, key=self._job_started) if newer else None
 
     async def _query_job_owners(self, pairs: set[tuple[str, str]]) -> list[tuple[str, str, str, str | None]]:
         """批量查 JobOwner，按 (workflow_name, job_name) 取责任人。
@@ -662,6 +781,7 @@ class CIDailyReportBuilder:
         analyses: dict[int, JobFailureAnalysis],
         case_detail: dict[tuple[int, int], dict[str, Any]],
         request: ReportRequest,
+        rerun_map: dict[tuple[str, str, str], list[CIJob]] | None = None,
     ) -> list[dict[str, Any]]:
         run_by_id = {r.run_id: r for r in runs}
         # Index: job identity keys -> CIJob (for duration / hardware).
@@ -738,6 +858,37 @@ class CIDailyReportBuilder:
             analysis = analyses.get(rec.job_id) if rec.job_id else None
             case = case_detail.get((rec.run_id, rec.job_id)) or case_detail.get((rec.run_id, -1))
 
+            # 重跑感知：以最后一次尝试为准。最新一次成功/取消则不再展示旧失败，
+            # 最新一次仍失败则使用最新 run/job 的错误与链接。
+            rerun_job = (
+                self._latest_rerun_for_record(rec, rerun_map)
+                if rerun_map
+                else None
+            )
+            rerun_of_run_id = rec.run_id if rerun_job is not None else None
+            effective_conclusion = rec.conclusion
+            effective_started_at = rec.started_at
+            effective_completed_at = rec.completed_at
+            effective_run_id = rec.run_id
+            effective_job_id = rec.job_id
+            if rerun_job is not None:
+                rerun_conclusion = (rerun_job.conclusion or "").lower()
+                if rerun_conclusion not in FAILED_CONCLUSIONS:
+                    # 最新一次不是失败（成功/取消/进行中），旧失败已失效。
+                    continue
+                effective_conclusion = rerun_job.conclusion
+                effective_started_at = rerun_job.started_at
+                effective_completed_at = rerun_job.completed_at
+                effective_run_id = rerun_job.run_id
+                effective_job_id = rerun_job.job_id
+                job = rerun_job
+                run = run_by_id.get(rerun_job.run_id) or run
+                analysis = analyses.get(rerun_job.job_id) if rerun_job.job_id else None
+                case = (
+                    case_detail.get((rerun_job.run_id, rerun_job.job_id))
+                    or case_detail.get((rerun_job.run_id, -1))
+                )
+
             branch = rec.source_branch or (run.branch if run else None) or "main"
             # hardware: rec.hardware 为空时 fallback 到 CIResult.hardware（workflow 级），再 fallback 到 CIJob
             hw = rec.hardware or (run.hardware if run else None) or (job.hardware if job else None) or "未知"
@@ -745,7 +896,11 @@ class CIDailyReportBuilder:
             duration = rec.duration_seconds if rec.duration_seconds is not None else (
                 job.duration_seconds if job else None
             )
-            error_line = self._error_line_for(analysis, rec, case)
+            if rerun_job is not None:
+                duration = rerun_job.duration_seconds
+            error_line = self._error_line_for(
+                analysis, None if rerun_job is not None else rec, case
+            )
             category = rec.problem_category or (analysis.problem_category if analysis else None)
             # 责任人：DailyFailureRecord.owner（人工维护）优先，缺失时回退 JobOwner
             owner = rec.owner or owner_map.get((rec.workflow_name, rec.job_name))
@@ -762,8 +917,8 @@ class CIDailyReportBuilder:
                 source_branch=branch,
                 workflow_name=rec.workflow_name,
                 job_name=rec.job_name,
-                run_id=rec.run_id,
-                job_id=rec.job_id,
+                run_id=effective_run_id,
+                job_id=effective_job_id,
                 display_name=rec.display_name,
                 test_model=model_name,
                 model_fo=rec.model_fo,
@@ -772,9 +927,9 @@ class CIDailyReportBuilder:
                 owner=owner,
                 failed_step=failed_step,
                 job=job,
-                conclusion=rec.conclusion,
-                started_at=rec.started_at,
-                completed_at=rec.completed_at,
+                conclusion=effective_conclusion,
+                started_at=effective_started_at,
+                completed_at=effective_completed_at,
                 duration=duration,
                 category=category,
                 error_line=error_line,
@@ -782,11 +937,16 @@ class CIDailyReportBuilder:
                 related_pr=rec.related_pr,
                 processing_status=rec.processing_status or "未处理",
                 notes=rec.notes,
-                github_url=rec.github_job_url,
+                github_url=(
+                    self._github_job_url(effective_run_id, effective_job_id)
+                    if rerun_job is not None
+                    else rec.github_job_url
+                ),
+                rerun_of_run_id=rerun_of_run_id,
             ))
-            if rec.job_id:
-                seen_run_job.add((rec.run_id, rec.job_id))
-            seen_run.add(rec.run_id)
+            if effective_job_id:
+                seen_run_job.add((effective_run_id, effective_job_id))
+            seen_run.add(effective_run_id)
 
         # 2) Failed jobs / runs inside the window not covered above (e.g. the
         #    materialized table is not yet populated).
@@ -796,6 +956,12 @@ class CIDailyReportBuilder:
             if job.job_id and (job.run_id, job.job_id) in seen_run_job:
                 continue
             run = run_by_id.get(job.run_id)
+            branch = (run.branch if run else "main") or "main"
+            if rerun_map:
+                newer = self._latest_rerun_for_job(job, branch, rerun_map)
+                if newer is not None:
+                    # 只保留这一组重跑中的最后一次尝试。
+                    continue
             # 硬件过滤：仅保留归属当前硬件过滤范围的 job
             if request.hardware:
                 job_hw = (job.hardware or (run.hardware if run else None) or "").lower()
@@ -858,6 +1024,15 @@ class CIDailyReportBuilder:
             )
         error_line = kwargs.get("error_line")
         analysis = kwargs.get("analysis")
+        ledger = (
+            analysis.evidence_ledger
+            if analysis is not None and isinstance(analysis.evidence_ledger, dict)
+            else {}
+        )
+        if not error_line:
+            error_line = ledger.get("error_line")
+        raw_log_lines = kwargs.get("raw_log_lines") or ledger.get("raw_log_lines")
+        error_brief = kwargs.get("error_brief") or ledger.get("error_brief")
         started_at: datetime | None = kwargs.get("started_at")
         # 失败日期需精确到秒以便定位（仅有日期无法区分同一天的多次失败）
         if isinstance(started_at, datetime):
@@ -886,6 +1061,7 @@ class CIDailyReportBuilder:
             "job_name": kwargs.get("job_name"),
             "run_id": kwargs.get("run_id"),
             "job_id": kwargs.get("job_id"),
+            "rerun_of_run_id": kwargs.get("rerun_of_run_id"),
             "display_name": kwargs.get("display_name"),
             "test_model": kwargs.get("test_model"),
             "model_name": model_name,
@@ -905,12 +1081,12 @@ class CIDailyReportBuilder:
             "problem_category": category,
             "error_line": error_line,
             "problem_line": _format_problem_line(category, error_line),
-            "raw_log_lines": kwargs.get("raw_log_lines"),
-            "error_brief": kwargs.get("error_brief"),
+            "raw_log_lines": raw_log_lines,
+            "error_brief": error_brief,
             # AI 分析状态：有分析记录时透出（供前端判断是否可点「AI分析」查看详情）
             "analysis_status": (
                 analysis.analysis_status if analysis else kwargs.get("analysis_status")
-            ),
+            ) or ledger.get("analysis_status"),
             # AI 分析详情 Modal 需要 analysisId（JobFailureAnalysis.id）
             "analysis_id": analysis.id if analysis else None,
             "analysis_phase": analysis.analysis_phase if analysis else None,
@@ -933,6 +1109,16 @@ class CIDailyReportBuilder:
         (The full GitHub log is not stored locally; the GitHub link is provided
         so the user can open the raw log.)
         """
+        if (
+            analysis
+            and (analysis.analysis_status or "") in ("completed", "reused")
+            and analysis.root_cause_summary
+        ):
+            return analysis.root_cause_summary
+        if analysis and isinstance(analysis.evidence_ledger, dict):
+            ledger_line = (analysis.evidence_ledger.get("error_line") or "").strip()
+            if ledger_line:
+                return ledger_line
         if analysis and analysis.root_cause_summary:
             return analysis.root_cause_summary
         if case and case.get("test_name"):
@@ -1204,6 +1390,65 @@ class CIDailyReportBuilder:
             max(duration, 0),
         )
 
+    async def _persist_raw_log_evidence(
+        self,
+        payloads: dict[int, dict[str, Any]],
+    ) -> None:
+        """Persist GitHub raw-log clues into JobFailureAnalysis.evidence_ledger.
+
+        The daily report is rebuilt from the database for every query/export,
+        so raw-log fallback must live in the DB; keeping it only in the HTTP
+        response made exports lose the problem description.
+        """
+        if not payloads:
+            return
+        existing_rows = (
+            await self.db.execute(
+                select(JobFailureAnalysis).where(
+                    JobFailureAnalysis.job_id.in_(list(payloads))
+                )
+            )
+        ).scalars().all()
+        existing_by_job = {row.job_id: row for row in existing_rows}
+        created = 0
+        for job_id, payload in payloads.items():
+            analysis = existing_by_job.get(job_id)
+            if analysis is None:
+                job = (
+                    await self.db.execute(
+                        select(CIJob).where(CIJob.job_id == job_id)
+                    )
+                ).scalar_one_or_none()
+                if job is None:
+                    continue
+                analysis = JobFailureAnalysis(
+                    job_id=job_id,
+                    run_id=int(payload.get("run_id") or job.run_id),
+                    workflow_name=payload.get("workflow_name") or job.workflow_name,
+                    job_name=payload.get("job_name") or job.job_name,
+                    failure_date=job.started_at or job.completed_at or datetime.now(UTC).replace(tzinfo=None),
+                    analysis_status="degraded",
+                    analysis_phase="degraded",
+                    triggered_by="raw_log",
+                )
+                self.db.add(analysis)
+                created += 1
+            ledger = dict(analysis.evidence_ledger or {})
+            ledger.update(
+                {
+                    "raw_log_lines": payload.get("raw_log_lines") or [],
+                    "error_line": payload.get("error_line"),
+                    "error_brief": payload.get("error_brief"),
+                    "collected_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            analysis.evidence_ledger = ledger
+            if (analysis.analysis_status or "") not in ("completed", "reused", "analyzing"):
+                analysis.analysis_status = payload.get("analysis_status") or "degraded"
+                analysis.analysis_phase = "degraded"
+        if created or payloads:
+            await self.db.commit()
+
     async def collect_raw_logs(self, report: dict[str, Any]) -> dict[str, Any]:
         """对报告中的失败记录自动访问 GitHub 原始日志链接，拉取并解析报错线索。
 
@@ -1246,6 +1491,7 @@ class CIDailyReportBuilder:
         )
         sem = asyncio.Semaphore(self.RAW_LOG_CONCURRENCY)
         collected = 0
+        persisted: dict[int, dict[str, Any]] = {}
 
         async def _one(f: dict[str, Any]) -> None:
             nonlocal collected
@@ -1290,9 +1536,20 @@ class CIDailyReportBuilder:
                 f["analysis_status"] = "degraded"
             elif not f.get("analysis_status"):
                 f["analysis_status"] = "raw_log_collected"
+            persisted[int(job_id)] = {
+                "run_id": f.get("run_id"),
+                "workflow_name": f.get("workflow_name"),
+                "job_name": f.get("job_name"),
+                "raw_log_lines": lines,
+                "error_line": f.get("error_line"),
+                "error_brief": f.get("error_brief"),
+                "analysis_status": f.get("analysis_status") or "degraded",
+            }
             collected += 1
 
         await asyncio.gather(*(_one(f) for f in targets))
+        if persisted:
+            await self._persist_raw_log_evidence(persisted)
         report["_raw_log_stats"] = {
             "targets": len(targets),
             "collected": collected,
